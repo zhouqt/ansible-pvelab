@@ -168,11 +168,11 @@
       - --tags
       - "{{ sunbeam_ct_tags }}"
       - --net0
-      - "name=eth0,bridge={{ item.item.pve_bridges.eth0 }},ip={{ item.item.pub_ip }}/24,gw={{ sunbeam_management_gateway }},type=veth"
+      - "name={{ item.item.interfaces.generic }},bridge={{ item.item.pve_bridges[item.item.interfaces.generic] }},ip={{ item.item.pub_ip }}/24,gw={{ sunbeam_management_gateway }},type=veth"
       - --net1
-      - "name=eth1,bridge={{ item.item.pve_bridges.eth1 }},ip={{ item.item.internal_ip }}/24,type=veth"
+      - "name={{ item.item.interfaces.internal }},bridge={{ item.item.pve_bridges[item.item.interfaces.internal] }},ip={{ item.item.internal_ip }}/24,type=veth"
       - --net2
-      - "name=eth2,bridge={{ item.item.pve_bridges.eth2 }},ip=manual,type=veth"
+      - "name={{ item.item.interfaces.external }},bridge={{ item.item.pve_bridges[item.item.interfaces.external] }},ip=manual,type=veth"
   loop: "{{ sunbeam_pve_ct_check.results }}"
   when: item.rc != 0
   loop_control:

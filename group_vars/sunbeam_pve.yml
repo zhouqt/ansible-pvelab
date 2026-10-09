@@ -16,26 +16,28 @@ sunbeam_ct_tags: sunbeam
 sunbeam_rootfs_size_gb: 50
 sunbeam_osd_size_gb: 50
 
-sunbeam_nodes:
+sunbeam_domain: sunbeam.test
+sunbeam_osd_by_id_prefix: pve-ceph-osd-
+sunbeam_osd_microceph_device_prefix: pve-ceph-osd-device-
+sunbeam_osd_slots_default: { lv: 40, by_id: 41 }
+sunbeam_char_devices_default:
+  - { index: 0, path: "/dev/kmsg", mode: "0644", extra: "deny-write=1" }
+  - { index: 1, path: "/dev/kvm", mode: "0660" }
+  - { index: 2, path: "/dev/net/tun", mode: "0666" }
+sunbeam_loop_device_first: 2
+sunbeam_loop_device_last: 31
+
+sunbeam_nodes_input:
   - vmid: 1281
     hostname: sunbeam-01
-    fqdn: sunbeam-01.sunbeam.test
     primary: true
     role: control,compute,storage
     pub_ip: 192.168.21.21
     internal_ip: 192.168.23.21
-    interfaces: { generic: eth0, internal: eth1, external: eth2 }
-    pve_bridges: { eth0: pub21, eth1: int23, eth2: pub12 }
-    osd_by_id: /dev/disk/by-id/pve-ceph-osd-1281
-    osd_pve_lv: /dev/pve-thin-pool/vm-1281-disk-1
-    osd_microceph_device: /dev/disk/by-id/pve-ceph-osd-device-1281
-    pve_devices:
-      - { index: 32, path: "/dev/pve-thin-pool/vm-1281-disk-1" }
-      - { index: 35, path: "/dev/disk/by-id/pve-ceph-osd-1281" }
+    osd_slots: { lv: 32, by_id: 35 }
     char_devices:
       - { index: 0, path: "/dev/kmsg", mode: "0644", extra: "deny-write=1" }
       - { index: 1, path: "/dev/loop-control", mode: "0660" }
-    loop_devices: true
     mounts:
       - "/proc/sys/vm/overcommit_memory proc/sys/vm/overcommit_memory none bind,create=file 0 0"
       - "/proc/sys/kernel/panic proc/sys/kernel/panic none bind,create=file 0 0"
@@ -43,53 +45,56 @@ sunbeam_nodes:
       - "/dev/loop-control dev/loop-control none bind,create=file 0 0"
   - vmid: 1282
     hostname: sunbeam-02
-    fqdn: sunbeam-02.sunbeam.test
     primary: false
     role: compute,storage
     pub_ip: 192.168.21.22
     internal_ip: 192.168.23.22
-    interfaces: { generic: eth0, internal: eth1, external: eth2 }
-    pve_bridges: { eth0: pub21, eth1: int23, eth2: pub12 }
-    osd_by_id: /dev/disk/by-id/pve-ceph-osd-1282
-    osd_pve_lv: /dev/pve-thin-pool/vm-1282-disk-1
-    osd_microceph_device: /dev/disk/by-id/pve-ceph-osd-device-1282
-    pve_devices:
-      - { index: 3, path: "/dev/pve-thin-pool/vm-1282-disk-1" }
-      - { index: 35, path: "/dev/disk/by-id/pve-ceph-osd-1282" }
+    osd_slots: { lv: 3, by_id: 35 }
     char_devices:
       - { index: 0, path: "/dev/kmsg", mode: "0644", extra: "deny-write=1" }
       - { index: 1, path: "/dev/kvm", mode: "0660" }
       - { index: 2, path: "/dev/net/tun", mode: "0666" }
-    loop_devices: false
-    mounts: []
   - vmid: 1283
     hostname: sunbeam-03
-    fqdn: sunbeam-03.sunbeam.test
     primary: false
     role: compute,storage
     pub_ip: 192.168.21.23
     internal_ip: 192.168.23.23
-    interfaces: { generic: eth0, internal: eth1, external: eth2 }
-    pve_bridges: { eth0: pub21, eth1: int23, eth2: pub12 }
-    osd_by_id: /dev/disk/by-id/pve-ceph-osd-1283
-    osd_pve_lv: /dev/pve-thin-pool/vm-1283-disk-1
-    osd_microceph_device: /dev/disk/by-id/pve-ceph-osd-device-1283
-    pve_devices:
-      - { index: 4, path: "/dev/pve-thin-pool/vm-1283-disk-1" }
-      - { index: 35, path: "/dev/disk/by-id/pve-ceph-osd-1283" }
+    osd_slots: { lv: 4, by_id: 35 }
     char_devices:
       - { index: 0, path: "/dev/kmsg", mode: "0644", extra: "deny-write=1" }
       - { index: 1, path: "/dev/kvm", mode: "0660" }
       - { index: 2, path: "/dev/vhost-vsock", mode: "0660" }
       - { index: 3, path: "/dev/net/tun", mode: "0666" }
-    loop_devices: false
-    mounts: []
 
-sunbeam_loop_device_first: 2
-sunbeam_loop_device_last: 31
+sunbeam_cluster_list_expected_nodes: 3
 
-sunbeam_primary_node: "{{ sunbeam_nodes | selectattr('primary') | list | first }}"
-sunbeam_worker_nodes: "{{ sunbeam_nodes | rejectattr('primary') | list }}"
+sunbeam_interface_names: { generic: eth0, internal: eth1, external: eth2 }
+sunbeam_pve_bridges: { generic: pub21, internal: int23, external: pub12 }
+
+sunbeam_management_cidr: 192.168.21.0/24
+sunbeam_management_gateway: 192.168.21.1
+sunbeam_internal_cidr: 192.168.23.0/24
+sunbeam_external_network:
+  name: physnet1
+  openstack_name: external-network
+  cidr: 192.168.12.0/24
+  gateway: 192.168.12.1
+  floating_range: 192.168.12.200-192.168.12.229
+  network_type: flat
+  segmentation_id: 0
+sunbeam_k8s_loadbalancer_range: 172.16.1.201-172.16.1.240
+sunbeam_tenant_cidr: 192.168.0.0/24
+sunbeam_tenant_network_name: demo-network
+sunbeam_dns_nameservers: 8.8.8.8
+
+sunbeam_proxy_url: http://192.168.11.2:12345
+sunbeam_proxy_no_proxy_tail:
+  - 10.1.0.0/16
+  - 10.140.97.0/24
+  - 10.140.97.1
+  - 10.152.183.0/24
+  - 172.16.1.0/24
 
 sunbeam_snap_name: openstack
 sunbeam_snap_channel: 2024.1/stable
@@ -108,46 +113,6 @@ sunbeam_controller_name: localhost-localhost
 sunbeam_cluster_model: openstack-machines
 sunbeam_region: RegionOne
 sunbeam_database_topology: single
-
-sunbeam_management_cidr: 192.168.21.0/24
-sunbeam_management_gateway: 192.168.21.1
-sunbeam_internal_cidr: 192.168.23.0/24
-sunbeam_external_network:
-  name: physnet1
-  openstack_name: external-network
-  cidr: 192.168.12.0/24
-  gateway: 192.168.12.1
-  floating_range: 192.168.12.200-192.168.12.229
-  network_type: flat
-  segmentation_id: 0
-sunbeam_k8s_loadbalancer_range: 172.16.1.201-172.16.1.240
-sunbeam_tenant_cidr: 192.168.0.0/24
-sunbeam_tenant_network_name: demo-network
-sunbeam_dns_nameservers: 8.8.8.8
-sunbeam_manifest_external_nic: eth2
-
-sunbeam_host_expected_bridges: [pub21, int23, pub12]
-sunbeam_host_expected_vnets: [pub21, int23, pub12]
-sunbeam_host_expected_subnets: [192.168.21.0/24, 192.168.23.0/24, 192.168.12.0/24]
-
-sunbeam_proxy_url: http://192.168.11.2:12345
-sunbeam_proxy_no_proxy:
-  - localhost
-  - 127.0.0.1
-  - ::1
-  - .sunbeam.test
-  - .svc
-  - .svc.cluster.local
-  - 192.168.21.0/24
-  - 192.168.21.21
-  - 192.168.23.0/24
-  - 192.168.23.21
-  - 10.1.0.0/16
-  - 10.140.97.0/24
-  - 10.140.97.1
-  - 10.152.183.0/24
-  - 172.16.1.0/24
-sunbeam_proxy_no_proxy_effective: "{{ sunbeam_proxy_no_proxy | join(',') }}"
 
 sunbeam_demo_username: demo
 sunbeam_demo_password: "{{ vault_sunbeam_demo_password | default('') }}"
@@ -170,11 +135,60 @@ sunbeam_confirm_cluster_join: false
 sunbeam_confirm_external_changes: false
 sunbeam_confirm_ceph_osd: false
 
-sunbeam_cluster_list_expected_nodes: 3
-sunbeam_ceph_expected_osds: 4
-sunbeam_ceph_managed_osd_devices: 3
+sunbeam_nodes: >-
+  {%- set ns = namespace(out=[]) -%}
+  {%- for n in sunbeam_nodes_input -%}
+  {%- set lv = '/dev/' ~ sunbeam_pve_storage ~ '/vm-' ~ n.vmid ~ '-disk-1' -%}
+  {%- set by_id = '/dev/disk/by-id/' ~ sunbeam_osd_by_id_prefix ~ n.vmid -%}
+  {%- set slots = n.osd_slots | default(sunbeam_osd_slots_default) -%}
+  {%- set devs = [{'index': slots.lv, 'path': lv}] -%}
+  {%- if slots.by_id is defined and slots.by_id is not none -%}
+  {%-   set _ = devs.append({'index': slots.by_id, 'path': by_id}) -%}
+  {%- endif -%}
+  {%- set nics = n.interfaces | default(sunbeam_interface_names) -%}
+  {%- set bridges = {} -%}
+  {%- for role, nic in nics.items() -%}
+  {%-   set _ = bridges.update({nic: sunbeam_pve_bridges[role]}) -%}
+  {%- endfor -%}
+  {%- set derived = {
+        'fqdn': n.hostname ~ '.' ~ sunbeam_domain,
+        'interfaces': nics,
+        'pve_bridges': bridges,
+        'osd_pve_lv': lv,
+        'osd_by_id': by_id,
+        'osd_microceph_device': '/dev/disk/by-id/' ~ sunbeam_osd_microceph_device_prefix ~ n.vmid,
+        'pve_devices': devs,
+        'char_devices': sunbeam_char_devices_default,
+        'mounts': [],
+        'loop_devices': n.primary | default(false),
+      } -%}
+  {%- set _ = ns.out.append(derived | combine(n)) -%}
+  {%- endfor -%}
+  {{ ns.out }}
+
+sunbeam_primary_node: "{{ sunbeam_nodes | selectattr('primary') | list | first }}"
+sunbeam_worker_nodes: "{{ sunbeam_nodes | rejectattr('primary') | list }}"
+sunbeam_ceph_managed_osd_devices: "{{ sunbeam_nodes | length }}"
+
+sunbeam_host_expected_bridges: "{{ sunbeam_pve_bridges.values() | list }}"
+sunbeam_host_expected_vnets: "{{ sunbeam_pve_bridges.values() | list }}"
+sunbeam_host_expected_subnets:
+  - "{{ sunbeam_management_cidr }}"
+  - "{{ sunbeam_internal_cidr }}"
+  - "{{ sunbeam_external_network.cidr }}"
+sunbeam_manifest_external_nic: "{{ sunbeam_interface_names.external }}"
+sunbeam_vm_test_network: "{{ sunbeam_tenant_network_name }}"
+
+sunbeam_proxy_no_proxy: >-
+  {{ ['localhost', '127.0.0.1', '::1', '.' ~ sunbeam_domain, '.svc', '.svc.cluster.local',
+      sunbeam_management_cidr, sunbeam_primary_node.pub_ip,
+      sunbeam_internal_cidr, sunbeam_primary_node.internal_ip]
+     + sunbeam_proxy_no_proxy_tail }}
+sunbeam_proxy_no_proxy_effective: "{{ sunbeam_proxy_no_proxy | join(',') }}"
+
 sunbeam_ceph_unmanaged_osds:
   - { osd: 1, location: sunbeam-01, path: /var/snap/microceph/common/data/osd/ceph-1/osd-backing.img }
+sunbeam_ceph_expected_osds: "{{ (sunbeam_ceph_managed_osd_devices | int) + (sunbeam_ceph_unmanaged_osds | length) }}"
 sunbeam_ceph_expected_pgs: 193
 sunbeam_ceph_expected_pools: 7
 sunbeam_ceph_pool_size: 3
@@ -192,4 +206,3 @@ sunbeam_vm_test_image_name: sunbeam-ansible-cirros-smoke
 sunbeam_vm_test_volume_size_gb: 1
 sunbeam_vm_test_cirros_url: https://download.cirros-cloud.net/0.5.2/cirros-0.5.2-x86_64-disk.img
 sunbeam_vm_test_flavor: m1.tiny
-sunbeam_vm_test_network: demo-network

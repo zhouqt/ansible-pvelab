@@ -1,0 +1,118 @@
+---
+- name: Validate the Sunbeam input section
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/sunbeam_pve.yml
+    - ../roles/sunbeam-pve/defaults/main.yml
+  vars:
+    sunbeam_show_nodes: false
+  tasks:
+    - name: Assert the node list is internally consistent
+      ansible.builtin.assert:
+        that:
+          - sunbeam_nodes | length >= 1
+          - sunbeam_nodes | length == sunbeam_cluster_list_expected_nodes | int
+          - sunbeam_nodes | selectattr('primary') | list | length == 1
+          - sunbeam_nodes | map(attribute='fqdn') | unique | length == sunbeam_nodes | length
+          - sunbeam_nodes | map(attribute='vmid') | unique | length == sunbeam_nodes | length
+          - sunbeam_nodes | map(attribute='hostname') | unique | length == sunbeam_nodes | length
+          - sunbeam_nodes | map(attribute='pub_ip') | unique | length == sunbeam_nodes | length
+          - sunbeam_nodes | map(attribute='internal_ip') | unique | length == sunbeam_nodes | length
+        fail_msg: >-
+          Node list is not internally consistent: check sunbeam_nodes_input (the
+          count must equal sunbeam_cluster_list_expected_nodes={{ sunbeam_cluster_list_expected_nodes }},
+          exactly one primary, and vmid/hostname/fqdn/pub_ip/internal_ip must all
+          be unique).
+
+    - name: Assert every node carries the required fields
+      ansible.builtin.assert:
+        that:
+          - item.hostname | length > 0
+          - item.role | length > 0
+          - item.pub_ip | length > 0
+          - item.internal_ip | length > 0
+          - item.osd_by_id | length > 0
+          - item.osd_pve_lv | length > 0
+          - item.osd_microceph_device | length > 0
+        fail_msg: "Node {{ item.vmid }} is missing required fields (hostname/role/pub_ip/internal_ip/OSD paths)."
+      loop: "{{ sunbeam_nodes }}"
+      loop_control:
+        label: "{{ item.fqdn }}"
+
+    - name: Assert at least one control-plane node exists
+      ansible.builtin.assert:
+        that:
+          - sunbeam_nodes | selectattr('role', 'search', 'control') | list | length >= 1
+        fail_msg: "No node carries the control role."
+
+    - name: Assert the interface and bridge maps cover all three network roles
+      ansible.builtin.assert:
+        that:
+          - sunbeam_interface_names.keys() | sort == ['external', 'generic', 'internal']
+          - sunbeam_pve_bridges.keys() | sort == ['external', 'generic', 'internal']
+        fail_msg: >-
+          sunbeam_interface_names / sunbeam_pve_bridges must both contain the
+          generic / internal / external keys.
+
+    - name: Collect every node that reuses a devN index
+      ansible.builtin.set_fact:
+        sunbeam_dev_index_conflicts: >-
+          {%- set out = [] -%}
+          {%- for n in sunbeam_nodes -%}
+          {%-   set idx = n.pve_devices | map(attribute='index') | list
+                       + (n.char_devices | default([]) | map(attribute='index') | list) -%}
+          {%-   if n.loop_devices | bool -%}
+          {%-     set idx = idx + range(sunbeam_loop_device_first, sunbeam_loop_device_last + 1) | list -%}
+          {%-   endif -%}
+          {%-   if idx | length != idx | unique | length -%}
+          {%-     set _ = out.append(n.fqdn) -%}
+          {%-   endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Assert no node has a duplicated devN slot
+      ansible.builtin.assert:
+        that:
+          - sunbeam_dev_index_conflicts | length == 0
+        fail_msg: >-
+          These nodes have duplicated devN slots (pve_devices / char_devices /
+          loop devices clash, the later one overwriting the earlier):
+          {{ sunbeam_dev_index_conflicts | join(', ') }}.
+
+    - name: Find every role template
+      ansible.builtin.find:
+        paths: "{{ playbook_dir }}/../roles/sunbeam-pve/templates"
+        patterns: "*.j2"
+      register: sunbeam_validate_templates
+
+    - name: Render every template with the first node as a stand-in
+      ansible.builtin.assert:
+        that:
+          - lookup('template', item.path) | length > 0
+        fail_msg: "Template {{ item.path | basename }} failed to render (undefined variable?)."
+      loop: "{{ sunbeam_validate_templates.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      vars:
+        sunbeam_node_vmid: "{{ sunbeam_nodes[0].vmid }}"
+
+    - name: Derived node inventory
+      ansible.builtin.debug:
+        msg:
+          - "host={{ sunbeam_host }} storage={{ sunbeam_pve_storage }} domain={{ sunbeam_domain }}"
+          - "bridges={{ sunbeam_pve_bridges }} expected SDN={{ sunbeam_host_expected_bridges }}"
+          - "{{ item.fqdn }} (vmid={{ item.vmid }}, {{ item.role }}, primary={{ item.primary }})"
+          - "  eth={{ item.pub_ip }} int={{ item.internal_ip }}"
+          - "  osd_by_id={{ item.osd_by_id }}"
+          - "  devN={{ item.pve_devices | map(attribute='index') | join(',') }}"
+      loop: "{{ sunbeam_nodes }}"
+      loop_control:
+        label: "{{ item.fqdn }}"
+      when: sunbeam_show_nodes | bool
+
+    - name: Configuration self-check passed
+      ansible.builtin.debug:
+        msg: >-
+          Input section is internally consistent ({{ sunbeam_nodes | length }} nodes / 1 primary / no devN conflicts / all templates render).
+          Add -e sunbeam_show_nodes=true to print the derived result.
