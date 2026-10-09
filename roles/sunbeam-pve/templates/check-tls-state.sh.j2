@@ -1,0 +1,23 @@
+#!/bin/bash
+set -u
+
+user={{ sunbeam_node_user }}
+rc_path={{ sunbeam_admin_openrc_path }}
+
+relations="$(su - "$user" -c 'juju status -m openstack --relations' 2>/dev/null || true)"
+
+{% for endpoint in sunbeam_tls_endpoints %}
+{% set app = sunbeam_tls_endpoint_apps[endpoint] %}
+if printf '%s\n' "$relations" | grep -q '{{ app }}:certificates'; then
+    echo "tls.{{ endpoint }}=yes"
+else
+    echo "tls.{{ endpoint }}=no"
+fi
+{% endfor %}
+
+if grep -q '^export OS_AUTH_URL=https://' "$rc_path" 2>/dev/null \
+   && grep -q '^export OS_CACERT=' "$rc_path" 2>/dev/null; then
+    echo "openrc-tls=yes"
+else
+    echo "openrc-tls=no"
+fi

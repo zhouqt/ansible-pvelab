@@ -1,0 +1,32 @@
+#!/bin/bash
+set -uo pipefail
+
+user={{ sunbeam_node_user }}
+rc_path={{ sunbeam_admin_openrc_path }}
+demo_rc={{ sunbeam_demo_openrc_path }}
+
+tmp="$(mktemp)"
+su - "$user" -c 'sunbeam openrc' 2>/dev/null | grep -E '^(#|export )' > "$tmp"
+
+if ! grep -q '^export OS_AUTH_URL=' "$tmp"; then
+    echo "refresh-openrc=failed (no OS_AUTH_URL in the regenerated openrc)"
+    rm -f "$tmp"
+    exit 1
+fi
+
+install -o "$user" -g "$user" -m 0600 "$tmp" "$rc_path"
+rm -f "$tmp"
+echo "refresh-openrc=ok (auth_url=$(grep '^export OS_AUTH_URL=' "$rc_path" | head -n1 | cut -d= -f2-))"
+
+if [ -f "$demo_rc" ]; then
+    cacert="$(grep '^export OS_CACERT=' "$rc_path" | head -n1 | cut -d= -f2-)"
+    sed -i -E 's/([^[:space:]])export /\1\nexport /g' "$demo_rc"
+    sed -i 's|^export OS_AUTH_URL=http://|export OS_AUTH_URL=https://|' "$demo_rc"
+    sed -i '/^export OS_CACERT=/d' "$demo_rc"
+    [ -n "$(tail -c1 "$demo_rc")" ] && printf '\n' >> "$demo_rc"
+    [ -n "$cacert" ] && printf 'export OS_CACERT=%s\n' "$cacert" >> "$demo_rc"
+    chown "$user:$user" "$demo_rc" 2>/dev/null || true
+    echo "demo-openrc=updated (auth_url=$(grep '^export OS_AUTH_URL=' "$demo_rc" | head -n1 | cut -d= -f2-))"
+else
+    echo "demo-openrc=absent"
+fi

@@ -1,0 +1,120 @@
+---
+- name: Load shared stage facts
+  ansible.builtin.include_tasks: _stage_guard.yml
+
+- name: Require explicit authorization for TLS changes
+  ansible.builtin.assert:
+    that:
+      - sunbeam_confirm_tls | bool
+      - sunbeam_confirm_external_changes | bool
+    fail_msg: >-
+      This stage switches live OpenStack endpoints to HTTPS and regenerates the admin
+      openrc. To confirm, pass -e sunbeam_confirm_tls=true
+      -e sunbeam_confirm_external_changes=true.
+
+- name: Validate the TLS input
+  ansible.builtin.assert:
+    that:
+      - sunbeam_tls_provider in ['self-signed', 'ca', 'vault']
+      - sunbeam_tls_endpoints | length > 0
+      - sunbeam_tls_endpoints | difference(['public', 'internal', 'rgw']) | length == 0
+      - sunbeam_tls_endpoints | unique | length == sunbeam_tls_endpoints | length
+    fail_msg: >-
+      sunbeam_tls_provider must be one of self-signed/ca/vault, and
+      sunbeam_tls_endpoints a non-empty subset of public/internal/rgw without
+      duplicates (got provider='{{ sunbeam_tls_provider }}',
+      endpoints={{ sunbeam_tls_endpoints }}).
+
+- name: Check the TLS state of the requested endpoints
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'check-tls-state.sh.j2') }}"
+  register: sunbeam_tls_state
+  changed_when: false
+  failed_when: false
+
+- name: Decide whether TLS must be enabled and the openrc regenerated
+  ansible.builtin.set_fact:
+    sunbeam_tls_needed: >-
+      {{ sunbeam_tls_state.stdout is search('(?m)^tls\.\w+=no$')
+         or sunbeam_force_tls | bool }}
+    sunbeam_openrc_needed: >-
+      {{ 'openrc-tls=no' in sunbeam_tls_state.stdout
+         or sunbeam_force_tls | bool }}
+
+- name: Enable TLS on the requested endpoints
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'run-enable-tls.sh.j2') }}"
+  when: sunbeam_tls_needed | bool
+  register: sunbeam_tls_enable
+  async: "{{ sunbeam_tls_timeout }}"
+  poll: "{{ sunbeam_poll_interval }}"
+
+- name: Regenerate the openrc so the CLI talks HTTPS with the CA bundle
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'run-refresh-openrc.sh.j2') }}"
+  when: (sunbeam_tls_needed | bool) or (sunbeam_openrc_needed | bool)
+  register: sunbeam_tls_openrc_run
+
+- name: Re-check the TLS state
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'check-tls-state.sh.j2') }}"
+  register: sunbeam_tls_state_after
+  changed_when: false
+  failed_when: false
+
+- name: Assert every requested endpoint now serves HTTPS
+  ansible.builtin.assert:
+    that:
+      - sunbeam_tls_state_after.stdout is not search('(?m)^tls\.\w+=no$')
+    fail_msg: >-
+      TLS was requested for {{ sunbeam_tls_endpoints | join(', ') }} but the
+      Traefik<->provider relation is still missing for at least one endpoint
+      afterwards. State: {{ sunbeam_tls_state_after.stdout_lines }}.
+      Check {{ sunbeam_node_log_dir }}/enable-tls.log inside
+      {{ sunbeam_primary_node.fqdn }}.
+
+- name: Assert the admin openrc now uses HTTPS and carries the CA
+  ansible.builtin.assert:
+    that:
+      - "'openrc-tls=yes' in sunbeam_tls_state_after.stdout"
+    fail_msg: >-
+      {{ sunbeam_admin_openrc_path }} does not advertise an HTTPS auth URL with
+      OS_CACERT after enabling TLS. State:
+      {{ sunbeam_tls_state_after.stdout_lines }}.
+
+- name: Report the TLS result
+  ansible.builtin.debug:
+    msg:
+      - "provider: {{ sunbeam_tls_provider }}"
+      - "endpoints: {{ sunbeam_tls_endpoints | join(', ') }}"
+      - "enable tls executed this run: {{ 'yes' if sunbeam_tls_needed | bool else 'no (already enabled)' }}"
+      - "openrc refreshed this run: {{ 'yes' if (sunbeam_tls_needed | bool) or (sunbeam_openrc_needed | bool) else 'no (already https)' }}"
+      - "state: {{ sunbeam_tls_state_after.stdout_lines }}"

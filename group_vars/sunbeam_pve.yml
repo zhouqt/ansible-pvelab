@@ -128,12 +128,18 @@ sunbeam_osd_service_dropin: /etc/systemd/system/snap.microceph.osd.service.d/10-
 sunbeam_node_log_dir: /var/log/sunbeam
 sunbeam_etc_environment: /etc/environment
 sunbeam_apt_proxy_file: /etc/apt/apt.conf.d/95proxy
+sunbeam_demo_openrc_path: /home/sunbeam/sunbeam-demo-openrc
+
+sunbeam_tls_provider: self-signed
+sunbeam_tls_endpoints:
+  - public
 
 sunbeam_confirm_pve_create: false
 sunbeam_confirm_cluster_bootstrap: false
 sunbeam_confirm_cluster_join: false
 sunbeam_confirm_external_changes: false
 sunbeam_confirm_ceph_osd: false
+sunbeam_confirm_tls: false
 
 sunbeam_nodes: >-
   {%- set ns = namespace(out=[]) -%}
@@ -185,6 +191,11 @@ sunbeam_proxy_no_proxy: >-
       sunbeam_internal_cidr, sunbeam_primary_node.internal_ip]
      + sunbeam_proxy_no_proxy_tail }}
 sunbeam_proxy_no_proxy_effective: "{{ sunbeam_proxy_no_proxy | join(',') }}"
+
+sunbeam_tls_endpoint_apps:
+  public: traefik-public
+  internal: traefik
+  rgw: traefik-rgw
 
 sunbeam_ceph_unmanaged_osds:
   - { osd: 1, location: sunbeam-01, path: /var/snap/microceph/common/data/osd/ceph-1/osd-backing.img }
