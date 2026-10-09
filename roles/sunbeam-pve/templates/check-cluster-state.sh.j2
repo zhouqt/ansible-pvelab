@@ -1,0 +1,11 @@
+#!/bin/bash
+set -u
+
+user={{ sunbeam_node_user }}
+hostname={{ sunbeam_primary_node.hostname }}
+
+if su - "$user" -c 'sunbeam cluster list --format yaml' 2>/dev/null | grep -q "$hostname"; then
+    echo "bootstrapped=yes"
+else
+    echo "bootstrapped=no"
+fi

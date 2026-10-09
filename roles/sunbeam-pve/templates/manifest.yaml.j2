@@ -1,0 +1,34 @@
+---
+core:
+  config:
+    bootstrap:
+      management_cidr: "{{ sunbeam_management_cidr }}"
+    database: "{{ sunbeam_database_topology }}"
+    region: "{{ sunbeam_region }}"
+    k8s-addons:
+      loadbalancer: "{{ sunbeam_k8s_loadbalancer_range }}"
+    external-networks:
+      {{ sunbeam_external_network.name }}:
+        cidr: "{{ sunbeam_external_network.cidr }}"
+        gateway: "{{ sunbeam_external_network.gateway }}"
+        range: "{{ sunbeam_external_network.floating_range }}"
+        network_type: "{{ sunbeam_external_network.network_type }}"
+        segmentation_id: {{ sunbeam_external_network.segmentation_id }}
+        nics:
+{% for node in sunbeam_nodes %}
+          {{ node.fqdn }}: {{ sunbeam_manifest_external_nic }}
+{% endfor %}
+    proxy:
+      proxy_required: true
+      http_proxy: "{{ sunbeam_proxy_url }}"
+      https_proxy: "{{ sunbeam_proxy_url }}"
+      no_proxy: "{{ sunbeam_proxy_no_proxy_effective }}"
+    user:
+      run_demo_setup: true
+      username: "{{ sunbeam_demo_username }}"
+      password: "{{ sunbeam_demo_password }}"
+      cidr: "{{ sunbeam_tenant_cidr }}"
+      nameservers: "{{ sunbeam_dns_nameservers }}"
+      security_group_rules: true
+      remote_access_location: remote
+      physnet: "{{ sunbeam_external_network.name }}"

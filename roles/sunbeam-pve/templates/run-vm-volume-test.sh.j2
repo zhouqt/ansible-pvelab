@@ -1,0 +1,79 @@
+#!/bin/bash
+set -uo pipefail
+
+user={{ sunbeam_node_user }}
+rc_path={{ sunbeam_admin_openrc_path }}
+log={{ sunbeam_node_log_dir }}/vm-volume-test.log
+mkdir -p {{ sunbeam_node_log_dir }}
+
+img_name={{ sunbeam_vm_test_image_name }}
+img_url={{ sunbeam_vm_test_cirros_url }}
+vol={{ sunbeam_vm_test_volume_name }}
+srv={{ sunbeam_vm_test_name }}
+flavor={{ sunbeam_vm_test_flavor }}
+net={{ sunbeam_vm_test_network }}
+size={{ sunbeam_vm_test_volume_size_gb }}
+img_file=/tmp/{{ sunbeam_vm_test_image_name }}.img
+keep={{ 'yes' if sunbeam_vm_test_keep else 'no' }}
+
+run() { su - "$user" -c ". $rc_path && $*" ; }
+
+wait_for() {
+    local obj=$1 name=$2 field=$3 want=$4 tries=$5 st=""
+    for _ in $(seq 1 "$tries"); do
+        st=$(run openstack "$obj" show "$name" -f value -c "$field" 2>/dev/null || true)
+        [ "$st" = "$want" ] && break
+        sleep 5
+    done
+    printf '%s' "$st"
+}
+
+{
+    echo "== pre-clean stale test resources =="
+    run openstack server delete --wait "$srv" 2>/dev/null || true
+    run openstack volume delete "$vol" 2>/dev/null || true
+    run openstack image delete "$img_name" 2>/dev/null || true
+
+    echo "== download cirros =="
+    su - "$user" -c "curl -fsSL --retry 3 -o $img_file $img_url"
+    ls -l "$img_file"
+
+    echo "== upload image =="
+    run openstack image create --disk-format qcow2 --container-format bare \
+        --file "$img_file" --public "$img_name"
+    image_status=$(wait_for image "$img_name" status active 60)
+
+    echo "== create bootable volume from image =="
+    run openstack volume create --image "$img_name" --size "$size" "$vol"
+    volume_status=$(wait_for volume "$vol" status available 60)
+    volume_host=$(run openstack volume show "$vol" -f value -c 'os-vol-host-attr:host' 2>/dev/null || true)
+
+    echo "== boot server from volume =="
+    run openstack server create --flavor "$flavor" --volume "$vol" --network "$net" --wait "$srv"
+    server_status=$(run openstack server show "$srv" -f value -c status 2>/dev/null || true)
+    server_host=$(run openstack server show "$srv" -f value -c 'OS-EXT-SRV-ATTR:host' 2>/dev/null || true)
+
+    echo "== cleanup =="
+    if [ "$keep" = yes ]; then
+        echo "keep=yes: keeping test resources ($srv / $vol / $img_name)"
+    else
+        run openstack server delete --wait "$srv" 2>/dev/null || true
+        run openstack volume delete "$vol" 2>/dev/null || true
+        run openstack image delete "$img_name" 2>/dev/null || true
+        rm -f "$img_file"
+        echo "keep=no: test resources deleted"
+    fi
+
+    echo "=== SUMMARY ==="
+    echo "image_status=$image_status"
+    echo "volume_status=$volume_status"
+    echo "volume_host=$volume_host"
+    echo "server_status=$server_status"
+    echo "server_host=$server_host"
+    echo "=== END SUMMARY ==="
+} >"$log" 2>&1
+rc=$?
+
+echo "vm-volume-test rc=$rc (log: $log)"
+tail -n 60 "$log"
+exit "$rc"

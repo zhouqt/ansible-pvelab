@@ -1,0 +1,195 @@
+---
+
+sunbeam_host: pve host
+sunbeam_pve_storage: pve-thin-pool
+sunbeam_pve_thinpool_lv: pve-thin-pool
+sunbeam_template: local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst
+sunbeam_ct_ostype: ubuntu
+sunbeam_ct_cores: 8
+sunbeam_ct_memory_mb: 32768
+sunbeam_ct_swap_mb: 0
+sunbeam_ct_features: nesting=1,fuse=1,keyctl=1
+sunbeam_ct_nameserver: 8.8.8.8
+sunbeam_ct_onboot: 1
+sunbeam_ct_startup_order: 5
+sunbeam_ct_tags: sunbeam
+sunbeam_rootfs_size_gb: 50
+sunbeam_osd_size_gb: 50
+
+sunbeam_nodes:
+  - vmid: 1281
+    hostname: sunbeam-01
+    fqdn: sunbeam-01.sunbeam.test
+    primary: true
+    role: control,compute,storage
+    pub_ip: 192.168.21.21
+    internal_ip: 192.168.23.21
+    interfaces: { generic: eth0, internal: eth1, external: eth2 }
+    pve_bridges: { eth0: pub21, eth1: int23, eth2: pub12 }
+    osd_by_id: /dev/disk/by-id/pve-ceph-osd-1281
+    osd_pve_lv: /dev/pve-thin-pool/vm-1281-disk-1
+    osd_microceph_device: /dev/disk/by-id/pve-ceph-osd-device-1281
+    pve_devices:
+      - { index: 32, path: "/dev/pve-thin-pool/vm-1281-disk-1" }
+      - { index: 35, path: "/dev/disk/by-id/pve-ceph-osd-1281" }
+    char_devices:
+      - { index: 0, path: "/dev/kmsg", mode: "0644", extra: "deny-write=1" }
+      - { index: 1, path: "/dev/loop-control", mode: "0660" }
+    loop_devices: true
+    mounts:
+      - "/proc/sys/vm/overcommit_memory proc/sys/vm/overcommit_memory none bind,create=file 0 0"
+      - "/proc/sys/kernel/panic proc/sys/kernel/panic none bind,create=file 0 0"
+      - "/proc/sys/kernel/panic_on_oops proc/sys/kernel/panic_on_oops none bind,create=file 0 0"
+      - "/dev/loop-control dev/loop-control none bind,create=file 0 0"
+  - vmid: 1282
+    hostname: sunbeam-02
+    fqdn: sunbeam-02.sunbeam.test
+    primary: false
+    role: compute,storage
+    pub_ip: 192.168.21.22
+    internal_ip: 192.168.23.22
+    interfaces: { generic: eth0, internal: eth1, external: eth2 }
+    pve_bridges: { eth0: pub21, eth1: int23, eth2: pub12 }
+    osd_by_id: /dev/disk/by-id/pve-ceph-osd-1282
+    osd_pve_lv: /dev/pve-thin-pool/vm-1282-disk-1
+    osd_microceph_device: /dev/disk/by-id/pve-ceph-osd-device-1282
+    pve_devices:
+      - { index: 3, path: "/dev/pve-thin-pool/vm-1282-disk-1" }
+      - { index: 35, path: "/dev/disk/by-id/pve-ceph-osd-1282" }
+    char_devices:
+      - { index: 0, path: "/dev/kmsg", mode: "0644", extra: "deny-write=1" }
+      - { index: 1, path: "/dev/kvm", mode: "0660" }
+      - { index: 2, path: "/dev/net/tun", mode: "0666" }
+    loop_devices: false
+    mounts: []
+  - vmid: 1283
+    hostname: sunbeam-03
+    fqdn: sunbeam-03.sunbeam.test
+    primary: false
+    role: compute,storage
+    pub_ip: 192.168.21.23
+    internal_ip: 192.168.23.23
+    interfaces: { generic: eth0, internal: eth1, external: eth2 }
+    pve_bridges: { eth0: pub21, eth1: int23, eth2: pub12 }
+    osd_by_id: /dev/disk/by-id/pve-ceph-osd-1283
+    osd_pve_lv: /dev/pve-thin-pool/vm-1283-disk-1
+    osd_microceph_device: /dev/disk/by-id/pve-ceph-osd-device-1283
+    pve_devices:
+      - { index: 4, path: "/dev/pve-thin-pool/vm-1283-disk-1" }
+      - { index: 35, path: "/dev/disk/by-id/pve-ceph-osd-1283" }
+    char_devices:
+      - { index: 0, path: "/dev/kmsg", mode: "0644", extra: "deny-write=1" }
+      - { index: 1, path: "/dev/kvm", mode: "0660" }
+      - { index: 2, path: "/dev/vhost-vsock", mode: "0660" }
+      - { index: 3, path: "/dev/net/tun", mode: "0666" }
+    loop_devices: false
+    mounts: []
+
+sunbeam_loop_device_first: 2
+sunbeam_loop_device_last: 31
+
+sunbeam_primary_node: "{{ sunbeam_nodes | selectattr('primary') | list | first }}"
+sunbeam_worker_nodes: "{{ sunbeam_nodes | rejectattr('primary') | list }}"
+
+sunbeam_snap_name: openstack
+sunbeam_snap_channel: 2024.1/stable
+sunbeam_snap_revision: "1101"
+sunbeam_snap_version_marker: "2024.1"
+sunbeam_juju_channel: 3.6/stable
+sunbeam_juju_version: "3.6.29"
+sunbeam_microceph_channel: squid/stable
+sunbeam_microceph_revision: "1895"
+sunbeam_microceph_version: "19.2.3"
+sunbeam_snapd_deb_version: "2.76.3"
+sunbeam_expected_ubuntu_release: "24.04"
+sunbeam_expected_ubuntu_codename: noble
+
+sunbeam_controller_name: localhost-localhost
+sunbeam_cluster_model: openstack-machines
+sunbeam_region: RegionOne
+sunbeam_database_topology: single
+
+sunbeam_management_cidr: 192.168.21.0/24
+sunbeam_management_gateway: 192.168.21.1
+sunbeam_internal_cidr: 192.168.23.0/24
+sunbeam_external_network:
+  name: physnet1
+  openstack_name: external-network
+  cidr: 192.168.12.0/24
+  gateway: 192.168.12.1
+  floating_range: 192.168.12.200-192.168.12.229
+  network_type: flat
+  segmentation_id: 0
+sunbeam_k8s_loadbalancer_range: 172.16.1.201-172.16.1.240
+sunbeam_tenant_cidr: 192.168.0.0/24
+sunbeam_tenant_network_name: demo-network
+sunbeam_dns_nameservers: 8.8.8.8
+sunbeam_manifest_external_nic: eth2
+
+sunbeam_host_expected_bridges: [pub21, int23, pub12]
+sunbeam_host_expected_vnets: [pub21, int23, pub12]
+sunbeam_host_expected_subnets: [192.168.21.0/24, 192.168.23.0/24, 192.168.12.0/24]
+
+sunbeam_proxy_url: http://192.168.11.2:12345
+sunbeam_proxy_no_proxy:
+  - localhost
+  - 127.0.0.1
+  - ::1
+  - .sunbeam.test
+  - .svc
+  - .svc.cluster.local
+  - 192.168.21.0/24
+  - 192.168.21.21
+  - 192.168.23.0/24
+  - 192.168.23.21
+  - 10.1.0.0/16
+  - 10.140.97.0/24
+  - 10.140.97.1
+  - 10.152.183.0/24
+  - 172.16.1.0/24
+sunbeam_proxy_no_proxy_effective: "{{ sunbeam_proxy_no_proxy | join(',') }}"
+
+sunbeam_demo_username: demo
+sunbeam_demo_password: "{{ vault_sunbeam_demo_password | default('') }}"
+
+sunbeam_node_user: sunbeam
+sunbeam_node_home: /home/sunbeam
+sunbeam_manifest_path: /home/sunbeam/sunbeam-deploy-manifest.yaml
+sunbeam_admin_openrc_path: /home/sunbeam/sunbeam-admin-openrc
+sunbeam_join_token_path: /home/sunbeam/join-token.asc
+sunbeam_join_wrapper_path: /usr/local/sbin/sunbeam-join-node.sh
+sunbeam_osd_setup_script: /usr/local/sbin/microceph-osd-device-setup
+sunbeam_osd_service_dropin: /etc/systemd/system/snap.microceph.osd.service.d/10-osd-device.conf
+sunbeam_node_log_dir: /var/log/sunbeam
+sunbeam_etc_environment: /etc/environment
+sunbeam_apt_proxy_file: /etc/apt/apt.conf.d/95proxy
+
+sunbeam_confirm_pve_create: false
+sunbeam_confirm_cluster_bootstrap: false
+sunbeam_confirm_cluster_join: false
+sunbeam_confirm_external_changes: false
+sunbeam_confirm_ceph_osd: false
+
+sunbeam_cluster_list_expected_nodes: 3
+sunbeam_ceph_expected_osds: 4
+sunbeam_ceph_managed_osd_devices: 3
+sunbeam_ceph_unmanaged_osds:
+  - { osd: 1, location: sunbeam-01, path: /var/snap/microceph/common/data/osd/ceph-1/osd-backing.img }
+sunbeam_ceph_expected_pgs: 193
+sunbeam_ceph_expected_pools: 7
+sunbeam_ceph_pool_size: 3
+sunbeam_ceph_pool_min_size: 2
+sunbeam_health_require_all_active: false
+sunbeam_known_blocked_applications: [sunbeam-machine]
+sunbeam_ceph_tolerated_warnings:
+  - "is low on available space"
+sunbeam_pve_module_release: 7.0.2-6-pve
+
+sunbeam_vm_volume_test: false
+sunbeam_vm_test_name: sunbeam-ansible-smoke
+sunbeam_vm_test_volume_name: sunbeam-ansible-volume-smoke
+sunbeam_vm_test_image_name: sunbeam-ansible-cirros-smoke
+sunbeam_vm_test_volume_size_gb: 1
+sunbeam_vm_test_cirros_url: https://download.cirros-cloud.net/0.5.2/cirros-0.5.2-x86_64-disk.img
+sunbeam_vm_test_flavor: m1.tiny
+sunbeam_vm_test_network: demo-network

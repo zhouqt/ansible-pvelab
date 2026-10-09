@@ -1,0 +1,17 @@
+#!/bin/bash
+set -uo pipefail
+
+log={{ sunbeam_node_log_dir }}/cluster-bootstrap.log
+mkdir -p {{ sunbeam_node_log_dir }}
+
+su - {{ sunbeam_node_user }} -c 'sunbeam cluster bootstrap \
+    --accept-defaults \
+    --role {{ sunbeam_primary_node.role }} \
+    --topology multi \
+    --controller {{ sunbeam_controller_name }} \
+    --manifest {{ sunbeam_manifest_path }}' >"$log" 2>&1
+rc=$?
+
+echo "cluster bootstrap rc=$rc (log: $log)"
+tail -n 40 "$log"
+exit "$rc"

@@ -1,0 +1,311 @@
+---
+- name: Load shared stage facts
+  ansible.builtin.include_tasks: _stage_guard.yml
+
+- name: Require explicit authorization for PVE-side changes
+  ansible.builtin.assert:
+    that:
+      - sunbeam_confirm_pve_create | bool
+      - sunbeam_confirm_external_changes | bool
+    fail_msg: >-
+      This stage creates CTs / thin LVs on the PVE host and reconciles CT config.
+      To confirm, pass -e sunbeam_confirm_pve_create=true -e sunbeam_confirm_external_changes=true.
+
+- name: Require the expected PVE SDN bridges
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_ip_bin }}", -o, link, show, "{{ item }}"]
+  loop: "{{ sunbeam_host_expected_bridges }}"
+  changed_when: false
+  loop_control:
+    label: "{{ item }}"
+
+- name: Read PVE SDN vnet and subnet configuration
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop:
+    - /etc/pve/sdn/vnets.cfg
+    - /etc/pve/sdn/subnets.cfg
+  register: sunbeam_pve_sdn
+
+- name: Require Sunbeam vnets and subnets to already exist
+  ansible.builtin.assert:
+    that:
+      - sunbeam_host_expected_vnets
+        | select('in', sunbeam_pve_sdn.results[0].content | b64decode)
+        | list | length == sunbeam_host_expected_vnets | length
+      - sunbeam_host_expected_subnets
+        | select('in', sunbeam_pve_sdn.results[1].content | b64decode)
+        | list | length == sunbeam_host_expected_subnets | length
+    fail_msg: >-
+      PVE SDN does not match the Sunbeam plan. This playbook only validates PVE
+      networking, it never rewrites it; first create pub21 / int23 / pub12 and their
+      subnets on PVE per the approved plan.
+
+- name: Require the container template to be available
+  ansible.builtin.stat:
+    path: "/var/lib/vz/template/cache/{{ sunbeam_template | basename }}"
+  register: sunbeam_pve_template_stat
+
+- name: Assert the container template exists
+  ansible.builtin.assert:
+    that:
+      - sunbeam_pve_template_stat.stat.exists
+    fail_msg: "Missing container template {{ sunbeam_template }}."
+
+- name: Check which OSD thin LVs already exist
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_lvs_bin }}"
+      - --noheadings
+      - -o
+      - lv_name
+      - "{{ sunbeam_pve_storage }}/{{ item.osd_pve_lv | basename }}"
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_pve_osd_lv_check
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.osd_pve_lv | basename }}"
+
+- name: Create the missing OSD thin LVs
+  ansible.builtin.command:
+    argv:
+      - lvcreate
+      - -V
+      - "{{ sunbeam_osd_size_gb }}G"
+      - -T
+      - "{{ sunbeam_pve_storage }}/{{ sunbeam_pve_thinpool_lv }}"
+      - -n
+      - "{{ item.item.osd_pve_lv | basename }}"
+      - "{{ sunbeam_pve_storage }}"
+  loop: "{{ sunbeam_pve_osd_lv_check.results }}"
+  when: item.rc != 0
+  loop_control:
+    label: "{{ item.item.osd_pve_lv | basename }}"
+
+- name: Ensure the OSD by-id symlink points at the OSD thin LV
+  ansible.builtin.file:
+    src: "{{ item.osd_pve_lv }}"
+    dest: "{{ item.osd_by_id }}"
+    state: link
+    force: false
+  loop: "{{ sunbeam_nodes }}"
+  loop_control:
+    label: "{{ item.osd_by_id }}"
+
+- name: Install the udev rule that recreates the OSD by-id aliases at boot
+  ansible.builtin.template:
+    src: pve-ceph-osd.rules.j2
+    dest: "{{ sunbeam_osd_udev_rules_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: sunbeam_osd_udev_rule
+
+- name: Reload udev rules after installing the OSD alias rule
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_udevadm_bin }}", control, --reload]
+  when: sunbeam_osd_udev_rule.changed
+  changed_when: true
+
+- name: Stat the OSD by-id aliases
+  ansible.builtin.stat:
+    path: "{{ item.osd_by_id }}"
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_osd_by_id_stat
+  loop_control:
+    label: "{{ item.osd_by_id }}"
+
+- name: Assert every OSD by-id alias is a resolvable block device
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isblk | default(false)
+    fail_msg: >-
+      {{ item.item.osd_by_id }} does not exist or is not a block device; the devN entry in
+      the CT config will fail at pct start.
+    loop: "{{ sunbeam_osd_by_id_stat.results }}"
+    loop_control:
+      label: "{{ item.item.osd_by_id }}"
+
+- name: Check whether each Sunbeam CT exists
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", status, "{{ item.vmid }}"]
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_pve_ct_check
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Create the missing Sunbeam CTs
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - create
+      - "{{ item.item.vmid }}"
+      - "{{ sunbeam_template }}"
+      - --hostname
+      - "{{ item.item.hostname }}"
+      - --cores
+      - "{{ sunbeam_ct_cores }}"
+      - --memory
+      - "{{ sunbeam_ct_memory_mb }}"
+      - --swap
+      - "{{ sunbeam_ct_swap_mb }}"
+      - --rootfs
+      - "{{ sunbeam_pve_storage }}:{{ sunbeam_rootfs_size_gb }}"
+      - --ostype
+      - "{{ sunbeam_ct_ostype }}"
+      - --features
+      - "{{ sunbeam_ct_features }}"
+      - --onboot
+      - "{{ sunbeam_ct_onboot }}"
+      - --startup
+      - "order={{ sunbeam_ct_startup_order }}"
+      - --nameserver
+      - "{{ sunbeam_ct_nameserver }}"
+      - --tags
+      - "{{ sunbeam_ct_tags }}"
+      - --net0
+      - "name=eth0,bridge={{ item.item.pve_bridges.eth0 }},ip={{ item.item.pub_ip }}/24,gw={{ sunbeam_management_gateway }},type=veth"
+      - --net1
+      - "name=eth1,bridge={{ item.item.pve_bridges.eth1 }},ip={{ item.item.internal_ip }}/24,type=veth"
+      - --net2
+      - "name=eth2,bridge={{ item.item.pve_bridges.eth2 }},ip=manual,type=veth"
+  loop: "{{ sunbeam_pve_ct_check.results }}"
+  when: item.rc != 0
+  loop_control:
+    label: "{{ item.item.fqdn }}"
+
+- name: Read each Sunbeam CT configuration file
+  ansible.builtin.slurp:
+    src: "/etc/pve/lxc/{{ item.vmid }}.conf"
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_pve_conf
+  failed_when: false
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Build a vmid -> CT config map
+  ansible.builtin.set_fact:
+    sunbeam_pve_conf_map: >-
+      {{ dict(sunbeam_pve_conf.results | selectattr('content', 'defined')
+              | map(attribute='item.vmid') | map('string')
+              | zip(sunbeam_pve_conf.results | selectattr('content', 'defined')
+                    | map(attribute='content') | map('b64decode'))) }}
+
+- name: Refuse to overwrite a conflicting passthrough device slot
+  ansible.builtin.assert:
+    that:
+      - >-
+        sunbeam_pve_conf_map[item.0.vmid | string]
+        is not search('(?m)^dev' ~ item.1.index ~ ': (?!' ~ (item.1.path | regex_escape) ~ ')')
+    fail_msg: >-
+      dev{{ item.1.index }} of CT {{ item.0.vmid }} is already occupied by another device
+      (expected {{ item.1.path }}); refusing to overwrite the existing passthrough config.
+      Adjust sunbeam_nodes[].pve_devices after manual review.
+  loop: "{{ sunbeam_nodes | subelements('pve_devices') }}"
+  loop_control:
+    label: "{{ item.0.fqdn }} dev{{ item.1.index }}"
+
+- name: Ensure OSD/rootfs block device passthrough entries
+  ansible.builtin.lineinfile:
+    path: "/etc/pve/lxc/{{ item.0.vmid }}.conf"
+    line: "dev{{ item.1.index }}: {{ item.1.path }},mode=0660"
+    regexp: "^dev{{ item.1.index }}:"
+    insertafter: EOF
+  loop: "{{ sunbeam_nodes | subelements('pve_devices') }}"
+  loop_control:
+    label: "{{ item.0.fqdn }} dev{{ item.1.index }}"
+
+- name: Ensure character device passthrough entries
+  ansible.builtin.lineinfile:
+    path: "/etc/pve/lxc/{{ item.0.vmid }}.conf"
+    line: >-
+      dev{{ item.1.index }}: {{ item.1.path }},mode={{ item.1.mode }}{{ ',' + item.1.extra if item.1.extra is defined else '' }}
+    regexp: "^dev{{ item.1.index }}:"
+    insertafter: EOF
+  loop: "{{ sunbeam_nodes | subelements('char_devices') }}"
+  loop_control:
+    label: "{{ item.0.fqdn }} dev{{ item.1.index }}"
+
+- name: Ensure loop device passthrough entries for the rawfile CSI node
+  ansible.builtin.lineinfile:
+    path: "/etc/pve/lxc/{{ sunbeam_primary_node.vmid }}.conf"
+    line: "dev{{ item }}: /dev/loop{{ item }},mode=0660"
+    regexp: "^dev{{ item }}:"
+    insertafter: EOF
+  loop: "{{ range(sunbeam_loop_device_first, sunbeam_loop_device_last + 1) | list }}"
+  when: sunbeam_primary_node.loop_devices | bool
+  loop_control:
+    label: "dev{{ item }} /dev/loop{{ item }}"
+
+- name: Ensure the CT feature set
+  ansible.builtin.lineinfile:
+    path: "/etc/pve/lxc/{{ item.vmid }}.conf"
+    line: "features: {{ sunbeam_ct_features }}"
+    regexp: "^features:"
+    insertafter: EOF
+  loop: "{{ sunbeam_nodes }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Ensure an empty lxc.cap.drop line is present
+  ansible.builtin.lineinfile:
+    path: "/etc/pve/lxc/{{ item.vmid }}.conf"
+    line: "lxc.cap.drop:"
+    regexp: "^lxc\\.cap\\.drop:"
+    insertafter: EOF
+  loop: "{{ sunbeam_nodes }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Ensure node-specific bind mounts
+  ansible.builtin.lineinfile:
+    path: "/etc/pve/lxc/{{ item.0.vmid }}.conf"
+    line: "lxc.mount.entry: {{ item.1 }}"
+    regexp: "^lxc\\.mount\\.entry: {{ item.1.split(' ')[0] | regex_escape }} "
+    insertafter: EOF
+  loop: "{{ sunbeam_nodes | subelements('mounts') }}"
+  loop_control:
+    label: "{{ item.0.fqdn }} {{ item.1.split(' ')[0] }}"
+
+- name: Ensure every Sunbeam CT is running
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", start, "{{ item.vmid }}"]
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_pve_ct_start
+  changed_when: sunbeam_pve_ct_start.rc == 0
+  failed_when: >-
+    sunbeam_pve_ct_start.rc != 0 and 'already running' not in sunbeam_pve_ct_start.stderr
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Wait until each CT answers inside the container
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", "--", hostname]
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_pve_ct_ready
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: sunbeam_pve_ct_ready.rc == 0
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Ensure Sunbeam FQDN entries resolve inside every CT
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", "--", bash, -s]
+    stdin: "{{ lookup('template', 'ensure-hosts.sh.j2') }}"
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_pve_hosts
+  changed_when: "'hosts changed=0' not in sunbeam_pve_hosts.stdout"
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Report PVE preparation result
+  ansible.builtin.debug:
+    msg:
+      - "CT: {{ sunbeam_nodes | map(attribute='fqdn') | join(', ') }}"
+      - "OSD by-id: {{ sunbeam_nodes | map(attribute='osd_by_id') | join(', ') }}"

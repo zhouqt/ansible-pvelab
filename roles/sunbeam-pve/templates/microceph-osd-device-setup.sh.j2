@@ -1,0 +1,43 @@
+#!/bin/bash
+set -euo pipefail
+
+id=${1:?Usage: microceph-osd-device-setup <VMID>}
+source=/dev/disk/by-id/pve-ceph-osd-${id}
+alias=/dev/disk/by-id/pve-ceph-osd-device-${id}
+
+[[ -b "$source" ]] || { echo "OSD source device missing: $source" >&2; exit 1; }
+read -r major_hex minor_hex < <(stat -Lc '%t %T' "$source")
+major=$((16#$major_hex))
+minor=$((16#$minor_hex))
+daemon_pid=$(pgrep -xo microcephd)
+
+nsenter -t "$daemon_pid" -m -- /bin/bash -s -- "$major" "$minor" "$id" <<'NS'
+set -euo pipefail
+major=$1
+minor=$2
+id=$3
+node=/dev/dm-$minor
+alias=/dev/disk/by-id/pve-ceph-osd-device-$id
+
+if [[ -e "$node" || -L "$node" ]]; then
+    [[ -b "$node" ]] || { echo "Unexpected node at $node" >&2; exit 1; }
+    read -r node_major_hex node_minor_hex < <(stat -Lc '%t %T' "$node")
+    [[ $((16#$node_major_hex)) -eq $major && $((16#$node_minor_hex)) -eq $minor ]] || {
+        echo "Wrong device already exists at $node" >&2
+        exit 1
+    }
+else
+    mknod -m 660 "$node" b "$major" "$minor"
+fi
+
+mkdir -p /dev/disk/by-id
+if [[ -L "$alias" ]]; then
+    [[ $(readlink "$alias") == "$node" ]] || ln -sfn "$node" "$alias"
+elif [[ -e "$alias" ]]; then
+    echo "Refusing to replace non-symlink $alias" >&2
+    exit 1
+else
+    ln -s "$node" "$alias"
+fi
+logger -t microceph-osd-device-setup "OSD device alias ready: $alias -> $node ($major:$minor)"
+NS

@@ -1,0 +1,132 @@
+---
+- name: Load shared stage facts
+  ansible.builtin.include_tasks: _stage_guard.yml
+
+- name: Check the expected PVE SDN bridges exist
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_ip_bin }}", -o, link, show, "{{ item }}"]
+  loop: "{{ sunbeam_host_expected_bridges }}"
+  register: sunbeam_status_bridges
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item }}"
+
+- name: Read PVE SDN vnet and subnet configuration
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop:
+    - /etc/pve/sdn/vnets.cfg
+    - /etc/pve/sdn/subnets.cfg
+  register: sunbeam_status_sdn
+  failed_when: false
+
+- name: Check the container template is present
+  ansible.builtin.stat:
+    path: "/var/lib/vz/template/cache/{{ sunbeam_template | basename }}"
+  register: sunbeam_status_template
+
+- name: Read thin pool capacity
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_lvs_bin }}", --noheadings, -o, lv_name,vg_name,lv_size,data_percent, "{{ sunbeam_pve_storage }}"]
+  register: sunbeam_status_thinpool
+  changed_when: false
+  failed_when: false
+
+- name: Check OSD backing devices on the PVE host (read-only, follows symlinks)
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: true
+  loop: >-
+    {{ sunbeam_nodes | map(attribute='osd_by_id') | list
+       + sunbeam_nodes | map(attribute='osd_pve_lv') | list }}
+  register: sunbeam_status_osd_devices
+  failed_when: false
+
+- name: Read Sunbeam CT power state
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", status, "{{ item.vmid }}"]
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_status_ct_power
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Read Sunbeam CT configuration
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", config, "{{ item.vmid }}"]
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_status_ct_config
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Collect read-only facts from inside each Sunbeam CT
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", "--", bash, -s]
+    stdin: "{{ lookup('template', 'inspect-node.sh.j2') }}"
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_status_ct_inspect
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Report PVE prerequisites
+  ansible.builtin.debug:
+    msg:
+      - "PVE host: {{ inventory_hostname }} ({{ sunbeam_host }})"
+      - >-
+        bridges: {% for r in sunbeam_status_bridges.results %}
+        {{ r.item }}={{ 'ok' if r.rc == 0 else 'MISSING' }}{% endfor %}
+      - >-
+        vnets.cfg: {% for r in sunbeam_status_sdn.results if 'vnets' in r.item %}
+        {{ r.content | default('') | b64decode | regex_replace('\n', ' | ') }}{% endfor %}
+      - >-
+        subnets.cfg: {% for r in sunbeam_status_sdn.results if 'subnets' in r.item %}
+        {{ r.content | default('') | b64decode | regex_replace('\n', ' | ') }}{% endfor %}
+      - "template {{ sunbeam_template | basename }}: {{ 'present' if sunbeam_status_template.stat.exists else 'MISSING' }}"
+      - "thin pool {{ sunbeam_pve_storage }}: {{ sunbeam_status_thinpool.stdout | default('unavailable') | trim }}"
+
+- name: Report OSD backing device presence on the PVE host
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item }}: exists={{ item.stat.exists | default(false) }}
+      block_device={{ item.stat.isblk | default(false) }}
+      size={{ item.stat.size | default(0) }}
+  loop: "{{ sunbeam_status_osd_devices.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Report each CT power state and configuration highlights
+  ansible.builtin.debug:
+    msg:
+      - "CT {{ item.item.vmid }} ({{ item.item.fqdn }}) power: {{ sunbeam_status_ct_power.results[ansible_loop.index0].stdout | default('unknown') | trim }}"
+      - >-
+        {{ item.stdout | regex_findall('(?m)^(?:cores|memory|swap|features|hostname|ostype|unprivileged|onboot|startup|tags|rootfs|net\d|lxc\.mount\.entry|dev\d+):.*') | join(' | ') }}
+  loop: "{{ sunbeam_status_ct_config.results }}"
+  loop_control:
+    extended: true
+    label: "{{ item.item.fqdn }}"
+
+- name: Report in-CT inspection output
+  ansible.builtin.debug:
+    msg: "{{ item.stdout_lines | default(['<no output>']) }}"
+  loop: "{{ sunbeam_status_ct_inspect.results }}"
+  loop_control:
+    label: "{{ item.item.fqdn }}"
+
+- name: Summarize deployment health from the primary node
+  when: item.item.primary
+  ansible.builtin.debug:
+    msg:
+      - "cluster list: {{ (item.stdout | regex_findall('(?ms)###CLUSTER_LIST\n(.*?)###JUJU_CONTROLLERS') | first | default('unavailable')) | trim }}"
+      - "juju controllers: {{ (item.stdout | regex_findall('(?ms)###JUJU_CONTROLLERS\n(.*?)###CEPH') | first | default('unavailable')) | trim }}"
+      - "ceph -s: {{ (item.stdout | regex_findall('(?ms)###CEPH\n(.*?)###ENV_PROXY') | first | default('unavailable')) | trim }}"
+      - "manifest on disk: {{ (item.stdout | regex_findall('(?ms)###MANIFEST_PATH\n(.*?)\n') | first | default('unknown')) | trim }}"
+      - "openrc on disk: {{ (item.stdout | regex_findall('(?ms)###OPENRC_PATH\n(.*?)\n') | first | default('unknown')) | trim }}"
+  loop: "{{ sunbeam_status_ct_inspect.results }}"
+  loop_control:
+    label: "{{ item.item.fqdn }}"

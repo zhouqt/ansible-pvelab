@@ -1,0 +1,18 @@
+#!/bin/bash
+set -u
+
+user={{ sunbeam_node_user }}
+home={{ sunbeam_node_home }}
+require_controller=no
+[ "${1:-}" = "--require-controller" ] && require_controller=yes
+
+ok=yes
+id "$user" >/dev/null 2>&1 || ok=no
+[ -f "$home/.ssh/id_ed25519" ] || ok=no
+id -nG "$user" 2>/dev/null | grep -qw snap_daemon || ok=no
+if [ "$require_controller" = yes ]; then
+    su - "$user" -c 'juju controllers --format json' 2>/dev/null \
+        | grep -q '"controller-name"' || ok=no
+fi
+
+echo "prepared=$ok"

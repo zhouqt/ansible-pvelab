@@ -1,0 +1,13 @@
+#!/bin/bash
+set -u
+
+user={{ sunbeam_node_user }}
+out=$(su - "$user" -c 'sunbeam cluster list --format yaml' 2>/dev/null) || out=""
+
+{% for node in sunbeam_nodes %}
+if printf '%s' "$out" | grep -q '{{ node.hostname }}'; then
+    echo "member {{ node.fqdn }}=yes"
+else
+    echo "member {{ node.fqdn }}=no"
+fi
+{% endfor %}

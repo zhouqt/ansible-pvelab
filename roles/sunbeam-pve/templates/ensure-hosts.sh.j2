@@ -1,0 +1,18 @@
+#!/bin/bash
+set -euo pipefail
+
+changed=0
+
+ensure_host() {
+    local line="$1" fqdn="$2"
+    if ! grep -qw "$fqdn" /etc/hosts; then
+        echo "$line" >> /etc/hosts
+        changed=$((changed + 1))
+    fi
+}
+
+{% for node in sunbeam_nodes %}
+ensure_host "{{ node.pub_ip }} {{ node.fqdn }} {{ node.hostname }}" "{{ node.fqdn }}"
+{% endfor %}
+
+echo "hosts changed=$changed"

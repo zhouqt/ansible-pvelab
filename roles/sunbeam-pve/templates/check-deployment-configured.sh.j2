@@ -1,0 +1,10 @@
+#!/bin/bash
+set -u
+
+rc_path={{ sunbeam_admin_openrc_path }}
+
+if [ -s "$rc_path" ]; then
+    echo "configured=yes"
+else
+    echo "configured=no"
+fi

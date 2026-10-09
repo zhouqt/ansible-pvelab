@@ -1,0 +1,24 @@
+#!/bin/bash
+set -u
+
+user={{ sunbeam_node_user }}
+rc_path={{ sunbeam_admin_openrc_path }}
+
+if [ ! -s "$rc_path" ]; then
+    echo "openrc missing: $rc_path" >&2
+    exit 1
+fi
+
+run() { su - "$user" -c ". $rc_path && $*" 2>&1; }
+
+echo "### NETWORKS"
+run openstack network list -f value -c Name
+echo "### IMAGES"
+run openstack image list -f value -c Name
+echo "### FLAVORS"
+run openstack flavor list -f value -c Name
+echo "### PROJECTS"
+run openstack project list -f value -c Name
+echo "### ROUTERS"
+run openstack router list -f value -c Name
+echo "### END"

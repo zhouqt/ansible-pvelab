@@ -1,0 +1,146 @@
+---
+- name: Load shared stage facts
+  ansible.builtin.include_tasks: _stage_guard.yml
+
+- name: Require explicit authorization for deployment configuration
+  ansible.builtin.assert:
+    that:
+      - sunbeam_confirm_external_changes | bool
+    fail_msg: >-
+      This stage applies the manifest to the existing juju model and creates the external
+      network, tenant network and demo user.
+      To confirm, pass -e sunbeam_confirm_external_changes=true.
+
+- name: Check whether the deployment is already configured
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'check-deployment-configured.sh.j2') }}"
+  register: sunbeam_deployment_state
+  changed_when: false
+  failed_when: false
+
+- name: Decide whether configure deployment must run
+  ansible.builtin.set_fact:
+    sunbeam_configure_needed: >-
+      {{ 'configured=no' in sunbeam_deployment_state.stdout
+         or sunbeam_force_configure | bool }}
+
+- name: Render the Sunbeam deployment manifest
+  ansible.builtin.template:
+    src: manifest.yaml.j2
+    dest: "{{ sunbeam_staging_dir }}/manifest.yaml"
+    mode: "0600"
+  when: sunbeam_configure_needed | bool
+
+- name: Read the manifest currently stored in the primary CT
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - cat
+      - "{{ sunbeam_manifest_path }}"
+  register: sunbeam_configure_manifest_current
+  changed_when: false
+  failed_when: false
+  when: sunbeam_configure_needed | bool
+
+- name: Push the manifest into the primary CT when it differs
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - push
+      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ sunbeam_staging_dir }}/manifest.yaml"
+      - "{{ sunbeam_manifest_path }}"
+      - --user
+      - "{{ sunbeam_node_user }}"
+      - --group
+      - "{{ sunbeam_node_user }}"
+      - --perms
+      - "0600"
+  when:
+    - sunbeam_configure_needed | bool
+    - >-
+      (sunbeam_configure_manifest_current.stdout | default('') | trim)
+      != (lookup('template', 'manifest.yaml.j2') | trim)
+
+- name: Apply the deployment configuration
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'run-configure-deployment.sh.j2') }}"
+  when: sunbeam_configure_needed | bool
+  register: sunbeam_configure_run
+  async: "{{ sunbeam_configure_timeout }}"
+  poll: "{{ sunbeam_poll_interval }}"
+
+- name: Re-check the deployment configuration state
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'check-deployment-configured.sh.j2') }}"
+  register: sunbeam_deployment_state_after
+  changed_when: false
+
+- name: Assert the openrc file is in place
+  ansible.builtin.assert:
+    that:
+      - "'configured=yes' in sunbeam_deployment_state_after.stdout"
+    fail_msg: >-
+      {{ sunbeam_admin_openrc_path }} does not exist or is empty, which means configure
+      deployment did not complete. Check {{ sunbeam_node_log_dir }}/configure-deployment.log
+      inside {{ sunbeam_primary_node.fqdn }}.
+
+- name: Read the deployed OpenStack resource inventory
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'verify-deployment.sh.j2') }}"
+  register: sunbeam_deployment_inventory
+  changed_when: false
+
+- name: Assert the external network exists
+  ansible.builtin.assert:
+    that:
+      - sunbeam_external_network.openstack_name in sunbeam_deployment_inventory.stdout
+    fail_msg: >-
+      External network {{ sunbeam_external_network.openstack_name }} was not found in OpenStack.
+      The manifest's external-networks does not match the live environment.
+
+- name: Assert the tenant network exists
+  ansible.builtin.assert:
+    that:
+      - sunbeam_tenant_network_name in sunbeam_deployment_inventory.stdout
+    fail_msg: >-
+      Tenant network {{ sunbeam_tenant_network_name }} was not found in OpenStack (demo setup incomplete?).
+
+- name: Report deployment configuration result
+  ansible.builtin.debug:
+    msg:
+      - "openrc: {{ sunbeam_admin_openrc_path }} ({{ sunbeam_node_user }}, 0600)"
+      - "configure deployment executed this run: {{ 'yes' if sunbeam_configure_needed | bool else 'no (already configured)' }}"
+      - "resource inventory:"
+      - "{{ sunbeam_deployment_inventory.stdout_lines }}"

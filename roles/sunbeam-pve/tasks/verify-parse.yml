@@ -1,0 +1,178 @@
+---
+
+- name: Assert every planned node is a cluster member
+  ansible.builtin.assert:
+    that:
+      - item.hostname in sunbeam_verify['CLUSTER_LIST']
+    fail_msg: >-
+      {{ item.fqdn }} is not in the `sunbeam cluster list` output.
+  loop: "{{ sunbeam_nodes }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Extract the Ceph health state
+  ansible.builtin.set_fact:
+    sunbeam_verify_ceph_health: >-
+      {{ sunbeam_verify['CEPH'] | regex_findall('health: (HEALTH_[A-Z]+)') | join('') or 'UNKNOWN' }}
+
+- name: Assert Ceph is not in an error state
+  ansible.builtin.assert:
+    that:
+      - sunbeam_verify_ceph_health in ['HEALTH_OK', 'HEALTH_WARN']
+    fail_msg: >-
+      Ceph health is {{ sunbeam_verify_ceph_health }} (HEALTH_ERR / could not be parsed).
+      `ceph -s`:
+      {{ sunbeam_verify['CEPH'] }}
+
+- name: Extract the Ceph health warnings
+  ansible.builtin.set_fact:
+    sunbeam_verify_ceph_warnings: >-
+      {{ (sunbeam_verify['CEPH']
+          | regex_findall('(?m)health: HEALTH_WARN\n((?:^[ \t]{5,}\S.*$\n?)+)')
+          | join('')).split('\n') | map('trim') | select | list }}
+
+- name: Compute the Ceph health warnings that are not tolerated
+  ansible.builtin.set_fact:
+    sunbeam_verify_ceph_warnings_bad: >-
+      {{ sunbeam_verify_ceph_warnings
+         | reject('search', sunbeam_ceph_tolerated_warnings | join('|')) | list }}
+
+- name: Assert every Ceph warning is on the tolerated list
+  ansible.builtin.assert:
+    that:
+      - sunbeam_verify_ceph_warnings_bad | length == 0
+    fail_msg: >-
+      Ceph reported non-exempt warnings: {{ sunbeam_verify_ceph_warnings_bad }}.
+      Exempted: {{ sunbeam_ceph_tolerated_warnings }} (to accept new environmental warnings,
+      add them to sunbeam_ceph_tolerated_warnings in group_vars).
+
+- name: Report the Ceph health
+  ansible.builtin.debug:
+    msg: >-
+      Ceph health: {{ sunbeam_verify_ceph_health }}{% if sunbeam_verify_ceph_warnings | length > 0 %}
+      (exempted: {{ sunbeam_verify_ceph_warnings }}){% endif %}
+
+- name: Parse the Ceph OSD counters
+  ansible.builtin.set_fact:
+    sunbeam_verify_osd_total: >-
+      {{ (sunbeam_verify['CEPH'] | regex_findall('osd: (\d+) osds')
+          | first | default(['0']))[0] | int }}
+    sunbeam_verify_osd_up: >-
+      {{ (sunbeam_verify['CEPH'] | regex_findall('osd: (\d+) osds: (\d+) up')
+          | first | default(['0', '0']))[1] | int }}
+    sunbeam_verify_osd_in: >-
+      {{ (sunbeam_verify['CEPH'] | regex_findall('(\d+) in \(')
+          | first | default(['0']))[0] | int }}
+
+- name: Assert every OSD is up and in
+  ansible.builtin.assert:
+    that:
+      - sunbeam_verify_osd_total > 0
+      - sunbeam_verify_osd_up == sunbeam_verify_osd_total
+      - sunbeam_verify_osd_in == sunbeam_verify_osd_total
+    fail_msg: >-
+      Not every OSD is up/in (total={{ sunbeam_verify_osd_total }}
+      up={{ sunbeam_verify_osd_up }} in={{ sunbeam_verify_osd_in }}). The osd line of `ceph -s`:
+      {{ sunbeam_verify['CEPH'] | regex_findall('(?m)^[ \t]*osd:.*$') | join('') or '(could not be parsed)' }}
+
+- name: Assert all placement groups are active+clean
+  ansible.builtin.assert:
+    that:
+      - "'active+clean' in sunbeam_verify['CEPH']"
+    fail_msg: >-
+      Not all PGs are active+clean:
+      {{ sunbeam_verify['CEPH'] | regex_findall('(?m)^[ \t]*pgs:.*$') | join('') or '(could not be parsed)' }}
+
+- name: Report the Ceph baseline comparison
+  ansible.builtin.debug:
+    msg:
+      - "OSD: {{ sunbeam_verify_osd_total }} (live baseline {{ sunbeam_ceph_expected_osds }}; of which {{ sunbeam_ceph_managed_osd_devices }} are managed by this playbook)"
+      - "PG/pool: {{ sunbeam_verify['CEPH'] | regex_findall('(?m)^[ \t]*pools:.*$') | join('') | trim }}"
+      - "OSD tree:"
+      - "{{ sunbeam_verify['CEPH_OSD_TREE'].split('\n') }}"
+
+- name: Compute the non-active applications in the openstack model
+  ansible.builtin.set_fact:
+    sunbeam_verify_openstack_bad: >-
+      {{ (sunbeam_verify['JUJU_OPENSTACK'] | from_json).applications | dict2items
+         | selectattr('value.application-status.current', 'ne', 'active')
+         | map(attribute='key') | list }}
+
+- name: Assert every application in the openstack model is active
+  ansible.builtin.assert:
+    that:
+      - sunbeam_verify_openstack_bad | length == 0
+    fail_msg: "Non-active applications in the openstack model: {{ sunbeam_verify_openstack_bad }}"
+
+- name: Compute the non-active applications in the machines model
+  ansible.builtin.set_fact:
+    sunbeam_verify_machines_bad: >-
+      {{ (sunbeam_verify['JUJU_MACHINES'] | from_json).applications | dict2items
+         | rejectattr('key', 'in', sunbeam_known_blocked_applications)
+         | selectattr('value.application-status.current', 'ne', 'active')
+         | map(attribute='key') | list }}
+
+- name: Assert every non-exempt application in the machines model is active
+  ansible.builtin.assert:
+    that:
+      - sunbeam_verify_machines_bad | length == 0
+    fail_msg: >-
+      Non-active applications in the openstack-machines model: {{ sunbeam_verify_machines_bad }}.
+      Known exemptions: {{ sunbeam_known_blocked_applications }}.
+
+- name: Build the machines-model application status map
+  ansible.builtin.set_fact:
+    sunbeam_verify_machines_status: >-
+      {{ dict((sunbeam_verify['JUJU_MACHINES'] | from_json).applications | dict2items
+              | map(attribute='key')
+              | zip((sunbeam_verify['JUJU_MACHINES'] | from_json).applications
+                    | dict2items | map(attribute='value.application-status.current'))) }}
+
+- name: Assert the storage-critical applications are active
+  ansible.builtin.assert:
+    that:
+      - sunbeam_verify_machines_status[item] is defined
+      - sunbeam_verify_machines_status[item] == 'active'
+    fail_msg: >-
+      {{ item }} in openstack-machines is not active (currently {{
+      sunbeam_verify_machines_status[item] | default('missing') }}).
+  loop:
+    - microceph
+    - openstack-hypervisor
+    - cinder-volume
+    - k8s
+  loop_control:
+    label: "{{ item }}"
+
+- name: Report the status of the exempted applications
+  ansible.builtin.debug:
+    msg: "{{ item }}: {{ sunbeam_verify_machines_status[item] | default('missing') }}"
+  loop: "{{ sunbeam_known_blocked_applications }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Count the healthy cinder-volume services
+  ansible.builtin.set_fact:
+    sunbeam_verify_cinder_services: >-
+      {{ sunbeam_verify['VOLUME_SERVICES']
+         | regex_findall('(?m)^\| cinder-volume\s+\| [^|]+\| [^|]+\| enabled\s+\| up\s+\|') | length }}
+
+- name: Assert every node reports an up cinder-volume service
+  ansible.builtin.assert:
+    that:
+      - sunbeam_verify_cinder_services | int == sunbeam_nodes | length
+    fail_msg: >-
+      Expected {{ sunbeam_nodes | length }} enabled/up cinder-volume services,
+      found {{ sunbeam_verify_cinder_services }}. Raw output:
+      {{ sunbeam_verify['VOLUME_SERVICES'].split('\n') }}
+
+- name: Report the verification summary
+  ansible.builtin.debug:
+    msg:
+      - "cluster members: {{ sunbeam_verify['CLUSTER_LIST'] | regex_findall('(?m)^[ \\t]+hostname: (\\S+)') | join(', ') }}"
+      - "Ceph: {{ sunbeam_verify_ceph_health }}, {{ sunbeam_verify_osd_total }} OSD up/in, {{ sunbeam_verify['CEPH'] | regex_findall('(?m)^[ \t]*pgs:.*$') | join('') | trim }}"
+      - "openstack model: all {{ (sunbeam_verify['JUJU_OPENSTACK'] | from_json).applications | length }} applications active"
+      - "openstack-machines model: {{ (sunbeam_verify['JUJU_MACHINES'] | from_json).applications | length }} applications"
+      - "cinder-volume service: {{ sunbeam_verify_cinder_services }}/{{ sunbeam_nodes | length }} enabled+up"
+      - "volume services:"
+      - "{{ sunbeam_verify['VOLUME_SERVICES'].split('\n') }}"

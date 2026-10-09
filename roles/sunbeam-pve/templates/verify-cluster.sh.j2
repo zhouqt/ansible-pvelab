@@ -1,0 +1,26 @@
+#!/bin/bash
+set -u
+
+user={{ sunbeam_node_user }}
+rc_path={{ sunbeam_admin_openrc_path }}
+ceph={{ sunbeam_microceph_ceph_bin }}
+
+echo "### CLUSTER_LIST"
+su - "$user" -c 'sunbeam cluster list --format yaml' 2>/dev/null
+
+echo "### CEPH"
+"$ceph" -s
+
+echo "### CEPH_OSD_TREE"
+"$ceph" osd tree
+
+echo "### JUJU_OPENSTACK"
+su - "$user" -c 'juju status -m openstack --format json 2>/dev/null'
+
+echo "### JUJU_MACHINES"
+su - "$user" -c 'juju status -m openstack-machines --format json 2>/dev/null'
+
+echo "### VOLUME_SERVICES"
+su - "$user" -c ". $rc_path && openstack volume service list" 2>/dev/null
+
+echo "### END"

@@ -1,0 +1,156 @@
+---
+- name: Load shared stage facts
+  ansible.builtin.include_tasks: _stage_guard.yml
+
+- name: Require explicit authorization for cluster bootstrap
+  ansible.builtin.assert:
+    that:
+      - sunbeam_confirm_cluster_bootstrap | bool
+      - sunbeam_confirm_external_changes | bool
+    fail_msg: >-
+      This stage initializes a new Sunbeam/Juju/K8s control plane on the primary
+      ({{ sunbeam_primary_node.fqdn }}).
+      To confirm, pass -e sunbeam_confirm_cluster_bootstrap=true -e sunbeam_confirm_external_changes=true.
+
+- name: Check whether the control plane is already bootstrapped
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'check-cluster-state.sh.j2') }}"
+  register: sunbeam_cluster_state
+  changed_when: false
+  failed_when: false
+
+- name: Note that bootstrap will be skipped
+  ansible.builtin.debug:
+    msg: >-
+      The control plane already exists ({{ sunbeam_cluster_state.stdout | trim }}); this run only
+      validates the manifest and juju controller and will not bootstrap again.
+  when: "'bootstrapped=yes' in sunbeam_cluster_state.stdout"
+
+- name: Render the Sunbeam deployment manifest
+  ansible.builtin.template:
+    src: manifest.yaml.j2
+    dest: "{{ sunbeam_staging_dir }}/manifest.yaml"
+    mode: "0600"
+  when: "'bootstrapped=no' in sunbeam_cluster_state.stdout"
+
+- name: Read the manifest currently stored in the primary CT
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - cat
+      - "{{ sunbeam_manifest_path }}"
+  register: sunbeam_manifest_current
+  changed_when: false
+  failed_when: false
+
+- name: Push the manifest into the primary CT when it differs
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - push
+      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ sunbeam_staging_dir }}/manifest.yaml"
+      - "{{ sunbeam_manifest_path }}"
+      - --user
+      - "{{ sunbeam_node_user }}"
+      - --group
+      - "{{ sunbeam_node_user }}"
+      - --perms
+      - "0600"
+  when:
+    - "'bootstrapped=no' in sunbeam_cluster_state.stdout"
+    - >-
+      (sunbeam_manifest_current.stdout | default('') | trim)
+      != (lookup('template', 'manifest.yaml.j2') | trim)
+
+- name: Bootstrap the Sunbeam control plane
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'run-cluster-bootstrap.sh.j2') }}"
+  when: "'bootstrapped=no' in sunbeam_cluster_state.stdout"
+  register: sunbeam_cluster_bootstrap_run
+  async: "{{ sunbeam_bootstrap_timeout }}"
+  poll: "{{ sunbeam_poll_interval }}"
+
+- name: Re-check the control plane state
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'check-cluster-state.sh.j2') }}"
+  register: sunbeam_cluster_state_after
+  changed_when: false
+
+- name: Assert the control plane is bootstrapped
+  ansible.builtin.assert:
+    that:
+      - "'bootstrapped=yes' in sunbeam_cluster_state_after.stdout"
+    fail_msg: >-
+      The control plane was not initialized successfully. Check
+      {{ sunbeam_node_log_dir }}/cluster-bootstrap.log inside {{ sunbeam_primary_node.fqdn }}.
+
+- name: Read the Juju controllers known to the primary CT
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - su
+      - -
+      - "{{ sunbeam_node_user }}"
+      - -c
+      - "juju controllers --format json"
+  register: sunbeam_juju_controllers
+  changed_when: false
+
+- name: Assert the expected Juju controller is present
+  ansible.builtin.assert:
+    that:
+      - sunbeam_controller_name in sunbeam_juju_controllers.stdout
+    fail_msg: >-
+      Juju controller {{ sunbeam_controller_name }} was not found inside the primary CT.
+
+- name: Read the current Sunbeam cluster members
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - su
+      - -
+      - "{{ sunbeam_node_user }}"
+      - -c
+      - "sunbeam cluster list --format yaml"
+  register: sunbeam_cluster_list
+  changed_when: false
+
+- name: Report bootstrap result
+  ansible.builtin.debug:
+    msg:
+      - "control plane: {{ sunbeam_controller_name }} @ {{ sunbeam_primary_node.fqdn }}"
+      - "manifest: {{ sunbeam_manifest_path }}"
+      - "bootstrap executed this run: {{ 'no (already exists)' if 'bootstrapped=yes' in sunbeam_cluster_state.stdout else 'yes' }}"
+      - "cluster list:"
+      - "{{ sunbeam_cluster_list.stdout_lines }}"

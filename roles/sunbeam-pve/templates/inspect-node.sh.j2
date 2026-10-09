@@ -1,0 +1,21 @@
+#!/bin/bash
+set -u
+
+echo "###HOSTNAME"; hostname
+echo "###OS"; grep -E '^(VERSION_ID|VERSION_CODENAME)=' /etc/os-release || true
+echo "###HOSTS"; cat /etc/hosts
+echo "###SNAPD"; dpkg-query -W -f='${Version}' snapd 2>/dev/null || echo none
+echo "###SNAPS"; snap list --color=never 2>/dev/null | awk 'NR==1 || /^(openstack|juju|microceph|lxd) /'
+echo "###SNAP_SERVICES"; snap services openstack 2>/dev/null | head -30
+echo "###CLUSTER_LIST"; su - {{ sunbeam_node_user }} -c 'sunbeam cluster list' 2>&1 | head -30
+echo "###JUJU_CONTROLLERS"; su - {{ sunbeam_node_user }} -c 'juju controllers --format json' 2>&1 | head -c 800; echo
+echo "###CEPH"; {{ sunbeam_microceph_ceph_bin }} -s 2>&1 | head -30
+echo "###ENV_PROXY"; grep -E 'PROXY' /etc/environment 2>/dev/null || echo none
+echo "###APT_PROXY"; ls /etc/apt/apt.conf.d/ 2>/dev/null | tr '\n' ' '; echo
+echo "###OSD_ALIAS"; ls -l /dev/disk/by-id/ 2>/dev/null | grep -i pve-ceph || echo none
+echo "###OSD_DROPIN"; cat {{ sunbeam_osd_service_dropin }} 2>/dev/null || echo none
+echo "###OSD_SETUP"; if [ -x {{ sunbeam_osd_setup_script }} ]; then echo present; else echo absent; fi
+echo "###SUDO"; grep -h NOPASSWD /etc/sudoers.d/* 2>/dev/null | head -5
+echo "###MANIFEST_PATH"; if [ -f {{ sunbeam_manifest_path }} ]; then echo present; else echo absent; fi
+echo "###OPENRC_PATH"; if [ -f {{ sunbeam_admin_openrc_path }} ]; then echo present; else echo absent; fi
+echo "###END"

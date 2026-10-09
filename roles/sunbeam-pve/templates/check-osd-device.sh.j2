@@ -1,0 +1,19 @@
+#!/bin/bash
+set -u
+
+id=${1:?Usage: check-osd-device.sh <vmid>}
+source=/dev/disk/by-id/pve-ceph-osd-$id
+alias=/dev/disk/by-id/pve-ceph-osd-device-$id
+
+if [ -b "$source" ]; then
+    echo "source=yes"
+else
+    echo "source=no"
+fi
+
+pid=$(pgrep -xo microcephd || true)
+if [ -n "$pid" ] && nsenter -t "$pid" -m -- /usr/bin/test -b "$alias"; then
+    echo "alias=yes"
+else
+    echo "alias=no"
+fi
