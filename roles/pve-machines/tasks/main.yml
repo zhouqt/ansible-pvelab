@@ -597,6 +597,7 @@
   ansible.builtin.blockinfile:
     path: "/etc/pve/lxc/{{ item.vmid }}.conf"
     marker: "# {mark} ANSIBLE JUJU LXC SETTINGS"
+    insertbefore: BOF
     block: |
       lxc.cap.drop:
       lxc.cap.drop: mac_override sys_time sys_module sys_rawio

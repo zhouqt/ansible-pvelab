@@ -119,12 +119,29 @@ want = [
     ("lxc.cap.drop", "mac_override sys_time sys_module sys_rawio"),
 ]
 
-lines = [l for l in lines if not re.match(r"^\s*lxc\.(apparmor\.profile|cap\.drop)\s*:", l)]
-lines += ["%s: %s" % (k, v) for k, v in want]
+sections, header, body = [], None, []
+for l in lines:
+    if re.match(r"^\s*\[", l):
+        sections.append((header, body))
+        header, body = l, []
+    else:
+        body.append(l)
+sections.append((header, body))
+
+out = []
+for header, body in sections:
+    body = [l for l in body
+            if not re.match(r"^\s*lxc\.(apparmor\.profile|cap\.drop)\s*:", l)]
+    while body and not body[-1].strip():
+        body.pop()
+    body += ["%s: %s" % (k, v) for k, v in want]
+    if header:
+        out.append(header)
+    out += body
 
 with open(path, "w") as f:
-    f.write("\n".join(lines) + "\n")
-print("    wrote %d lxc.* entries" % len(want))
+    f.write("\n".join(out) + "\n")
+print("    wrote %d lxc.* entries (%d sections)" % (len(want), len(sections)))
 PYEOF
 
 grep -E '^lxc\.' "$CONF" | sed 's/^/    /' || true
