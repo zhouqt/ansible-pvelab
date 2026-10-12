@@ -9,6 +9,7 @@ sunbeam_valid_stages:
   - configure
   - tls
   - storage
+  - flavors
   - verify
   - vm-volume-test
 sunbeam_stage: status

@@ -1,0 +1,85 @@
+#!/bin/bash
+set -uo pipefail
+
+user={{ sunbeam_node_user }}
+rc_path={{ sunbeam_admin_openrc_path }}
+log={{ sunbeam_node_log_dir }}/flavors.log
+mkdir -p {{ sunbeam_node_log_dir }}
+
+img_name={{ sunbeam_cirros_image_name }}
+img_url={{ sunbeam_cirros_image_url }}
+img_file={{ sunbeam_node_home }}/{{ sunbeam_cirros_image_name }}.img
+
+run() { su - "$user" -c ". $rc_path && $*" ; }
+
+{
+    changes=0
+
+    echo "== cirros image =="
+    img_status=$(run openstack image show "$img_name" -f value -c status 2>/dev/null || true)
+    if [ "$img_status" != "active" ]; then
+        changes=$((changes + 1))
+        echo "downloading $img_url"
+        su - "$user" -c "curl -fsSL --retry 3 -o $img_file $img_url"
+        ls -l "$img_file"
+        run openstack image delete "$img_name" 2>/dev/null || true
+        run openstack image create --disk-format qcow2 --container-format bare \
+            --file "$img_file" --public "$img_name"
+        for _ in $(seq 1 60); do
+            img_status=$(run openstack image show "$img_name" -f value -c status 2>/dev/null || true)
+            [ "$img_status" = "active" ] && break
+            sleep 5
+        done
+        rm -f "$img_file"
+    fi
+    echo "image $img_name -> $img_status"
+
+    echo "== remove stock flavors that are never used =="
+{% for f in sunbeam_flavors_remove %}
+    if run openstack flavor show {{ f }} >/dev/null 2>&1; then
+        run openstack flavor delete {{ f }} && { echo "removed {{ f }}"; changes=$((changes + 1)); }
+    else
+        echo "absent {{ f }}"
+    fi
+{% endfor %}
+
+    echo "== reconcile desired flavors =="
+    while IFS='|' read -r name ram disk vcpus extras; do
+        [ -z "$name" ] && continue
+        cur_ram=$(run openstack flavor show "$name" -f value -c ram 2>/dev/null || true)
+        cur_disk=$(run openstack flavor show "$name" -f value -c disk 2>/dev/null || true)
+        cur_vcpus=$(run openstack flavor show "$name" -f value -c vcpus 2>/dev/null || true)
+        if [ "$cur_ram" = "$ram" ] && [ "$cur_disk" = "$disk" ] && [ "$cur_vcpus" = "$vcpus" ]; then
+            echo "ok $name ($cur_ram/$cur_disk/$cur_vcpus)"
+        else
+            if [ -n "$cur_ram" ]; then
+                echo "resize $name: $cur_ram/$cur_disk/$cur_vcpus -> $ram/$disk/$vcpus (delete + recreate)"
+                run openstack flavor delete "$name"
+            fi
+            run openstack flavor create --ram "$ram" --disk "$disk" --vcpus "$vcpus" --public "$name"
+            echo "created $name ($ram/$disk/$vcpus)"
+            changes=$((changes + 1))
+        fi
+        [ -n "$extras" ] && run openstack flavor set --property "$extras" "$name"
+    done <<'FLAVORS'
+{% for f in sunbeam_flavors %}{{ f.name }}|{{ f.ram }}|{{ f.disk }}|{{ f.vcpus }}|{{ f.extras | default('') }}
+{% endfor %}FLAVORS
+
+    echo "== live flavor list =="
+    live=$(run openstack flavor list -f value -c Name -c RAM -c Disk -c VCPUs)
+    echo "$live"
+
+    echo "=== SUMMARY ==="
+    echo "image_status=$img_status"
+    echo "changed=$changes"
+    while read -r name ram disk vcpus; do
+        [ -z "$name" ] && continue
+        echo "flavor_$(printf '%s' "$name" | tr '.-' '__')=${ram}/${disk}/${vcpus}"
+    done <<< "$live"
+    echo "=== END SUMMARY ==="
+} >"$log" 2>&1
+rc=$?
+
+echo "flavors rc=$rc (log: $log)"
+tail -n 80 "$log"
+exit "$rc"

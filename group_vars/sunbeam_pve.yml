@@ -217,5 +217,23 @@ sunbeam_vm_test_name: sunbeam-ansible-smoke
 sunbeam_vm_test_volume_name: sunbeam-ansible-volume-smoke
 sunbeam_vm_test_image_name: sunbeam-ansible-cirros-smoke
 sunbeam_vm_test_volume_size_gb: 1
-sunbeam_vm_test_cirros_url: https://download.cirros-cloud.net/0.5.2/cirros-0.5.2-x86_64-disk.img
+sunbeam_vm_test_cirros_url: "{{ sunbeam_cirros_image_url }}"
 sunbeam_vm_test_flavor: m1.tiny
+
+sunbeam_flavors:
+  - { name: cirros,      ram: 512,  disk: 1,  vcpus: 1 }
+  - { name: m1.nano,     ram: 128,  disk: 1,  vcpus: 1 }
+  - { name: m1.tiny,     ram: 512,  disk: 4,  vcpus: 1 }
+  - { name: m1.tiny-sev, ram: 512,  disk: 4,  vcpus: 1, extras: "hw:mem_encryption=true" }
+  - { name: m1.micro,    ram: 256,  disk: 5,  vcpus: 1 }
+  - { name: m1.small,    ram: 2048, disk: 10, vcpus: 1 }
+  - { name: m1.medium,   ram: 4096, disk: 20, vcpus: 2 }
+
+sunbeam_flavors_remove:
+  - m1.small-sev
+  - m1.medium-sev
+  - m1.large
+  - m1.large-sev
+
+sunbeam_cirros_image_name: cirros
+sunbeam_cirros_image_url: https://download.cirros-cloud.net/0.5.2/cirros-0.5.2-x86_64-disk.img

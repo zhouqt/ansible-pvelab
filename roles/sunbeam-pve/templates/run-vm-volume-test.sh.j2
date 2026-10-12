@@ -13,7 +13,7 @@ srv={{ sunbeam_vm_test_name }}
 flavor={{ sunbeam_vm_test_flavor }}
 net={{ sunbeam_vm_test_network }}
 size={{ sunbeam_vm_test_volume_size_gb }}
-img_file=/tmp/{{ sunbeam_vm_test_image_name }}.img
+img_file={{ sunbeam_node_home }}/{{ sunbeam_vm_test_image_name }}.img
 keep={{ 'yes' if sunbeam_vm_test_keep else 'no' }}
 
 run() { su - "$user" -c ". $rc_path && $*" ; }
