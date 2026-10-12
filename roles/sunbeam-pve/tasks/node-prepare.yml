@@ -99,6 +99,7 @@
   when: >-
     (item.stdout | default('') | regex_findall('(?m)^HTTP_PROXY=(\S+)$') | first | default('')) != sunbeam_proxy_url
     or (item.stdout | default('') | regex_findall('(?m)^HTTPS_PROXY=(\S+)$') | first | default('')) != sunbeam_proxy_url
+    or (item.stdout | default('') | regex_findall('(?m)^no_proxy=(\S+)$') | first | default('')) != sunbeam_proxy_no_proxy_effective
     or (sunbeam_proxy_no_proxy | reject('in', item.stdout | default('')) | list | length > 0)
   loop_control:
     label: "{{ item.item.fqdn }}"
@@ -358,6 +359,8 @@
     dest: "{{ sunbeam_staging_dir }}/{{ item.vmid }}-osd-dropin"
     mode: "0644"
   loop: "{{ sunbeam_nodes }}"
+  vars:
+    sunbeam_node_vmid: "{{ item.vmid }}"
   loop_control:
     label: "{{ item.fqdn }}"
 
@@ -389,7 +392,8 @@
   loop: "{{ sunbeam_node_osd_dropin.results }}"
   when: >-
     (item.stdout | default('') | trim)
-    != (lookup('file', sunbeam_staging_dir ~ '/' ~ (item.item.vmid | string) ~ '-osd-dropin') | trim)
+    != (lookup('template', 'microceph-osd-dropin.conf.j2',
+               template_vars={'sunbeam_node_vmid': item.item.vmid}) | trim)
   register: sunbeam_node_osd_dropin_push
   loop_control:
     label: "{{ item.item.fqdn }}"

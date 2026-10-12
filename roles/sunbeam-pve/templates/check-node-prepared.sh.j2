@@ -12,7 +12,11 @@ id "$user" >/dev/null 2>&1 || ok=no
 id -nG "$user" 2>/dev/null | grep -qw snap_daemon || ok=no
 if [ "$require_controller" = yes ]; then
     su - "$user" -c 'juju controllers --format json' 2>/dev/null \
-        | grep -q '"controller-name"' || ok=no
+        | python3 -c 'import json, sys
+try:
+    sys.exit(0 if json.load(sys.stdin).get("controllers") else 1)
+except Exception:
+    sys.exit(1)' || ok=no
 fi
 
 echo "prepared=$ok"

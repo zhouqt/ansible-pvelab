@@ -20,5 +20,22 @@
     sunbeam_verify: >-
       {{ dict(sunbeam_verify_raw.stdout | regex_findall('(?ms)^### ([A-Z_]+)\n(.*?)(?=^### |\Z)')) }}
 
+- name: Probe the OVN metadata data path on every node
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ item.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'check-metadata-path.sh.j2') }}"
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_verify_metadata
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.fqdn }}"
+
 - name: Parse the snapshot and assert the health baseline
   ansible.builtin.include_tasks: verify-parse.yml

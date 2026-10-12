@@ -166,6 +166,36 @@
       found {{ sunbeam_verify_cinder_services }}. Raw output:
       {{ sunbeam_verify['VOLUME_SERVICES'].split('\n') }}
 
+- name: Assert the metadata data path bypasses the HTTP proxy on every node
+  ansible.builtin.assert:
+    that:
+      - item.stdout is search('METADATA host=\S+ env=agent bypass=True code=(400|404) ')
+    fail_msg: >-
+      {{ item.item.fqdn }}: the neutron-ovn-metadata-agent cannot reach its own
+      nova-api-metadata directly -- probe said
+      '{{ item.stdout | default('') | trim | default('(no output)', true) }}'.
+      Expected 'env=agent bypass=True code=400' (or 404). env=file means the agent
+      is not running, so only the on-disk config could be inspected. bypass=False
+      means the node's management IP is not in the *agent's* no_proxy: Python's
+      no_proxy matching is hostname-only and ignores CIDR, so the request goes to the
+      HTTP proxy and times out (code=503/0), and guests on that node get
+      DataSourceNone from cloud-init and boot without an SSH key. Note the agent reads
+      /etc/environment once at start-up, so fixing the file is not enough -- the unit
+      has to be restarted (or the node re-run through the node-prepare stage) before
+      this assertion can pass.
+  loop: "{{ sunbeam_verify_metadata.results }}"
+  loop_control:
+    label: "{{ item.item.fqdn }}"
+  when: sunbeam_verify_metadata is defined
+
+- name: Report the metadata data path
+  ansible.builtin.debug:
+    msg: "{{ item.item.fqdn }}: {{ item.stdout | default('') | trim }}"
+  loop: "{{ sunbeam_verify_metadata.results }}"
+  loop_control:
+    label: "{{ item.item.fqdn }}"
+  when: sunbeam_verify_metadata is defined
+
 - name: Report the verification summary
   ansible.builtin.debug:
     msg:

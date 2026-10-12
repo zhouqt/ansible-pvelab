@@ -187,8 +187,10 @@ sunbeam_vm_test_network: "{{ sunbeam_tenant_network_name }}"
 
 sunbeam_proxy_no_proxy: >-
   {{ ['localhost', '127.0.0.1', '::1', '.' ~ sunbeam_domain, '.svc', '.svc.cluster.local',
-      sunbeam_management_cidr, sunbeam_primary_node.pub_ip,
-      sunbeam_internal_cidr, sunbeam_primary_node.internal_ip]
+      sunbeam_management_cidr]
+     + (sunbeam_nodes | map(attribute='pub_ip') | list)
+     + [sunbeam_internal_cidr]
+     + (sunbeam_nodes | map(attribute='internal_ip') | list)
      + sunbeam_proxy_no_proxy_tail }}
 sunbeam_proxy_no_proxy_effective: "{{ sunbeam_proxy_no_proxy | join(',') }}"
 

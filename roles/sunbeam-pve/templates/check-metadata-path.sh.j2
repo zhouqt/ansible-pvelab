@@ -1,0 +1,45 @@
+#!/bin/bash
+set -u
+
+unit=snap.openstack-hypervisor.neutron-ovn-metadata-agent.service
+ini=/var/snap/openstack-hypervisor/common/etc/neutron/neutron_ovn_metadata_agent.ini
+
+pid=$(systemctl show -p MainPID --value "$unit" 2>/dev/null)
+envsrc=file
+if [ -n "${pid:-}" ] && [ "$pid" != 0 ] && [ -r "/proc/$pid/environ" ]; then
+  envsrc=agent
+  while IFS= read -r -d '' kv; do
+    case "${kv%%=*}" in
+      HTTP_PROXY|HTTPS_PROXY|NO_PROXY|http_proxy|https_proxy|no_proxy) export "$kv" ;;
+    esac
+  done < "/proc/$pid/environ"
+else
+  set -a
+  . /etc/environment 2>/dev/null
+  set +a
+fi
+
+host=$(sed -n 's/^nova_metadata_host[[:space:]]*=[[:space:]]*//p' "$ini" 2>/dev/null | head -1)
+if [ -z "$host" ]; then
+  echo "METADATA host=? env=$envsrc bypass=? code=0 secs=0"
+  exit 0
+fi
+
+python3 - "$host" "$envsrc" <<'PY'
+import sys, time, urllib.request, urllib.error
+
+host = sys.argv[1]
+envsrc = sys.argv[2]
+bypass = urllib.request.proxy_bypass(host)
+t0 = time.time()
+code = 0
+try:
+    urllib.request.urlopen("http://%s:8775/openstack" % host, timeout=8)
+    code = 200
+except urllib.error.HTTPError as exc:
+    code = exc.code
+except Exception:
+    code = 0
+print("METADATA host=%s env=%s bypass=%s code=%d secs=%.2f"
+      % (host, envsrc, bypass, code, time.time() - t0))
+PY
