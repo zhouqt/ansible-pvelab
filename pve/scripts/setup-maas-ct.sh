@@ -115,7 +115,6 @@ path = sys.argv[1]
 lines = open(path).read().splitlines()
 
 want = [
-    ("lxc.apparmor.profile", "unconfined"),
     ("lxc.cap.drop", ""),
     ("lxc.cap.drop", "mac_override sys_time sys_module sys_rawio"),
 ]
@@ -217,6 +216,13 @@ fi
 info "snap list: $(ct_bash 'snap list snapd' | tail -1)"
 ct_bash 'snap list maas | tail -1' | sed 's/^/    /'
 ct_bash '/snap/bin/maas --help >/dev/null 2>&1' || die "the maas CLI is not usable; check the snapd/snap-confine versions"
+
+ns=$(ls /sys/kernel/security/apparmor/policy/namespaces/ 2>/dev/null | grep -c "^lxc-${VMID}_" || true)
+if [ "${ns:-0}" -eq 0 ]; then
+  info "warning: no lxc-${VMID}_* AppArmor namespace on the host; check whether the conf still carries lxc.apparmor.profile"
+else
+  info "AppArmor namespace: $(ls /sys/kernel/security/apparmor/policy/namespaces/ | grep "^lxc-${VMID}_" | tr '\n' ' ')"
+fi
 
 log "6/11 maas init region+rack"
 

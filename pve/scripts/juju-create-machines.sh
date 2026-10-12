@@ -13,7 +13,6 @@ create_one() {
     echo "CREATE-FAIL $vmid $host (log: /var/tmp/ctcreate-$vmid.log)"; return
   fi
   cat >> /etc/pve/lxc/$vmid.conf <<APPCFG
-lxc.apparmor.profile: unconfined
 lxc.cap.drop:
 lxc.cap.drop: mac_override sys_time sys_module sys_rawio
 APPCFG

@@ -1,0 +1,27 @@
+#!/bin/sh
+set -u
+
+parser=""
+for p in /snap/snapd/current/usr/lib/snapd/apparmor_parser \
+         /usr/lib/snapd/apparmor_parser \
+         /usr/sbin/apparmor_parser /sbin/apparmor_parser; do
+    [ -x "$p" ] && { parser="$p"; break; }
+done
+if [ -z "$parser" ]; then
+    echo "snap-apparmor-load-profiles: no apparmor_parser found" >&2
+    exit 0
+fi
+
+loaded=0
+failed=0
+for f in /var/lib/snapd/apparmor/profiles/*; do
+    [ -e "$f" ] || continue
+    if "$parser" -r "$f" >/dev/null 2>&1; then
+        loaded=$((loaded + 1))
+    else
+        failed=$((failed + 1))
+    fi
+done
+
+echo "snap-apparmor-load-profiles: loaded=$loaded failed=$failed parser=$parser"
+exit 0

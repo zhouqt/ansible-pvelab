@@ -150,7 +150,6 @@
     path: "/etc/pve/lxc/{{ pve_juju_controller_vmid }}.conf"
     marker: "# {mark} ANSIBLE JUJU CONTROLLER SETTINGS"
     block: |
-      lxc.apparmor.profile: unconfined
       lxc.cap.drop:
       lxc.cap.drop: mac_override sys_time sys_module sys_rawio
 
