@@ -1,0 +1,146 @@
+---
+
+- name: Define the isolated Juju 3.x command prefix
+  ansible.builtin.set_fact:
+    pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
+    pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
+
+- name: Read OpenStack Juju status before Ceph OSD setup
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+  register: pve_yoga_ceph_status
+  changed_when: false
+
+- name: Require ceph-mon and ceph-osd applications to be deployed
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_ceph_status.rc == 0
+      - "'ceph-mon' in (pve_yoga_ceph_status.stdout | from_json).applications"
+      - "'ceph-osd' in (pve_yoga_ceph_status.stdout | from_json).applications"
+    fail_msg: "run --tags pve-yoga-control-plane to deploy ceph-mon / ceph-osd first, then run the Ceph role."
+
+- name: Copy OSD helper scripts to PVE host
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/pve/scripts/{{ item }}"
+    dest: "/root/{{ item }}"
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - yoga-setup-osd-loop.sh
+    - mk-osd.sh
+
+- name: Build the vmid:loopindex mapping
+  ansible.builtin.set_fact:
+    pve_yoga_osd_loop_spec: >-
+      {{ pve_yoga_osd_vmids | zip(range(0, pve_yoga_osd_vmids | length))
+         | map('join', ':') | join(' ') }}
+
+- name: Set up host loopback OSD devices and CT device mounts
+  ansible.builtin.command: "bash /root/yoga-setup-osd-loop.sh '{{ pve_yoga_osd_loop_spec }}'"
+  environment:
+    OSD_SIZE_MB: "{{ pve_yoga_osd_size_mb }}"
+  register: pve_yoga_ceph_loop_setup
+  changed_when: "'YOGA-SETUP-OSD-LOOP-DONE' in pve_yoga_ceph_loop_setup.stdout"
+
+- name: Restart OSD CTs to apply the new device mount and cgroup rules
+  ansible.builtin.command: "pct reboot {{ item }}"
+  loop: "{{ pve_yoga_osd_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+  when: pve_yoga_ceph_loop_setup.changed
+
+- name: Wait for OSD CTs to come back
+  ansible.builtin.command: "pct exec {{ item }} -- systemctl is-system-running"
+  loop: "{{ pve_yoga_osd_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+  register: pve_yoga_ceph_ct_ready
+  until: pve_yoga_ceph_ct_ready.rc == 0 or 'degraded' in pve_yoga_ceph_ct_ready.stdout
+  retries: 30
+  delay: 5
+  changed_when: false
+
+- name: Require /dev/osd-block inside every OSD CT
+  ansible.builtin.command: "pct exec {{ item }} -- test -b /dev/osd-block"
+  loop: "{{ pve_yoga_osd_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+  changed_when: false
+
+- name: Push the OSD creation helper into each OSD CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ item }}"
+      - /root/mk-osd.sh
+      - /root/mk-osd.sh
+      - --perms
+      - "0700"
+  loop: "{{ pve_yoga_osd_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+
+- name: Create one Ceph OSD per device when missing
+  ansible.builtin.shell: |
+    set -euo pipefail
+    vmid={{ item }}
+    if pct exec "$vmid" -- bash -c 'ls -d /var/lib/ceph/osd/ceph-* >/dev/null 2>&1'; then
+      echo "OSD-EXISTS $vmid"
+    else
+      pct exec "$vmid" -- bash /root/mk-osd.sh
+    fi
+  args:
+    executable: /bin/bash
+  loop: "{{ pve_yoga_osd_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+  register: pve_yoga_ceph_osd_create
+  changed_when: "'OSD-EXISTS' not in pve_yoga_ceph_osd_create.stdout"
+
+- name: Wait for ceph-mon to become active
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} wait-for application ceph-mon --timeout 30m -m {{ pve_yoga_model }}"
+  changed_when: false
+
+- name: Wait for ceph-osd to become active
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} wait-for application ceph-osd --timeout 30m -m {{ pve_yoga_model }}"
+  changed_when: false
+
+- name: Read Ceph cluster health from the first monitor
+  ansible.builtin.command: "pct exec {{ pve_yoga_osd_vmids[0] }} -- ceph -s"
+  register: pve_yoga_ceph_health
+  changed_when: false
+
+- name: Report Ceph cluster health
+  ansible.builtin.debug:
+    var: pve_yoga_ceph_health.stdout_lines

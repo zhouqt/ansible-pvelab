@@ -1,0 +1,243 @@
+---
+
+- name: Define the isolated Juju 3.x command prefix
+  ansible.builtin.set_fact:
+    pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
+    pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
+
+- name: Require the OpenStack keystone admin password
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_keystone_admin_password | length > 0
+    fail_msg: "set vault_pve_yoga_keystone_admin_password (or vault_pve_keystone_admin_password) through Ansible Vault."
+  no_log: true
+
+- name: Require the internal default space and public binding space
+  ansible.builtin.assert:
+    that:
+      - "pve_yoga_network_spaces | selectattr('name', 'equalto', 'public') | map(attribute='cidr') | list == ['192.168.31.0/24']"
+      - "pve_yoga_network_spaces | selectattr('name', 'equalto', pve_yoga_default_space) | map(attribute='cidr') | list == ['192.168.33.0/24']"
+    fail_msg: "the OpenStack endpoint bindings require public=192.168.31.0/24 and internal=192.168.33.0/24."
+
+- name: Read configured Juju model default space
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} model-config -m {{ pve_yoga_model }} default-space"
+  register: pve_yoga_control_default_space
+  changed_when: false
+
+- name: Require verified default space before deploying charms
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_control_default_space.rc == 0
+      - pve_yoga_control_default_space.stdout | trim == pve_yoga_default_space
+    fail_msg: >-
+      the OpenStack model default-space must be {{ pve_yoga_default_space }}. Run
+      --tags pve-yoga-network, then deploy the charms.
+
+- name: Copy Yoga bundle and overlay to PVE host
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/bundles/{{ item }}"
+    dest: "/root/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - openstack-yoga-pve-bundle.yaml
+    - openstack-yoga-pve-overlay.yaml
+
+- name: Push Yoga bundle and overlay into the Juju client CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - "/root/{{ item }}"
+      - "/tmp/{{ item }}"
+  loop:
+    - openstack-yoga-pve-bundle.yaml
+    - openstack-yoga-pve-overlay.yaml
+
+- name: Read existing OpenStack application inventory
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+  register: pve_yoga_control_status
+  changed_when: false
+
+- name: Require a valid OpenStack model status
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_control_status.rc == 0
+      - "'applications' in (pve_yoga_control_status.stdout | from_json)"
+    fail_msg: "cannot read the OpenStack model status; refusing to deploy while the state is unknown."
+
+- name: Deploy the Yoga bundle with the placement/binding overlay
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_yoga_juju_cmd }} deploy /tmp/openstack-yoga-pve-bundle.yaml
+        --overlay /tmp/openstack-yoga-pve-overlay.yaml -m {{ pve_yoga_model }}
+  register: pve_yoga_control_deploy
+  changed_when: "'Deploying' in pve_yoga_control_deploy.stdout or 'added' in pve_yoga_control_deploy.stdout"
+
+- name: Set the keystone admin password
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} config -m {{ pve_yoga_model }} keystone admin-password={{ pve_yoga_keystone_admin_password }}"
+  no_log: true
+
+- name: Wait for keystone to become active
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} wait-for application keystone --timeout 45m -m {{ pve_yoga_model }}"
+  register: pve_yoga_control_keystone_wait
+  changed_when: false
+
+- name: Check whether Vault charm is already authorized
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} run vault/0 get-root-ca --wait --format json -m {{ pve_yoga_model }}"
+  register: pve_yoga_vault_root_ca_pre
+  failed_when: false
+  changed_when: false
+  when: pve_yoga_vault_root_token | length > 0
+  no_log: true
+
+- name: Authorize the Vault charm with the root token
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} run vault/0 authorize-charm token={{ pve_yoga_vault_root_token }} --wait -m {{ pve_yoga_model }}"
+  when:
+    - pve_yoga_vault_root_token | length > 0
+    - pve_yoga_vault_root_ca_pre.rc != 0 or 'BEGIN CERTIFICATE' not in pve_yoga_vault_root_ca_pre.stdout
+  no_log: true
+
+- name: Generate the Vault root CA parameter file inside the Juju client CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "printf '%s\\n' '{\"common_name\": \"root-ca\"}' > /tmp/pve-yoga-vault-ca-params.json"
+  when: pve_yoga_vault_root_token | length > 0
+
+- name: Check whether the Vault root CA already exists
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} run vault/0 get-root-ca --wait --format json -m {{ pve_yoga_model }}"
+  register: pve_yoga_vault_root_ca_check
+  failed_when: false
+  changed_when: false
+  when: pve_yoga_vault_root_token | length > 0
+  no_log: true
+
+- name: Generate the Vault root CA only when it is missing
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} run vault/0 generate-root-ca --params /tmp/pve-yoga-vault-ca-params.json --wait -m {{ pve_yoga_model }}"
+  when:
+    - pve_yoga_vault_root_token | length > 0
+    - pve_yoga_vault_root_ca_check.rc != 0 or 'BEGIN CERTIFICATE' not in pve_yoga_vault_root_ca_check.stdout
+  no_log: true
+
+- name: Read the final OpenStack application inventory
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+  register: pve_yoga_control_status_after
+  changed_when: false
+
+- name: Require the core OpenStack applications to be deployed
+  ansible.builtin.assert:
+    that:
+      - >-
+        ['keystone', 'nova-cloud-controller', 'neutron-api', 'glance', 'cinder', 'placement']
+        | difference((pve_yoga_control_status_after.stdout | from_json).applications.keys() | list)
+        | length == 0
+    fail_msg: "not all core OpenStack applications are deployed; check the bundle deploy output."

@@ -1,0 +1,189 @@
+---
+
+- name: Define the isolated Juju 3.x command prefix
+  ansible.builtin.set_fact:
+    pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
+    pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
+
+- name: Require OVN uplink variables to be consistent
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_compute_uplink_bridge in pve_yoga_network_spaces | map(attribute='bridge') | list
+      - pve_yoga_compute_uplink_guest_interface | length > 0
+      - pve_yoga_compute_uplink_ovn_mapping == 'br-ex:' ~ pve_yoga_compute_uplink_guest_interface
+      - pve_yoga_compute_uplink_ovn_bridge_mapping == 'physnet1:br-ex'
+      - pve_yoga_compute_uplink_vmids | sort == [1204, 1205]
+    fail_msg: "the yoga OVN uplink NIC/bridge variables disagree; refusing to configure OVN."
+
+- name: Read OpenStack Juju application and machine inventory
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+  register: pve_yoga_ovn_status
+  changed_when: false
+
+- name: Require ovn-chassis and nova-compute to be deployed on machines 3/4
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_ovn_status.rc == 0
+      - "'ovn-chassis' in (pve_yoga_ovn_status.stdout | from_json).applications"
+      - "'nova-compute' in (pve_yoga_ovn_status.stdout | from_json).applications"
+      - >-
+        (((pve_yoga_ovn_status.stdout | from_json).applications['nova-compute'].get('units', {})
+          | dict2items | map(attribute='value.machine') | map('string') | unique | list | sort)
+        == ['3', '4'])
+      - >-
+        (((pve_yoga_ovn_status.stdout | from_json).applications['ovn-chassis'].get('units', {})
+          | dict2items | map(attribute='value.machine') | map('string') | unique | list | sort)
+        == ['3', '4'])
+    fail_msg: >-
+      nova-compute / ovn-chassis did not land on machines 3/4 (vmid 1204/1205). First finish
+      --tags pve-yoga-control-plane and confirm the compute unit placement.
+
+- name: Read compute CT and KVM configurations
+  ansible.builtin.command: "{{ item.cmd }} {{ item.vmid }}"
+  loop:
+    - {cmd: "pct config", vmid: 1204}
+    - {cmd: "qm config", vmid: 1205}
+  loop_control:
+    label: "{{ item.cmd }} {{ item.vmid }}"
+  register: pve_yoga_ovn_uplink_configs
+  changed_when: false
+
+- name: Verify the dedicated no-L3 uplink NIC on the compute CT
+  ansible.builtin.assert:
+    that:
+      - "pve_yoga_ovn_uplink_configs.results[0].stdout is search('(?m)^net4: .*name=' ~ pve_yoga_compute_uplink_guest_interface ~ '(?:,|$)')"
+      - "pve_yoga_ovn_uplink_configs.results[0].stdout is search('(?m)^net4: .*bridge=' ~ pve_yoga_compute_uplink_bridge ~ '(?:,|$)')"
+      - "pve_yoga_ovn_uplink_configs.results[0].stdout is search('(?m)^net4: .*ip=manual(?:,|$)')"
+      - "pve_yoga_ovn_uplink_configs.results[0].stdout is not search('(?m)^net4: .*gw=')"
+    fail_msg: "CT 1204 has no valid dedicated uplink NIC; re-run pve-yoga-machines."
+
+- name: Verify the dedicated no-L3 uplink NIC on the compute KVM VM
+  ansible.builtin.assert:
+    that:
+      - "pve_yoga_ovn_uplink_configs.results[1].stdout is search('(?m)^net4: .*bridge=' ~ pve_yoga_compute_uplink_bridge ~ '(?:,|$)')"
+      - "pve_yoga_ovn_uplink_configs.results[1].stdout is search('(?m)^ipconfig4: ip=manual$')"
+    fail_msg: "KVM VMID 1205 has no valid dedicated uplink NIC; re-run pve-yoga-machines."
+
+- name: Verify the uplink interface is visible inside every compute machine
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_yoga_juju_cmd }} ssh -m {{ pve_yoga_model }} {{ item }}
+        ip -o link show dev {{ pve_yoga_compute_uplink_guest_interface }}
+  loop: [3, 4]
+  loop_control:
+    label: "Juju machine {{ item }}"
+  register: pve_yoga_ovn_guest_link_checks
+  changed_when: false
+
+- name: Require the uplink interface visible before changing OVN
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - pve_yoga_compute_uplink_guest_interface in item.stdout
+    fail_msg: >-
+      Juju machine {{ item.item }} does not see {{ pve_yoga_compute_uplink_guest_interface }}.
+      check the naming/config of the 5th virtio NIC and the guest state.
+  loop: "{{ pve_yoga_ovn_guest_link_checks.results }}"
+  loop_control:
+    label: "Juju machine {{ item.item }}"
+
+- name: Read configured ovn-bridge-mappings before changing interface mapping
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} config -m {{ pve_yoga_model }} ovn-chassis ovn-bridge-mappings"
+  register: pve_yoga_ovn_bridge_mapping_result
+  changed_when: false
+
+- name: Require the logical provider mapping before changing interface mapping
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_ovn_bridge_mapping_result.stdout | trim == pve_yoga_compute_uplink_ovn_bridge_mapping
+    fail_msg: >-
+      ovn-bridge-mappings must already be {{ pve_yoga_compute_uplink_ovn_bridge_mapping }}.
+
+- name: Copy OVN uplink mapping helper to PVE host
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/roles/pve-yoga-ovn-uplink/files/configure-ovn-uplink.sh"
+    dest: /root/yoga-configure-ovn-uplink.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install OVN uplink mapping helper in the Juju client CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - /root/yoga-configure-ovn-uplink.sh
+      - /tmp/yoga-configure-ovn-uplink.sh
+      - --perms
+      - "0700"
+
+- name: Configure and verify Juju OVN bridge-interface-mappings
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - >-
+        JUJU_DATA={{ pve_yoga_juju_data }} JUJU_BIN={{ pve_yoga_juju_bin }}
+        MODEL={{ pve_yoga_model }} EXPECTED_MAPPING={{ pve_yoga_compute_uplink_ovn_mapping }}
+        bash /tmp/yoga-configure-ovn-uplink.sh
+  register: pve_yoga_ovn_mapping_result
+  changed_when: "'OVN-UPLINK-MAPPING-OK changed=1' in pve_yoga_ovn_mapping_result.stdout"
+
+- name: Verify the logical provider mapping remains configured
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} config -m {{ pve_yoga_model }} ovn-chassis ovn-bridge-mappings"
+  register: pve_yoga_ovn_bridge_mapping_after
+  changed_when: false
+
+- name: Require the logical provider mapping to remain physnet1:br-ex
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_ovn_bridge_mapping_after.stdout | trim == pve_yoga_compute_uplink_ovn_bridge_mapping
+    fail_msg: >-
+      ovn-bridge-mappings must stay {{ pve_yoga_compute_uplink_ovn_bridge_mapping }},
+      it is a setting independent of bridge-interface-mappings.

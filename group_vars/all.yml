@@ -315,3 +315,70 @@ pve_workload_kvm_machine_id: 23
 pve_allow_machine21_gap_recreation: false
 pve_workload_gap_marker: /var/lib/ansible-pve/openstack-machine21-gap-created
 pve_deploy_control_template: deploy-control-plane.sh.j2
+
+pve_yoga_openstack_series: jammy
+pve_yoga_openstack_version: yoga
+pve_yoga_openstack_origin: cloud:jammy-yoga
+pve_yoga_juju_bin: /snap/bin/juju_yoga
+pve_yoga_juju_channel: "3.6/stable"
+pve_yoga_juju_agent_version: ""
+pve_yoga_juju_db_channel: "4.4/stable"
+pve_yoga_controller_vmid: 1200
+pve_yoga_controller_name: jammy-yoga-ctrl
+pve_yoga_controller_ip: 192.168.31.10
+pve_yoga_juju_client_vmid: 1000
+pve_yoga_juju_client_user: ubuntu
+pve_yoga_juju_data: /home/ubuntu/.local/share/juju-yoga
+pve_yoga_model_name: openstack
+pve_yoga_default_space: internal
+pve_yoga_network_spaces:
+  - name: public
+    bridge: pub31
+    cidr: "192.168.31.0/24"
+    net_index: 0
+  - name: oam
+    bridge: pub32
+    cidr: "192.168.32.0/24"
+    net_index: 1
+  - name: internal
+    bridge: int33
+    cidr: "192.168.33.0/24"
+    net_index: 2
+  - name: storage
+    bridge: int34
+    cidr: "192.168.34.0/24"
+    net_index: 3
+pve_yoga_compute_uplink_bridge: pub31
+pve_yoga_compute_uplink_net_index: 4
+pve_yoga_compute_uplink_guest_interface: ens22
+pve_yoga_compute_uplink_ovn_mapping: "br-ex:{{ pve_yoga_compute_uplink_guest_interface }}"
+pve_yoga_compute_uplink_ovn_bridge_mapping: "physnet1:br-ex"
+pve_yoga_compute_uplink_vmids: [1204, 1205]
+pve_yoga_workload_vmids: [1201, 1202, 1203, 1204, 1205]
+pve_yoga_workload_kvm_vmid: 1205
+pve_yoga_workload_cts:
+  - {vmid: 1201, hostname: jammy-yoga-01, cores: 4, memory: 8192}
+  - {vmid: 1202, hostname: jammy-yoga-02, cores: 4, memory: 8192}
+  - {vmid: 1203, hostname: jammy-yoga-03, cores: 2, memory: 4096}
+  - {vmid: 1204, hostname: jammy-yoga-04, cores: 4, memory: 8192}
+pve_yoga_kvm_workload:
+  vmid: 1205
+  hostname: jammy-yoga-05
+  cores: 4
+  memory: 8192
+  disk: 32
+pve_yoga_osd_vmids: [1201, 1202, 1203, 1204]
+pve_yoga_osd_size_mb: 30720
+pve_yoga_workload_secondary_network_ips:
+  1200: {oam: 192.168.32.10, internal: 192.168.33.10, storage: 192.168.34.10}
+  1201: {oam: 192.168.32.11, internal: 192.168.33.11, storage: 192.168.34.11}
+  1202: {oam: 192.168.32.12, internal: 192.168.33.12, storage: 192.168.34.12}
+  1203: {oam: 192.168.32.13, internal: 192.168.33.13, storage: 192.168.34.13}
+  1204: {oam: 192.168.32.14, internal: 192.168.33.14, storage: 192.168.34.14}
+  1205: {oam: 192.168.32.15, internal: 192.168.33.15, storage: 192.168.34.15}
+pve_yoga_jammy_template: "local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
+pve_yoga_kvm_image_url: "https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
+pve_yoga_run_host_baseline: false
+pve_yoga_keystone_admin_password: "{{ vault_pve_yoga_keystone_admin_password | default(vault_pve_keystone_admin_password | default('')) }}"
+pve_yoga_vault_root_token: "{{ vault_pve_yoga_vault_root_token | default('') }}"
+pve_yoga_deploy_control_template: deploy-yoga-control-plane.sh.j2

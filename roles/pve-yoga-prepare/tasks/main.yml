@@ -1,0 +1,47 @@
+---
+
+- name: Require the yoga host baseline check to be explicitly requested
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_run_host_baseline | bool
+    fail_msg: >-
+      pve-yoga-prepare is a one-off validation step. Make sure the pve host already has, created by hand,
+      the four NAT bridges pub31/pub32/int33/int34 with their SNAT rules are in place,
+      run it explicitly with -e pve_yoga_run_host_baseline=true.
+
+- name: Check PVE host bridge inventory
+  ansible.builtin.command: "ip -o link show {{ item.bridge }}"
+  loop: "{{ pve_yoga_network_spaces }}"
+  loop_control:
+    label: "{{ item.bridge }} ({{ item.name }})"
+  changed_when: false
+
+- name: Read PVE host NAT POSTROUTING rules
+  ansible.builtin.command: iptables -t nat -S POSTROUTING
+  register: pve_yoga_prepare_nat_rules
+  changed_when: false
+
+- name: Require pub31 SNAT for internet egress
+  ansible.builtin.assert:
+    that:
+      - >-
+        pve_yoga_prepare_nat_rules.stdout_lines
+        | select('search', '-s 192[.]168[.]31[.]0/24') | list | length > 0
+    fail_msg: >-
+      the SNAT egress rule for pub31 (192.168.31.0/24) is missing. Run by hand:
+      iptables -t nat -A POSTROUTING -s 192.168.31.0/24 -o vmbr0
+      -j SNAT --to-source 10.1.1.200 (adjust to the real upstream address of vmbr0).
+
+- name: Check PVE local template inventory
+  ansible.builtin.command: pveam list local
+  register: pve_yoga_prepare_template_inventory
+  changed_when: false
+
+- name: Require the jammy CT template
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_jammy_template.split(':')[1] in pve_yoga_prepare_template_inventory.stdout
+    fail_msg: >-
+      {{ pve_yoga_jammy_template }} is missing. On the pve host run
+      `pveam update && pveam download local ubuntu-22.04-standard_22.04-1_amd64.tar.zst`
+      and retry.

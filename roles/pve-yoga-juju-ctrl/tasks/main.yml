@@ -1,0 +1,434 @@
+---
+
+- name: Define the isolated Juju 3.x command prefix
+  ansible.builtin.set_fact:
+    pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
+
+- name: Check existing juju snap on Juju client CT
+  ansible.builtin.command: "pct exec {{ pve_yoga_juju_client_vmid }} -- snap list juju"
+  register: pve_yoga_juju_snap_check
+  failed_when: false
+  changed_when: false
+
+- name: Require an existing Juju client snap before adding the 3.x instance
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_juju_snap_check.rc == 0
+    fail_msg: >-
+      the juju snap is not installed on CT {{ pve_yoga_juju_client_vmid }}. First, as in the reference environment,
+      (--tags pve-juju-ctrl) to install the juju 2.9 client; yoga keeps juju 3.x as a parallel instance.
+
+- name: Enable snapd parallel instances on Juju client CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - snap
+      - set
+      - system
+      - experimental.parallel-instances=true
+  changed_when: false
+
+- name: Check for the Juju 3.x parallel snap instance
+  ansible.builtin.command: "pct exec {{ pve_yoga_juju_client_vmid }} -- snap list juju_yoga"
+  register: pve_yoga_juju_yoga_snap_check
+  failed_when: false
+  changed_when: false
+
+- name: Install Juju 3.x as a parallel snap instance on Juju client CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - snap
+      - install
+      - juju_yoga
+      - "--channel={{ pve_yoga_juju_channel }}"
+  when: pve_yoga_juju_yoga_snap_check.rc != 0
+
+- name: Require the Juju 3.x parallel snap command to exist
+  ansible.builtin.command: "pct exec {{ pve_yoga_juju_client_vmid }} -- test -x {{ pve_yoga_juju_bin }}"
+  changed_when: false
+
+- name: Ensure Juju client account and SSH key in CT {{ pve_yoga_juju_client_vmid }}
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ pve_yoga_juju_client_vmid }} -- bash -lc '
+      id {{ pve_yoga_juju_client_user }} >/dev/null 2>&1 || useradd -m -s /bin/bash {{ pve_yoga_juju_client_user }}
+      usermod -s /bin/bash -aG sudo {{ pve_yoga_juju_client_user }}
+      install -d -m 0700 -o {{ pve_yoga_juju_client_user }} -g {{ pve_yoga_juju_client_user }} /home/{{ pve_yoga_juju_client_user }}/.ssh
+    '
+    pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c 'test -s ~/.ssh/id_ed25519 && test -s ~/.ssh/id_ed25519.pub' || \
+      pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c 'ssh-keygen -q -t ed25519 -N "" -f ~/.ssh/id_ed25519'
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Read Juju client public key
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "cat ~/.ssh/id_ed25519.pub"
+  register: pve_yoga_juju_client_pubkey
+  changed_when: false
+
+- name: Validate Juju client public key output
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_juju_client_pubkey.stdout is match('^ssh-ed25519 [A-Za-z0-9+/]+={0,3}( .*)?$')
+    fail_msg: "the Juju client returned no valid ed25519 public key."
+
+- name: Check whether Juju controller CT exists
+  ansible.builtin.command: "pct status {{ pve_yoga_controller_vmid }}"
+  register: pve_yoga_controller_status
+  failed_when: false
+  changed_when: false
+
+- name: Create Juju controller CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - create
+      - "{{ pve_yoga_controller_vmid }}"
+      - "{{ pve_yoga_jammy_template }}"
+      - --hostname
+      - "{{ pve_yoga_controller_name }}"
+      - --ostype
+      - ubuntu
+      - --cores
+      - "2"
+      - --memory
+      - "4096"
+      - --swap
+      - "0"
+      - --rootfs
+      - "{{ pve_storage }}:32"
+      - --unprivileged
+      - "0"
+      - --features
+      - nesting=1,fuse=1
+      - --net0
+      - "name=eth0,bridge={{ pve_yoga_network_spaces[0].bridge }},ip={{ pve_yoga_controller_ip }}/24,gw={{ pve_yoga_network_spaces[0].cidr | regex_replace('[0-9]+/24$', '1') }}"
+      - --net1
+      - "name=eth1,bridge={{ pve_yoga_network_spaces[1].bridge }},ip={{ pve_yoga_workload_secondary_network_ips[pve_yoga_controller_vmid | string].oam }}/24"
+      - --net2
+      - "name=eth2,bridge={{ pve_yoga_network_spaces[2].bridge }},ip={{ pve_yoga_workload_secondary_network_ips[pve_yoga_controller_vmid | string].internal }}/24"
+      - --net3
+      - "name=eth3,bridge={{ pve_yoga_network_spaces[3].bridge }},ip={{ pve_yoga_workload_secondary_network_ips[pve_yoga_controller_vmid | string].storage }}/24"
+      - --nameserver
+      - 8.8.8.8
+      - --onboot
+      - "1"
+      - --start
+      - "0"
+  when: pve_yoga_controller_status.rc != 0
+
+- name: Read Juju controller CT configuration
+  ansible.builtin.command: "pct config {{ pve_yoga_controller_vmid }}"
+  register: pve_yoga_controller_config
+  changed_when: false
+
+- name: Refuse a mismatched existing Juju controller CT
+  ansible.builtin.assert:
+    that:
+      - "'hostname: {{ pve_yoga_controller_name }}' in pve_yoga_controller_config.stdout"
+      - "'ip={{ pve_yoga_controller_ip }}/24' in pve_yoga_controller_config.stdout"
+    fail_msg: "CT {{ pve_yoga_controller_vmid }} is taken by a different config; refusing to rewrite it."
+
+- name: Configure privileged Juju controller CT capabilities
+  ansible.builtin.blockinfile:
+    path: "/etc/pve/lxc/{{ pve_yoga_controller_vmid }}.conf"
+    marker: "# {mark} ANSIBLE YOGA JUJU CONTROLLER SETTINGS"
+    insertbefore: BOF
+    block: |
+      lxc.cap.drop:
+      lxc.cap.drop: mac_override sys_time sys_module sys_rawio
+
+- name: Refuse an existing Juju controller CT with a DHCP address
+  ansible.builtin.assert:
+    that:
+      - "'ip=dhcp' not in pve_yoga_controller_config.stdout"
+    fail_msg: "the NICs of CT {{ pve_yoga_controller_vmid }} are still on DHCP; configure static IPs first."
+
+- name: Check whether Juju controller CT is running
+  ansible.builtin.command: "pct status {{ pve_yoga_controller_vmid }}"
+  register: pve_yoga_controller_runtime_status
+  changed_when: false
+
+- name: Start Juju controller CT if stopped
+  ansible.builtin.command: "pct start {{ pve_yoga_controller_vmid }}"
+  when: "'status: stopped' in pve_yoga_controller_runtime_status.stdout"
+
+- name: Wait for Juju controller CT systemd
+  ansible.builtin.command: "pct exec {{ pve_yoga_controller_vmid }} -- systemctl is-system-running"
+  register: pve_yoga_controller_systemd
+  until: pve_yoga_controller_systemd.rc == 0 or 'degraded' in pve_yoga_controller_systemd.stdout
+  retries: 30
+  delay: 5
+  changed_when: false
+
+- name: Install Juju controller APT proxy configuration
+  ansible.builtin.copy:
+    content: |
+      Acquire::http::Proxy "{{ pve_maas_http_proxy }}";
+      Acquire::https::Proxy "{{ pve_maas_https_proxy }}";
+    dest: /root/pve-yoga-controller-apt-proxy.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Push APT proxy configuration into controller CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ pve_yoga_controller_vmid }}"
+      - /root/pve-yoga-controller-apt-proxy.conf
+      - /etc/apt/apt.conf.d/90pve-proxy
+      - --perms
+      - "0644"
+
+- name: Install Juju controller shell proxy environment
+  ansible.builtin.copy:
+    content: |
+      export http_proxy="{{ pve_maas_http_proxy }}" https_proxy="{{ pve_maas_https_proxy }}"
+      export HTTP_PROXY="{{ pve_maas_http_proxy }}" HTTPS_PROXY="{{ pve_maas_https_proxy }}"
+      export no_proxy="{{ pve_maas_no_proxy }},192.168.31.0/24,192.168.32.0/24,192.168.33.0/24,192.168.34.0/24"
+      export NO_PROXY="{{ pve_maas_no_proxy }},192.168.31.0/24,192.168.32.0/24,192.168.33.0/24,192.168.34.0/24"
+    dest: /root/pve-yoga-controller-proxy-env.sh
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Push shell proxy environment into controller CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ pve_yoga_controller_vmid }}"
+      - /root/pve-yoga-controller-proxy-env.sh
+      - /etc/profile.d/90pve-proxy.sh
+      - --perms
+      - "0644"
+
+- name: Initialize Juju controller CT account, SSH, and snapd
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ pve_yoga_controller_vmid }} -- bash -lc '
+      touch /etc/cloud/cloud-init.disabled
+      id ubuntu >/dev/null 2>&1 || useradd -m -s /bin/bash ubuntu
+      usermod -s /bin/bash -aG sudo ubuntu
+      printf "%s\n" "ubuntu ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/90-juju
+      chmod 0440 /etc/sudoers.d/90-juju
+      install -d -m 0700 -o ubuntu -g ubuntu /home/ubuntu/.ssh
+      install -d -m 0700 /root/.ssh
+      apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq snapd openssh-server
+      systemctl enable --now ssh
+      systemctl enable --now snapd snapd.socket || true
+      for n in $(seq 1 30); do snap list >/dev/null 2>&1 && break; sleep 2; done
+    '
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Configure Juju controller snapd proxy
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_controller_vmid }}"
+      - --
+      - snap
+      - set
+      - system
+      - "proxy.http={{ pve_maas_http_proxy }}"
+      - "proxy.https={{ pve_maas_https_proxy }}"
+  changed_when: false
+
+- name: Check required Juju database snap on controller CT
+  ansible.builtin.command: "pct exec {{ pve_yoga_controller_vmid }} -- snap list juju-db"
+  register: pve_yoga_juju_db_check
+  failed_when: false
+  changed_when: false
+
+- name: Install Juju database snap required for manual bootstrap
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_controller_vmid }}"
+      - --
+      - snap
+      - install
+      - juju-db
+      - "--channel={{ pve_yoga_juju_db_channel }}"
+  when: pve_yoga_juju_db_check.rc != 0
+
+- name: Copy Juju client public key to PVE host
+  ansible.builtin.copy:
+    content: "{{ pve_yoga_juju_client_pubkey.stdout | trim }}\n"
+    dest: /root/juju-yoga-client.pub
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Push Juju client public key to controller CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ pve_yoga_controller_vmid }}"
+      - /root/juju-yoga-client.pub
+      - /tmp/juju-client.pub
+      - --perms
+      - "0600"
+
+- name: Authorize Juju client key on controller CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_controller_vmid }}"
+      - --
+      - bash
+      - -lc
+      - >-
+        key=$(cat /tmp/juju-client.pub);
+        for home in /home/ubuntu /root; do
+          install -d -m 0700 "$home/.ssh";
+          touch "$home/.ssh/authorized_keys";
+          grep -qxF "$key" "$home/.ssh/authorized_keys" || printf '%s\n' "$key" >>"$home/.ssh/authorized_keys";
+          chmod 0600 "$home/.ssh/authorized_keys";
+        done;
+        chown -R ubuntu:ubuntu /home/ubuntu/.ssh;
+        rm -f /tmp/juju-client.pub
+  changed_when: false
+
+- name: Check whether Juju controller already exists
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} controllers --format json"
+  register: pve_yoga_controller_list
+  changed_when: false
+
+- name: Require Juju controller listing to be valid
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_controller_list.rc == 0
+      - "'controllers' in (pve_yoga_controller_list.stdout | from_json)"
+    fail_msg: "cannot read the Juju 3.x controller JSON list; refusing to bootstrap while the state is unknown."
+
+- name: Add controller IP to Juju client known_hosts
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ip={{ pve_yoga_controller_ip }}
+    pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c \
+      "install -d -m 0700 ~/.ssh; touch ~/.ssh/known_hosts; \
+       ssh-keygen -F \"[$ip]:22\" -f ~/.ssh/known_hosts >/dev/null || \
+         ssh-keygen -F \"$ip\" -f ~/.ssh/known_hosts >/dev/null" && exit 0
+    keyscan=$(ssh-keyscan -H "$ip" 2>/dev/null)
+    [[ -n "$keyscan" ]] || { echo "SSH did not become available on controller $ip" >&2; exit 1; }
+    printf '%s\n' "$keyscan" | pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c 'cat >> ~/.ssh/known_hosts'
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Bootstrap Juju 3.x manual controller
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_yoga_juju_cmd }} bootstrap manual/ubuntu@{{ pve_yoga_controller_ip }}
+        {{ pve_yoga_controller_name }} --bootstrap-series={{ pve_yoga_openstack_series }}
+        {% if pve_yoga_juju_agent_version | length > 0 %}--agent-version={{ pve_yoga_juju_agent_version }}{% endif %}
+  when: pve_yoga_controller_name not in (pve_yoga_controller_list.stdout | from_json).controllers
+
+- name: Refresh Juju controller list after bootstrap
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} controllers --format json"
+  register: pve_yoga_controller_list_after_bootstrap
+  changed_when: false
+
+- name: Require Juju controller to be available after bootstrap
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_controller_list_after_bootstrap.rc == 0
+      - pve_yoga_controller_name in (pve_yoga_controller_list_after_bootstrap.stdout | from_json).controllers
+    fail_msg: "the Juju controller is not registered or not usable; refusing to create a model."
+
+- name: Read Juju models after bootstrap
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} models --controller {{ pve_yoga_controller_name }} --format json"
+  register: pve_yoga_models_after_bootstrap
+  failed_when: false
+  changed_when: false
+
+- name: Require Juju model listing to succeed
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_models_after_bootstrap.rc == 0
+      - "'models' in (pve_yoga_models_after_bootstrap.stdout | from_json)"
+    fail_msg: "cannot read the model list; stopping to avoid creating a duplicate model."
+
+- name: Create OpenStack Juju model
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_yoga_juju_cmd }} add-model --controller {{ pve_yoga_controller_name }}
+        {{ pve_yoga_model_name }} --config enable-os-upgrade=false
+  when: >-
+    ((pve_yoga_models_after_bootstrap.stdout | from_json).models
+     | selectattr('short-name', 'equalto', pve_yoga_model_name) | list | length) == 0

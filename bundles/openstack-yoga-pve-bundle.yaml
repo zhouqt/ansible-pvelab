@@ -1,0 +1,273 @@
+name: openstack-yoga-pve
+series: jammy
+variables:
+  openstack-origin: &openstack-origin cloud:jammy-yoga
+  ceph-origin: &ceph-origin ""
+
+relations:
+- - nova-cloud-controller:identity-service
+  - keystone:identity-service
+- - glance:identity-service
+  - keystone:identity-service
+- - neutron-api:identity-service
+  - keystone:identity-service
+- - cinder:identity-service
+  - keystone:identity-service
+- - placement:identity-service
+  - keystone:identity-service
+- - openstack-dashboard:identity-service
+  - keystone:identity-service
+- - nova-cloud-controller:amqp
+  - rabbitmq-server:amqp
+- - nova-compute:amqp
+  - rabbitmq-server:amqp
+- - neutron-api:amqp
+  - rabbitmq-server:amqp
+- - glance:amqp
+  - rabbitmq-server:amqp
+- - cinder:amqp
+  - rabbitmq-server:amqp
+- - nova-cloud-controller:image-service
+  - glance:image-service
+- - nova-compute:image-service
+  - glance:image-service
+- - cinder:image-service
+  - glance:image-service
+- - nova-cloud-controller:cloud-compute
+  - nova-compute:cloud-compute
+- - nova-cloud-controller:neutron-api
+  - neutron-api:neutron-api
+- - nova-cloud-controller:placement
+  - placement:placement
+- - nova-cloud-controller:cinder-volume-service
+  - cinder:cinder-volume-service
+- - keystone:memcache
+  - memcached:cache
+- - keystone:shared-db
+  - keystone-mysql-router:shared-db
+- - nova-cloud-controller:shared-db
+  - nova-mysql-router:shared-db
+- - glance:shared-db
+  - glance-mysql-router:shared-db
+- - neutron-api:shared-db
+  - neutron-mysql-router:shared-db
+- - cinder:shared-db
+  - cinder-mysql-router:shared-db
+- - placement:shared-db
+  - placement-mysql-router:shared-db
+- - openstack-dashboard:shared-db
+  - dashboard-mysql-router:shared-db
+- - vault:shared-db
+  - vault-mysql-router:shared-db
+- - keystone-mysql-router:db-router
+  - mysql-innodb-cluster:db-router
+- - nova-mysql-router:db-router
+  - mysql-innodb-cluster:db-router
+- - glance-mysql-router:db-router
+  - mysql-innodb-cluster:db-router
+- - neutron-mysql-router:db-router
+  - mysql-innodb-cluster:db-router
+- - cinder-mysql-router:db-router
+  - mysql-innodb-cluster:db-router
+- - placement-mysql-router:db-router
+  - mysql-innodb-cluster:db-router
+- - dashboard-mysql-router:db-router
+  - mysql-innodb-cluster:db-router
+- - vault-mysql-router:db-router
+  - mysql-innodb-cluster:db-router
+- - neutron-api-plugin-ovn:neutron-plugin
+  - neutron-api:neutron-plugin-api-subordinate
+- - ovn-central:ovsdb-cms
+  - neutron-api-plugin-ovn:ovsdb-cms
+- - ovn-chassis:nova-compute
+  - nova-compute:neutron-plugin
+- - ovn-chassis:ovsdb
+  - ovn-central:ovsdb
+- - vault:certificates
+  - keystone:certificates
+- - vault:certificates
+  - nova-cloud-controller:certificates
+- - vault:certificates
+  - glance:certificates
+- - vault:certificates
+  - neutron-api:certificates
+- - vault:certificates
+  - neutron-api-plugin-ovn:certificates
+- - vault:certificates
+  - cinder:certificates
+- - vault:certificates
+  - placement:certificates
+- - vault:certificates
+  - openstack-dashboard:certificates
+- - vault:certificates
+  - ovn-central:certificates
+- - vault:certificates
+  - ovn-chassis:certificates
+- - vault:certificates
+  - mysql-innodb-cluster:certificates
+- - ceph-mon:client
+  - nova-compute:ceph
+- - ceph-mon:client
+  - cinder-ceph:ceph
+- - ceph-mon:client
+  - glance:ceph
+- - nova-compute:ceph-access
+  - cinder-ceph:ceph-access
+- - cinder-ceph:storage-backend
+  - cinder:storage-backend
+- - ceph-osd:mon
+  - ceph-mon:osd
+- - ntp:juju-info
+  - nova-compute:juju-info
+- - nrpe:general-info
+  - keystone:juju-info
+- - nrpe:general-info
+  - nova-cloud-controller:juju-info
+- - nrpe:general-info
+  - glance:juju-info
+- - nrpe:general-info
+  - neutron-api:juju-info
+- - nrpe:general-info
+  - cinder:juju-info
+- - nrpe:general-info
+  - placement:juju-info
+- - nrpe:general-info
+  - openstack-dashboard:juju-info
+- - nrpe:general-info
+  - rabbitmq-server:juju-info
+- - nrpe:general-info
+  - mysql-innodb-cluster:juju-info
+- - nrpe:general-info
+  - vault:juju-info
+- - nrpe:general-info
+  - ovn-central:juju-info
+
+applications:
+  keystone:
+    charm: ch:keystone
+    channel: yoga/stable
+    options:
+      openstack-origin: *openstack-origin
+  keystone-mysql-router:
+    charm: ch:mysql-router
+    channel: 8.0/stable
+
+  nova-cloud-controller:
+    charm: ch:nova-cloud-controller
+    channel: yoga/stable
+    options:
+      openstack-origin: *openstack-origin
+      network-manager: Neutron
+  nova-mysql-router:
+    charm: ch:mysql-router
+    channel: 8.0/stable
+
+  placement:
+    charm: ch:placement
+    channel: yoga/stable
+    options:
+      openstack-origin: *openstack-origin
+  placement-mysql-router:
+    charm: ch:mysql-router
+    channel: 8.0/stable
+
+  glance:
+    charm: ch:glance
+    channel: yoga/stable
+    options:
+      openstack-origin: *openstack-origin
+  glance-mysql-router:
+    charm: ch:mysql-router
+    channel: 8.0/stable
+
+  openstack-dashboard:
+    charm: ch:openstack-dashboard
+    channel: yoga/stable
+    options:
+      openstack-origin: *openstack-origin
+  dashboard-mysql-router:
+    charm: ch:mysql-router
+    channel: 8.0/stable
+
+  neutron-api:
+    charm: ch:neutron-api
+    channel: yoga/stable
+    options:
+      openstack-origin: *openstack-origin
+      neutron-security-groups: true
+      flat-network-providers: physnet1
+  neutron-mysql-router:
+    charm: ch:mysql-router
+    channel: 8.0/stable
+  neutron-api-plugin-ovn:
+    charm: ch:neutron-api-plugin-ovn
+    channel: yoga/stable
+    options:
+      openstack-origin: *openstack-origin
+      ovn-dhcp4-global-options: ""
+
+  cinder:
+    charm: ch:cinder
+    channel: yoga/stable
+    options:
+      openstack-origin: *openstack-origin
+      block-device: None
+      glance-api-version: 2
+  cinder-mysql-router:
+    charm: ch:mysql-router
+    channel: 8.0/stable
+  cinder-ceph:
+    charm: ch:cinder-ceph
+    channel: yoga/stable
+    options:
+      openstack-origin: *openstack-origin
+
+  memcached:
+    charm: ch:memcached
+    channel: latest/stable
+
+  vault:
+    charm: ch:vault
+    channel: 1.7/stable
+  vault-mysql-router:
+    charm: ch:mysql-router
+    channel: 8.0/stable
+
+  mysql-innodb-cluster:
+    charm: ch:mysql-innodb-cluster
+    channel: 8.0/stable
+    options:
+      innodb-buffer-pool-size: 256M
+
+  rabbitmq-server:
+    charm: ch:rabbitmq-server
+    channel: 3.9/stable
+
+  ovn-central:
+    charm: ch:ovn-central
+    channel: 22.03/stable
+  ovn-chassis:
+    charm: ch:ovn-chassis
+    channel: 22.03/stable
+    options:
+      ovn-bridge-mappings: physnet1:br-ex
+
+  ceph-mon:
+    charm: ch:ceph-mon
+    channel: quincy/stable
+    options:
+      expected-osd-count: 4
+      monitor-count: 3
+  ceph-osd:
+    charm: ch:ceph-osd
+    channel: quincy/stable
+    options:
+      osd-devices: /dev/osd-block
+      osd-encrypt: false
+
+  ntp:
+    charm: ch:ntp
+    channel: stable
+  nrpe:
+    charm: ch:nrpe
+    channel: stable

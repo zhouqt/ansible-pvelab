@@ -1,0 +1,252 @@
+---
+
+- name: Validate the yoga workload inventory is self-consistent
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_workload_cts | map(attribute='vmid') | list == [1201, 1202, 1203, 1204]
+      - pve_yoga_kvm_workload.vmid == pve_yoga_workload_kvm_vmid
+      - pve_yoga_workload_vmids == (pve_yoga_workload_cts | map(attribute='vmid') | list) + [pve_yoga_workload_kvm_vmid]
+      - (pve_yoga_workload_secondary_network_ips.keys() | map('int') | list | sort)
+        == (pve_yoga_workload_vmids + [pve_yoga_controller_vmid]) | sort
+    fail_msg: "the pve_yoga_* workload inventory is inconsistent; refusing to create guests."
+
+- name: Read Juju client public key for workload authorization
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "cat ~/.ssh/id_ed25519.pub"
+  register: pve_yoga_machines_client_pubkey
+  changed_when: false
+
+- name: Validate Juju client public key
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_machines_client_pubkey.stdout is match('^ssh-ed25519 [A-Za-z0-9+/]+={0,3}( .*)?$')
+    fail_msg: "cannot read the Juju client ed25519 public key; run pve-yoga-juju-ctrl first."
+
+- name: Check whether each yoga workload CT exists
+  ansible.builtin.command: "pct status {{ item.vmid }}"
+  loop: "{{ pve_yoga_workload_cts }}"
+  loop_control:
+    label: "CT {{ item.vmid }}"
+  register: pve_yoga_ct_status
+  failed_when: false
+  changed_when: false
+
+- name: Create yoga workload CTs
+  ansible.builtin.command:
+    argv:
+      - pct
+      - create
+      - "{{ item.item.vmid }}"
+      - "{{ pve_yoga_jammy_template }}"
+      - --hostname
+      - "{{ item.item.hostname }}"
+      - --ostype
+      - ubuntu
+      - --cores
+      - "{{ item.item.cores }}"
+      - --memory
+      - "{{ item.item.memory }}"
+      - --swap
+      - "0"
+      - --rootfs
+      - "{{ pve_storage }}:32"
+      - --unprivileged
+      - "0"
+      - --features
+      - nesting=1,fuse=1
+      - --net0
+      - "name=eth0,bridge={{ pve_yoga_network_spaces[0].bridge }},ip=192.168.31.{{ item.item.vmid - 1190 }}/24,gw=192.168.31.1"
+      - --net1
+      - "name=eth1,bridge={{ pve_yoga_network_spaces[1].bridge }},ip={{ pve_yoga_workload_secondary_network_ips[item.item.vmid | string].oam }}/24"
+      - --net2
+      - "name=eth2,bridge={{ pve_yoga_network_spaces[2].bridge }},ip={{ pve_yoga_workload_secondary_network_ips[item.item.vmid | string].internal }}/24"
+      - --net3
+      - "name=eth3,bridge={{ pve_yoga_network_spaces[3].bridge }},ip={{ pve_yoga_workload_secondary_network_ips[item.item.vmid | string].storage }}/24"
+      - --nameserver
+      - 8.8.8.8
+      - --onboot
+      - "1"
+      - --start
+      - "0"
+  loop: "{{ pve_yoga_ct_status.results }}"
+  loop_control:
+    label: "CT {{ item.item.vmid }}"
+  when: item.rc != 0
+
+- name: Read each yoga workload CT configuration
+  ansible.builtin.command: "pct config {{ item.vmid }}"
+  loop: "{{ pve_yoga_workload_cts }}"
+  loop_control:
+    label: "CT {{ item.vmid }}"
+  register: pve_yoga_ct_configs
+  changed_when: false
+
+- name: Require each yoga workload CT to match the declared identity and static NICs
+  ansible.builtin.assert:
+    that:
+      - "'hostname: ' ~ item.item.hostname in item.stdout"
+      - "item.stdout is search('(?m)^net0: .*bridge=' ~ pve_yoga_network_spaces[0].bridge ~ '(?:,|$)')"
+      - "item.stdout is search('(?m)^net0: .*ip=192[.]168[.]31[.]' ~ (item.item.vmid - 1190) ~ '/24')"
+      - "item.stdout is search('(?m)^net0: .*gw=192[.]168[.]31[.]1(?:,|$)')"
+      - "item.stdout is search('(?m)^net1: .*bridge=' ~ pve_yoga_network_spaces[1].bridge ~ '(?:,|$)')"
+      - "item.stdout is search('(?m)^net2: .*bridge=' ~ pve_yoga_network_spaces[2].bridge ~ '(?:,|$)')"
+      - "item.stdout is search('(?m)^net3: .*bridge=' ~ pve_yoga_network_spaces[3].bridge ~ '(?:,|$)')"
+      - "'ip=dhcp' not in item.stdout"
+    fail_msg: "the hostname/static NICs of CT {{ item.item.vmid }} do not match the inventory; refusing to rewrite."
+  loop: "{{ pve_yoga_ct_configs.results }}"
+  loop_control:
+    label: "CT {{ item.item.vmid }}"
+
+- name: Configure privileged capability baseline on yoga workload CTs
+  ansible.builtin.blockinfile:
+    path: "/etc/pve/lxc/{{ item.vmid }}.conf"
+    marker: "# {mark} ANSIBLE YOGA WORKLOAD SETTINGS"
+    insertbefore: BOF
+    block: |
+      lxc.cap.drop:
+      lxc.cap.drop: mac_override sys_time sys_module sys_rawio
+  loop: "{{ pve_yoga_workload_cts }}"
+  loop_control:
+    label: "CT {{ item.vmid }}"
+
+- name: Check runtime state of yoga workload CTs
+  ansible.builtin.command: "pct status {{ item.vmid }}"
+  loop: "{{ pve_yoga_workload_cts }}"
+  loop_control:
+    label: "CT {{ item.vmid }}"
+  register: pve_yoga_ct_runtime
+  changed_when: false
+
+- name: Start stopped yoga workload CTs
+  ansible.builtin.command: "pct start {{ item.item.vmid }}"
+  loop: "{{ pve_yoga_ct_runtime.results }}"
+  loop_control:
+    label: "CT {{ item.item.vmid }}"
+  when: "'status: stopped' in item.stdout"
+
+- name: Wait for yoga workload CT systemd
+  ansible.builtin.command: "pct exec {{ item.vmid }} -- systemctl is-system-running"
+  loop: "{{ pve_yoga_workload_cts }}"
+  loop_control:
+    label: "CT {{ item.vmid }}"
+  register: pve_yoga_ct_systemd
+  until: pve_yoga_ct_systemd.rc == 0 or 'degraded' in pve_yoga_ct_systemd.stdout
+  retries: 30
+  delay: 5
+  changed_when: false
+
+- name: Push yoga CT init script to PVE host
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/pve/scripts/juju-ct-init.sh"
+    dest: /root/juju-yoga-ct-init.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Initialize yoga workload CTs (ubuntu user, NOPASSWD sudo, client key, snapd)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    for vmid in {{ pve_yoga_workload_cts | map(attribute='vmid') | join(' ') }}; do
+      pct push "$vmid" /root/juju-yoga-ct-init.sh /root/juju-ct-init.sh --perms 0700
+      pct exec "$vmid" -- env JUJU_CLIENT_PUBKEY='{{ pve_yoga_machines_client_pubkey.stdout | trim }}' \
+        bash /root/juju-ct-init.sh
+      pct exec "$vmid" -- rm -f /root/juju-ct-init.sh
+    done
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Create and configure the yoga KVM workload VM
+  ansible.builtin.include_tasks: kvm-1205.yml
+
+- name: Install yoga machine-registration helper in Juju client CT
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct push {{ pve_yoga_juju_client_vmid }} \
+      {{ playbook_dir }}/pve/scripts/yoga-add-juju-machine.sh \
+      /usr/local/sbin/yoga-add-juju-machine.sh --perms 0755
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Seed Juju client known_hosts for every yoga workload guest
+  ansible.builtin.shell: |
+    set -euo pipefail
+    for vmid in {{ pve_yoga_workload_vmids | join(' ') }}; do
+      ip="192.168.31.$((vmid - 1190))"
+      key=
+      for _ in $(seq 1 60); do
+        key=$(ssh-keyscan -T 3 -H "$ip" 2>/dev/null) && [[ -n "$key" ]] && break
+        sleep 5
+      done
+      [[ -n "$key" ]] || { echo "ERROR: SSH not available on $ip" >&2; exit 1; }
+      printf '%s\n' "$key" | pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c \
+        "install -d -m 0700 ~/.ssh; touch ~/.ssh/known_hosts; if ssh-keygen -F \"[$ip]:22\" -f ~/.ssh/known_hosts >/dev/null || ssh-keygen -F \"$ip\" -f ~/.ssh/known_hosts >/dev/null; then cat >/dev/null; else cat >> ~/.ssh/known_hosts; fi"
+    done
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Register yoga workload guests as Juju machines 0-4
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - >-
+        JUJU_BIN={{ pve_yoga_juju_bin }} JUJU_DATA={{ pve_yoga_juju_data }}
+        /usr/local/sbin/yoga-add-juju-machine.sh 192.168.31.{{ item - 1190 }}
+        {{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}
+  loop: "{{ pve_yoga_workload_vmids }}"
+  loop_control:
+    label: "vmid {{ item }} → machine {{ item - 1201 }}"
+  changed_when: false
+
+- name: Read OpenStack Juju model status after machine registration
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }} status -m {{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }} --format json"
+  register: pve_yoga_machines_status
+  changed_when: false
+
+- name: Require yoga machines 0-4 to be registered with the expected primary address
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_machines_status.rc == 0
+      - "'machines' in (pve_yoga_machines_status.stdout | from_json)"
+      - >-
+        ((pve_yoga_machines_status.stdout | from_json).machines | default({})
+          | dict2items | map(attribute='key') | map('int') | list | sort)
+        == (range(0, pve_yoga_workload_vmids | length) | list)
+      - >-
+        '192.168.31.' ~ (item - 1190) in (
+          (pve_yoga_machines_status.stdout | from_json).machines[(item - 1201) | string].get('ip-addresses', [])
+          + [(pve_yoga_machines_status.stdout | from_json).machines[(item - 1201) | string].get('dns-name', '')]
+        )
+    fail_msg: >-
+      Juju machines 0-4 were not registered as expected (should be vmid 1201-1205, primary addresses 192.168.31.11-15).
+    loop: "{{ pve_yoga_workload_vmids }}"
+  loop_control:
+    label: "vmid {{ item }} → machine {{ item - 1201 }}"

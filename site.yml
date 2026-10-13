@@ -628,3 +628,45 @@
   become: false
   tags: [never, pve-ovn-uplink]
   roles: [pve-ovn-uplink]
+
+- name: Validate the PVE yoga host baseline (bridges, pub31 SNAT, jammy template)
+  hosts: pve
+  become: false
+  tags: [never, pve-yoga-prepare]
+  roles: [pve-yoga-prepare]
+
+- name: Bootstrap Juju 3.x manual controller for the yoga environment
+  hosts: pve
+  become: false
+  tags: [never, pve-yoga-juju-ctrl]
+  roles: [pve-yoga-juju-ctrl]
+
+- name: Create and register PVE yoga workload machines
+  hosts: pve
+  become: false
+  tags: [never, pve-yoga-machines]
+  roles: [pve-yoga-machines]
+
+- name: Configure Juju spaces for the yoga environment
+  hosts: pve
+  become: false
+  tags: [never, pve-yoga-network]
+  roles: [pve-yoga-network]
+
+- name: Deploy OpenStack Yoga control plane on PVE
+  hosts: pve
+  become: false
+  tags: [never, pve-yoga-control-plane]
+  roles: [pve-yoga-control-plane]
+
+- name: Set up Ceph OSDs for the yoga environment
+  hosts: pve
+  become: false
+  tags: [never, pve-yoga-ceph]
+  roles: [pve-yoga-ceph]
+
+- name: Configure the PVE yoga compute uplink for OVN br-ex
+  hosts: pve
+  become: false
+  tags: [never, pve-yoga-ovn-uplink]
+  roles: [pve-yoga-ovn-uplink]
