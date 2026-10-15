@@ -1,0 +1,50 @@
+---
+
+- name: Define the Juju / OpenStack command prefixes for this environment
+  ansible.builtin.set_fact:
+    pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
+    pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
+    pve_yoga_openstack_argv:
+      - bash
+      - "{{ playbook_dir }}/openstack-wrapper.sh"
+      - openstack
+    pve_yoga_openstack_env:
+      OPENSTACK_RC_FILE: "{{ pve_yoga_openrc_file }}"
+
+- name: Produce the client credentials for this environment
+  ansible.builtin.include_tasks: credentials.yml
+
+- name: Verify the Keystone endpoint is reachable with the client RC
+  ansible.builtin.command:
+    argv: "{{ pve_yoga_openstack_argv + ['token', 'issue'] }}"
+  environment: "{{ pve_yoga_openstack_env }}"
+  register: pve_yoga_resources_token
+  changed_when: false
+  failed_when: false
+
+- name: Fail with a hint when Keystone is unreachable
+  ansible.builtin.assert:
+    that: pve_yoga_resources_token.rc == 0
+    fail_msg: |
+      authentication against Keystone {{ pve_yoga_keystone_address }} failed. Common causes:
+        1. the controller machine has no route to {{ pve_yoga_public_cidr }} -- add one:
+           sudo ip route add {{ pve_yoga_public_cidr }} via {{ pve_yoga_control_route_gateway }} dev <local NIC>
+        2. the control plane of this env is not deployed yet (run --tags pve-yoga-control-plane and confirm the keystone unit is active)
+      --- stderr ---
+      {{ pve_yoga_resources_token.stderr | default('') }}
+      --- stdout ---
+      {{ pve_yoga_resources_token.stdout | default('') }}
+
+- name: Create the OpenStack resources for this environment
+  ansible.builtin.include_tasks: resources.yml
+
+- name: Report the environment resources
+  ansible.builtin.debug:
+    msg: >-
+      {{ pve_yoga_env_slug }}:flavor {{ pve_yoga_resources_flavors | map(attribute='name') | join(', ') }}
+      / image {{ pve_yoga_resources_images | map(attribute='name') | join(', ') }}
+      / ext-net {{ pve_yoga_resources_ext_net }} (FIP pool
+      {{ pve_yoga_resources_floating_pool_start }}-{{ pve_yoga_resources_floating_pool_end }})
+      / tenant-net {{ pve_yoga_resources_tenant_net }} / router {{ pve_yoga_resources_router }}
+      / keypair {{ pve_yoga_resources_keypair }}
+      -- client RC: {{ pve_yoga_openrc_file }}

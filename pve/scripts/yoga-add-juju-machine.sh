@@ -2,9 +2,10 @@
 set -euo pipefail
 ip="$1"
 model="$2"
-export HOME=/home/ubuntu PATH=/snap/bin:/usr/bin:/bin
+export HOME="${HOME:-$(getent passwd "$(id -un)" | cut -d: -f6)}"
+export PATH=/snap/bin:/usr/bin:/bin
 juju="${JUJU_BIN:-/snap/bin/juju_yoga}"
-export JUJU_DATA="${JUJU_DATA:-/home/ubuntu/.local/share/juju-yoga}"
+export JUJU_DATA="${JUJU_DATA:-$HOME/.local/share/juju}"
 status="$("$juju" status -m "$model" --format json)"
 if python3 -c '
 import json, sys

@@ -44,19 +44,18 @@
     qm set {{ pve_yoga_kvm_workload.vmid }} --ide2 '{{ pve_storage }}:cloudinit' --boot order=scsi0
     qm set {{ pve_yoga_kvm_workload.vmid }} \
       --ciuser ubuntu --sshkeys /root/juju-yoga-client.pub \
-      --ipconfig0 ip=192.168.31.{{ pve_yoga_kvm_workload.vmid - 1190 }}/24,gw=192.168.31.1 \
+      --ipconfig0 ip={{ pve_yoga_public_prefix }}.{{ pve_yoga_kvm_workload.vmid - pve_yoga_ip_offset }}/24,gw={{ pve_yoga_public_gateway }} \
       --ipconfig1 ip={{ pve_yoga_workload_secondary_network_ips[pve_yoga_kvm_workload.vmid | string].oam }}/24 \
       --ipconfig2 ip={{ pve_yoga_workload_secondary_network_ips[pve_yoga_kvm_workload.vmid | string].internal }}/24 \
       --ipconfig3 ip={{ pve_yoga_workload_secondary_network_ips[pve_yoga_kvm_workload.vmid | string].storage }}/24 \
-      --ipconfig4 ip=manual \
       --nameserver 8.8.8.8
   args:
     executable: /bin/bash
   environment:
-    HTTP_PROXY: "{{ pve_maas_http_proxy }}"
-    HTTPS_PROXY: "{{ pve_maas_https_proxy }}"
-    http_proxy: "{{ pve_maas_http_proxy }}"
-    https_proxy: "{{ pve_maas_https_proxy }}"
+    HTTP_PROXY: "{{ pve_yoga_http_proxy }}"
+    HTTPS_PROXY: "{{ pve_yoga_https_proxy }}"
+    http_proxy: "{{ pve_yoga_http_proxy }}"
+    https_proxy: "{{ pve_yoga_https_proxy }}"
   when: pve_yoga_kvm_status.rc != 0
 
 - name: Read configuration of the KVM workload VM
@@ -68,13 +67,13 @@
   ansible.builtin.assert:
     that:
       - "'name: ' ~ pve_yoga_kvm_workload.hostname in pve_yoga_kvm_config.stdout"
-      - "'ipconfig0: ip=192.168.31.' ~ (pve_yoga_kvm_workload.vmid - 1190) ~ '/24,gw=192.168.31.1' in pve_yoga_kvm_config.stdout"
+      - "'ipconfig0: ip=' ~ pve_yoga_public_prefix ~ '.' ~ (pve_yoga_kvm_workload.vmid - pve_yoga_ip_offset) ~ '/24,gw=' ~ pve_yoga_public_gateway in pve_yoga_kvm_config.stdout"
       - "pve_yoga_kvm_config.stdout is search('(?m)^net0: .*bridge=' ~ pve_yoga_network_spaces[0].bridge ~ '(?:,|$)')"
       - "pve_yoga_kvm_config.stdout is search('(?m)^net1: .*bridge=' ~ pve_yoga_network_spaces[1].bridge ~ '(?:,|$)')"
       - "pve_yoga_kvm_config.stdout is search('(?m)^net2: .*bridge=' ~ pve_yoga_network_spaces[2].bridge ~ '(?:,|$)')"
       - "pve_yoga_kvm_config.stdout is search('(?m)^net3: .*bridge=' ~ pve_yoga_network_spaces[3].bridge ~ '(?:,|$)')"
       - "pve_yoga_kvm_config.stdout is search('(?m)^net4: .*bridge=' ~ pve_yoga_compute_uplink_bridge ~ '(?:,|$)')"
-      - "pve_yoga_kvm_config.stdout is search('(?m)^ipconfig4: ip=manual$')"
+      - "pve_yoga_kvm_config.stdout is not search('(?m)^ipconfig4:')"
       - "('ipconfig1: ip=' ~ pve_yoga_workload_secondary_network_ips[pve_yoga_kvm_workload.vmid | string].oam ~ '/24') in pve_yoga_kvm_config.stdout"
       - "('ipconfig2: ip=' ~ pve_yoga_workload_secondary_network_ips[pve_yoga_kvm_workload.vmid | string].internal ~ '/24') in pve_yoga_kvm_config.stdout"
       - "('ipconfig3: ip=' ~ pve_yoga_workload_secondary_network_ips[pve_yoga_kvm_workload.vmid | string].storage ~ '/24') in pve_yoga_kvm_config.stdout"

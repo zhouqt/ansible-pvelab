@@ -5,9 +5,9 @@
     that:
       - pve_yoga_run_host_baseline | bool
     fail_msg: >-
-      pve-yoga-prepare is a one-off validation step. Make sure the pve host already has, created by hand,
-      the four NAT bridges pub31/pub32/int33/int34 with their SNAT rules are in place,
-      run it explicitly with -e pve_yoga_run_host_baseline=true.
+      pve-yoga-prepare is a one-off validation step. Make sure the pve host has registered
+      the four SDN vnets {{ pve_yoga_network_spaces | map(attribute='bridge') | join('/') }}
+      (zone public/internal) and applied, run it explicitly with -e pve_yoga_run_host_baseline=true.
 
 - name: Check PVE host bridge inventory
   ansible.builtin.command: "ip -o link show {{ item.bridge }}"
@@ -21,16 +21,16 @@
   register: pve_yoga_prepare_nat_rules
   changed_when: false
 
-- name: Require pub31 SNAT for internet egress
+- name: Require public SNAT for internet egress
   ansible.builtin.assert:
     that:
       - >-
         pve_yoga_prepare_nat_rules.stdout_lines
-        | select('search', '-s 192[.]168[.]31[.]0/24') | list | length > 0
+        | select('search', '-s ' ~ (pve_yoga_public_cidr | regex_replace('\.', '[.]'))) | list | length > 0
     fail_msg: >-
-      the SNAT egress rule for pub31 (192.168.31.0/24) is missing. Run by hand:
-      iptables -t nat -A POSTROUTING -s 192.168.31.0/24 -o vmbr0
-      -j SNAT --to-source 10.1.1.200 (adjust to the real upstream address of vmbr0).
+      the SNAT egress rule for public ({{ pve_yoga_public_cidr }}) is missing. Make sure the SDN subnet
+      public-{{ pve_yoga_public_cidr | replace('/', '-') }} carries `snat 1` and is applied
+      (PVE generates the matching iptables POSTROUTING SNAT rules).
 
 - name: Check PVE local template inventory
   ansible.builtin.command: pveam list local

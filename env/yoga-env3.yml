@@ -1,0 +1,69 @@
+pve_yoga_env_slug: jammy-yoga3
+
+pve_yoga_http_proxy: ""
+pve_yoga_https_proxy: ""
+
+pve_yoga_teardown_credential_files: []
+
+pve_yoga_controller_vmid: 1400
+pve_yoga_controller_name: jammy-yoga3-ctrl
+pve_yoga_controller_ip: 192.168.51.10
+
+pve_yoga_ip_offset: 1390
+pve_yoga_osd_loop_base_index: 8
+
+pve_yoga_network_spaces:
+  - name: public
+    bridge: pub51
+    cidr: "192.168.51.0/24"
+    net_index: 0
+    zone: public
+    snat: true
+  - name: oam
+    bridge: pub52
+    cidr: "192.168.52.0/24"
+    net_index: 1
+    zone: public
+    snat: true
+  - name: internal
+    bridge: int53
+    cidr: "192.168.53.0/24"
+    net_index: 2
+    zone: internal
+    snat: false
+  - name: storage
+    bridge: int54
+    cidr: "192.168.54.0/24"
+    net_index: 3
+    zone: internal
+    snat: false
+
+pve_yoga_compute_uplink_bridge: pub51
+pve_yoga_compute_uplink_vmids: [1404, 1405]
+
+pve_yoga_workload_vmids: [1401, 1402, 1403, 1406, 1404, 1405]
+pve_yoga_workload_kvm_vmid: 1405
+
+pve_yoga_workload_cts:
+  - {vmid: 1401, hostname: jammy-yoga3-01, cores: 4, memory: 8192}
+  - {vmid: 1402, hostname: jammy-yoga3-02, cores: 4, memory: 8192}
+  - {vmid: 1403, hostname: jammy-yoga3-03, cores: 2, memory: 4096}
+  - {vmid: 1406, hostname: jammy-yoga3-06, cores: 2, memory: 4096}
+  - {vmid: 1404, hostname: jammy-yoga3-04, cores: 4, memory: 8192}
+pve_yoga_kvm_workload:
+  vmid: 1405
+  hostname: jammy-yoga3-05
+  cores: 4
+  memory: 8192
+  disk: 32
+
+pve_yoga_osd_vmids: [1401, 1402, 1403, 1404]
+
+pve_yoga_workload_secondary_network_ips:
+  "1400": {oam: 192.168.52.10, internal: 192.168.53.10, storage: 192.168.54.10}
+  "1401": {oam: 192.168.52.11, internal: 192.168.53.11, storage: 192.168.54.11}
+  "1402": {oam: 192.168.52.12, internal: 192.168.53.12, storage: 192.168.54.12}
+  "1403": {oam: 192.168.52.13, internal: 192.168.53.13, storage: 192.168.54.13}
+  "1404": {oam: 192.168.52.14, internal: 192.168.53.14, storage: 192.168.54.14}
+  "1405": {oam: 192.168.52.15, internal: 192.168.53.15, storage: 192.168.54.15}
+  "1406": {oam: 192.168.52.16, internal: 192.168.53.16, storage: 192.168.54.16}

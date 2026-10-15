@@ -1,0 +1,83 @@
+---
+
+- name: Require this environment's guests to be stopped before touching SDN
+  ansible.builtin.shell: |
+    set -u
+    running=""
+    for vmid in {{ pve_yoga_teardown_guest_vmids | join(' ') }}; do
+      if [ "$vmid" = "{{ pve_yoga_workload_kvm_vmid }}" ]; then
+        st=$(qm status "$vmid" 2>/dev/null || echo "status: absent")
+      else
+        st=$(pct status "$vmid" 2>/dev/null || echo "status: absent")
+      fi
+      case "$st" in *running*) running="$running $vmid";; esac
+    done
+    echo "RUNNING:${running:- none}"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_teardown_sdn_guests
+  changed_when: false
+
+- name: Refuse SDN removal while this environment's guests still run
+  ansible.builtin.assert:
+    that:
+      - "'RUNNING: none' in pve_yoga_teardown_sdn_guests.stdout"
+    fail_msg: >-
+      this env still has guests running ({{ pve_yoga_teardown_sdn_guests.stdout }}).
+      deregistering the SDN vnets must happen while every guest of this env is stopped, otherwise ifupdown2 removes the veths in use on the bridge.
+
+- name: Read the existing SDN vnets
+  ansible.builtin.command: pvesh get /cluster/sdn/vnets --output-format json
+  register: pve_yoga_teardown_sdn_vnets
+  changed_when: false
+
+- name: Compute the yoga vnets to remove
+  ansible.builtin.set_fact:
+    pve_yoga_teardown_sdn_to_remove: >-
+      {{ pve_yoga_network_spaces | map(attribute='bridge') | list
+         | intersect(pve_yoga_teardown_sdn_vnets.stdout | from_json | map(attribute='vnet') | list) }}
+
+- name: Report the SDN delta
+  ansible.builtin.debug:
+    msg: "SDN vnets to deregister: {{ pve_yoga_teardown_sdn_to_remove | default([]) }} (ones that no longer exist are skipped)"
+
+- name: Delete the yoga SDN subnets
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - delete
+      - "/cluster/sdn/vnets/{{ item.bridge }}/subnets/{{ item.zone }}-{{ item.cidr | replace('/', '-') }}"
+  loop: "{{ pve_yoga_network_spaces }}"
+  loop_control:
+    label: "subnet {{ item.zone }}-{{ item.cidr | replace('/', '-') }}"
+  when: item.bridge in (pve_yoga_teardown_sdn_to_remove | default([]))
+  failed_when: false
+
+- name: Delete the yoga SDN vnets
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - delete
+      - "/cluster/sdn/vnets/{{ item }}"
+  loop: "{{ pve_yoga_teardown_sdn_to_remove | default([]) }}"
+  loop_control:
+    label: "vnet {{ item }}"
+
+- name: Apply the SDN configuration after removal
+  ansible.builtin.command: pvesh set /cluster/sdn
+  when: (pve_yoga_teardown_sdn_to_remove | default([])) | length > 0
+  changed_when: true
+
+- name: Read the remaining SDN vnets
+  ansible.builtin.command: pvesh get /cluster/sdn/vnets --output-format json
+  register: pve_yoga_teardown_sdn_vnets_after
+  changed_when: false
+
+- name: Require every yoga vnet to be gone
+  ansible.builtin.assert:
+    that:
+      - item not in (pve_yoga_teardown_sdn_vnets_after.stdout | from_json | map(attribute='vnet') | list)
+    fail_msg: "SDN vnet {{ item }} still exists."
+  loop: "{{ pve_yoga_network_spaces | map(attribute='bridge') | list }}"
+  loop_control:
+    label: "{{ item }}"

@@ -1,0 +1,105 @@
+---
+
+- name: Read the OpenStack model status to locate the cinder unit
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+  register: pve_yoga_cinder_keyring_status
+  changed_when: false
+
+- name: Require the cinder application and unit to be present
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_cinder_keyring_status.rc == 0
+      - "'applications' in (pve_yoga_cinder_keyring_status.stdout | from_json)"
+      - "'cinder' in (pve_yoga_cinder_keyring_status.stdout | from_json).applications"
+      - >-
+        (((pve_yoga_cinder_keyring_status.stdout | from_json).applications.cinder.units
+          | default({}, true)) | length) > 0
+    fail_msg: "cannot find the cinder unit in the OpenStack model; cannot locate the machine holding the cinder-ceph keyring."
+
+- name: Derive the cinder unit's public-space address
+  ansible.builtin.set_fact:
+    pve_yoga_cinder_address: >-
+      {{ (((pve_yoga_cinder_keyring_status.stdout | from_json).applications.cinder.units
+           | dict2items | map(attribute='value') | first
+           | default({}, true))['public-address'] | default('')) }}
+
+- name: Require the cinder unit to expose a public-space address
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_cinder_address | length > 0
+      - pve_yoga_cinder_address.split('.') | length == 4
+    fail_msg: >-
+      the cinder unit has no public address ({{ pve_yoga_cinder_address | default('') }}),
+      cannot be traced back to a guest. Make sure the overlay's endpoint bindings took effect.
+
+- name: Derive the cinder unit's Juju machine index and PVE guest id
+  ansible.builtin.set_fact:
+    pve_yoga_cinder_machine_index: >-
+      {{ ((pve_yoga_cinder_keyring_status.stdout | from_json).applications.cinder.units
+          | dict2items | map(attribute='value') | map(attribute='machine')
+          | map('int') | first) }}
+    pve_yoga_cinder_vmid: >-
+      {{ (pve_yoga_cinder_address.split('.') | last | int) + (pve_yoga_ip_offset | int) }}
+
+- name: Require the cinder unit to run inside a container
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_cinder_vmid | int != pve_yoga_workload_kvm_vmid | int
+    fail_msg: >-
+      the cinder unit lands on the KVM compute VM (vmid {{ pve_yoga_workload_kvm_vmid }}) and that VM has no
+      qemu-guest-agent, so the keyring cannot be fixed inside the VM. Place cinder on a CT machine as the overlay says.
+
+- name: Ensure the cinder-ceph keyring is owned by cinder and cinder-volume runs
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_cinder_vmid }}"
+      - --
+      - bash
+      - -c
+      - |
+        set -u
+        k=/etc/ceph/ceph.client.cinder-ceph.keyring
+        for _ in $(seq 1 30); do [ -e "$k" ] && break; sleep 5; done
+        state="$(systemctl is-active cinder-volume.service 2>/dev/null || true)"
+        if [ ! -e "$k" ]; then
+          if [ "$state" = "active" ]; then
+            echo "CINDER-KEYRING skipped: $k does not exist (the ceph relation is not configured), cinder-volume=$state"
+            exit 0
+          fi
+          echo "CINDER-KEYRING missing: $k does not exist and cinder-volume=$state"
+          exit 3
+        fi
+        own="$(stat -c '%U:%G' "$k")"
+        state="$(systemctl is-active cinder-volume.service 2>/dev/null || true)"
+        if [ "$own" = "cinder:cinder" ] && [ "$state" = "active" ]; then
+          echo "CINDER-KEYRING ok owner=$own service=$state"
+          exit 0
+        fi
+        [ "$own" = "cinder:cinder" ] || chown cinder:cinder "$k"
+        systemctl restart cinder-volume.service 2>/dev/null || true
+        for _ in $(seq 1 30); do
+          systemctl is-active --quiet cinder-volume.service && break
+          sleep 2
+        done
+        now="$(stat -c '%U:%G' "$k")"
+        state="$(systemctl is-active cinder-volume.service 2>/dev/null || true)"
+        echo "CINDER-KEYRING fixed was=$own now=$now service=$state"
+        [ "$state" = "active" ]
+  register: pve_yoga_cinder_keyring_fix
+  changed_when: "'CINDER-KEYRING fixed' in pve_yoga_cinder_keyring_fix.stdout"
+
+- name: Report the cinder-ceph keyring state
+  ansible.builtin.debug:
+    msg: "{{ pve_yoga_cinder_keyring_fix.stdout | default('') | trim }}"

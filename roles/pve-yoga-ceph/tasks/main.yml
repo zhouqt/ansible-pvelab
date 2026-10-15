@@ -13,7 +13,7 @@
       - "{{ pve_yoga_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_yoga_juju_client_user }}"
       - -c
       - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
@@ -38,11 +38,15 @@
   loop:
     - yoga-setup-osd-loop.sh
     - mk-osd.sh
+    - yoga-osd-lvm.conf
+    - ceph-osd-boot-activate.sh
+    - ceph-osd-activate.service
 
 - name: Build the vmid:loopindex mapping
   ansible.builtin.set_fact:
     pve_yoga_osd_loop_spec: >-
-      {{ pve_yoga_osd_vmids | zip(range(0, pve_yoga_osd_vmids | length))
+      {{ pve_yoga_osd_vmids
+         | zip(range(pve_yoga_osd_loop_base_index, pve_yoga_osd_loop_base_index + (pve_yoga_osd_vmids | length)))
          | map('join', ':') | join(' ') }}
 
 - name: Set up host loopback OSD devices and CT device mounts
@@ -52,8 +56,16 @@
   register: pve_yoga_ceph_loop_setup
   changed_when: "'YOGA-SETUP-OSD-LOOP-DONE' in pve_yoga_ceph_loop_setup.stdout"
 
-- name: Restart OSD CTs to apply the new device mount and cgroup rules
-  ansible.builtin.command: "pct reboot {{ item }}"
+- name: Start (or restart) OSD CTs so the new device mount and cgroup rules apply
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if [ "$(pct status {{ item }})" = "status: stopped" ]; then
+      pct start {{ item }}
+    else
+      pct reboot {{ item }}
+    fi
+  args:
+    executable: /bin/bash
   loop: "{{ pve_yoga_osd_vmids }}"
   loop_control:
     label: "CT {{ item }}"
@@ -65,13 +77,72 @@
   loop_control:
     label: "CT {{ item }}"
   register: pve_yoga_ceph_ct_ready
-  until: pve_yoga_ceph_ct_ready.rc == 0 or 'degraded' in pve_yoga_ceph_ct_ready.stdout
+  until: pve_yoga_ceph_ct_ready.stdout | trim in ['running', 'degraded']
+  failed_when: pve_yoga_ceph_ct_ready.stdout | trim not in ['running', 'degraded']
   retries: 30
   delay: 5
   changed_when: false
 
+- name: Recover the control plane disturbed by the OSD CT restart
+  ansible.builtin.include_role:
+    name: pve-yoga-recovery
+    tasks_from: mysql-rebuild.yml
+
+- name: Restore and unseal the yoga Vault if the OSD CT restart broke it
+  ansible.builtin.include_role:
+    name: pve-yoga-recovery
+    tasks_from: vault-unseal.yml
+
+- name: Resolve units left in error state by the OSD CT restart
+  ansible.builtin.include_role:
+    name: pve-yoga-recovery
+    tasks_from: resolve-error-units.yml
+
 - name: Require /dev/osd-block inside every OSD CT
   ansible.builtin.command: "pct exec {{ item }} -- test -b /dev/osd-block"
+  loop: "{{ pve_yoga_osd_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+  changed_when: false
+
+- name: Require the device-mapper control node inside every OSD CT
+  ansible.builtin.command: "pct exec {{ item }} -- test -c /dev/mapper/control"
+  loop: "{{ pve_yoga_osd_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+  changed_when: false
+
+- name: Install a udev-free lvm.conf inside every OSD CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ item }}"
+      - /root/yoga-osd-lvm.conf
+      - /etc/lvm/lvm.conf
+      - --perms
+      - "0644"
+  loop: "{{ pve_yoga_osd_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+
+- name: Install the Ceph OSD boot-activation unit inside every OSD CT
+  ansible.builtin.shell: |
+    set -euo pipefail
+    vmid={{ item }}
+    pct push "$vmid" /root/ceph-osd-boot-activate.sh /usr/local/sbin/ceph-osd-boot-activate.sh --perms 0755
+    pct push "$vmid" /root/ceph-osd-activate.service /etc/systemd/system/ceph-osd-activate.service --perms 0644
+    pct exec "$vmid" -- systemctl daemon-reload
+    pct exec "$vmid" -- systemctl enable ceph-osd-activate.service
+  args:
+    executable: /bin/bash
+  loop: "{{ pve_yoga_osd_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+  changed_when: false
+
+- name: Re-activate any existing Ceph OSDs after the CT (re)start
+  ansible.builtin.command: "pct exec {{ item }} -- /usr/local/sbin/ceph-osd-boot-activate.sh"
   loop: "{{ pve_yoga_osd_vmids }}"
   loop_control:
     label: "CT {{ item }}"
@@ -95,7 +166,7 @@
   ansible.builtin.shell: |
     set -euo pipefail
     vmid={{ item }}
-    if pct exec "$vmid" -- bash -c 'ls -d /var/lib/ceph/osd/ceph-* >/dev/null 2>&1'; then
+    if pct exec "$vmid" -- bash -c "lvs -o lv_tags --noheadings 2>/dev/null | grep -q 'ceph.osd_id'"; then
       echo "OSD-EXISTS $vmid"
     else
       pct exec "$vmid" -- bash /root/mk-osd.sh
@@ -116,7 +187,7 @@
       - "{{ pve_yoga_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_yoga_juju_client_user }}"
       - -c
       - "{{ pve_yoga_juju_cmd }} wait-for application ceph-mon --timeout 30m -m {{ pve_yoga_model }}"
@@ -130,14 +201,30 @@
       - "{{ pve_yoga_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_yoga_juju_client_user }}"
       - -c
       - "{{ pve_yoga_juju_cmd }} wait-for application ceph-osd --timeout 30m -m {{ pve_yoga_model }}"
   changed_when: false
 
-- name: Read Ceph cluster health from the first monitor
-  ansible.builtin.command: "pct exec {{ pve_yoga_osd_vmids[0] }} -- ceph -s"
+- name: Derive the public address of a Ceph monitor unit
+  ansible.builtin.set_fact:
+    pve_yoga_ceph_mon_address: >-
+      {{ ((pve_yoga_ceph_status.stdout | from_json).applications['ceph-mon'].units
+          | dict2items | map(attribute='value') | map(attribute='public-address')
+          | first) }}
+
+- name: Derive the Ceph monitor guest id from its public address
+  ansible.builtin.set_fact:
+    pve_yoga_ceph_mon_vmid: >-
+      {{ (pve_yoga_ceph_mon_address.split('.') | last | int) + (pve_yoga_ip_offset | int) }}
+
+- name: Require the derived Ceph monitor guest to exist on the PVE host
+  ansible.builtin.command: "pct status {{ pve_yoga_ceph_mon_vmid }}"
+  changed_when: false
+
+- name: Read Ceph cluster health from a Ceph monitor host
+  ansible.builtin.command: "pct exec {{ pve_yoga_ceph_mon_vmid }} -- ceph -s"
   register: pve_yoga_ceph_health
   changed_when: false
 

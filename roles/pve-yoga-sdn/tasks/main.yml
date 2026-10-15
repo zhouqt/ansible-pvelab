@@ -1,0 +1,237 @@
+---
+
+- name: Require the yoga SDN registration to be explicitly requested
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_run_sdn | bool
+    fail_msg: >-
+      pve-yoga-sdn changes the host's SDN config. Once you confirm you want yoga's 4 bridges registered as SDN vnets,
+      run it explicitly with -e pve_yoga_run_sdn=true.
+
+- name: Require the network space inventory to declare zones
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_network_spaces | map(attribute='zone') | list | length == pve_yoga_network_spaces | length
+      - pve_yoga_network_spaces | selectattr('zone', 'equalto', 'public') | list | length == 2
+      - pve_yoga_network_spaces | selectattr('zone', 'equalto', 'internal') | list | length == 2
+    fail_msg: "pve_yoga_network_spaces must be 2 bridges in zone public + 2 in zone internal."
+
+- name: Read existing SDN zones
+  ansible.builtin.command: pvesh get /cluster/sdn/zones --output-format json
+  register: pve_yoga_sdn_zones
+  changed_when: false
+
+- name: Read existing SDN vnets
+  ansible.builtin.command: pvesh get /cluster/sdn/vnets --output-format json
+  register: pve_yoga_sdn_vnets
+  changed_when: false
+
+- name: Read existing SDN subnets for every yoga vnet
+  ansible.builtin.command: "pvesh get /cluster/sdn/vnets/{{ item.bridge }}/subnets --output-format json"
+  loop: "{{ pve_yoga_network_spaces }}"
+  loop_control:
+    label: "{{ item.bridge }}"
+  register: pve_yoga_sdn_subnets
+  changed_when: false
+  failed_when: false
+
+- name: Build the existing SDN inventory
+  ansible.builtin.set_fact:
+    pve_yoga_sdn_existing_zones: "{{ pve_yoga_sdn_zones.stdout | from_json | map(attribute='zone') | list }}"
+    pve_yoga_sdn_existing_vnets: "{{ pve_yoga_sdn_vnets.stdout | from_json | map(attribute='vnet') | list }}"
+    pve_yoga_sdn_existing_subnets: >-
+      {{ pve_yoga_sdn_subnets.results
+         | map(attribute='stdout') | map('default', '[]', true) | map('from_json')
+         | flatten | map(attribute='subnet') | list }}
+
+- name: Compute the missing SDN objects
+  ansible.builtin.set_fact:
+    pve_yoga_sdn_missing_zones: >-
+      {{ pve_yoga_network_spaces | map(attribute='zone') | unique | list
+         | difference(pve_yoga_sdn_existing_zones) }}
+    pve_yoga_sdn_missing_vnets: >-
+      {{ pve_yoga_network_spaces | map(attribute='bridge') | list
+         | difference(pve_yoga_sdn_existing_vnets) }}
+    pve_yoga_sdn_missing_subnets: >-
+      {{ pve_yoga_network_spaces
+         | map(attribute='zone') | zip(pve_yoga_network_spaces | map(attribute='cidr'))
+         | map('join', '-') | map('regex_replace', '/', '-') | list
+         | difference(pve_yoga_sdn_existing_subnets) }}
+
+- name: Decide whether any SDN change is required
+  ansible.builtin.set_fact:
+    pve_yoga_sdn_needs_change: >-
+      {{ (pve_yoga_sdn_missing_zones | length > 0)
+         or (pve_yoga_sdn_missing_vnets | length > 0)
+         or (pve_yoga_sdn_missing_subnets | length > 0) }}
+
+- name: Report the SDN delta
+  ansible.builtin.debug:
+    msg: >-
+      SDN state: zones={{ pve_yoga_sdn_existing_zones }}; missing zone={{ pve_yoga_sdn_missing_zones }},
+      missing vnet={{ pve_yoga_sdn_missing_vnets }}, missing subnet={{ pve_yoga_sdn_missing_subnets }}
+      (needs_change={{ pve_yoga_sdn_needs_change }}).
+
+- name: Collect yoga guest runtime states
+  ansible.builtin.shell: |
+    set -uo pipefail
+    running=""
+    for vmid in {{ ([pve_yoga_controller_vmid] + pve_yoga_workload_vmids) | join(' ') }}; do
+      if [ "$vmid" = "{{ pve_yoga_workload_kvm_vmid }}" ]; then
+        st=$(qm status "$vmid" 2>/dev/null || echo "status: absent")
+      else
+        st=$(pct status "$vmid" 2>/dev/null || echo "status: absent")
+      fi
+      case "$st" in *running*) running="$running $vmid";; esac
+    done
+    echo "RUNNING:${running:- none}"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_sdn_guests
+  changed_when: false
+  when: pve_yoga_sdn_needs_change
+
+- name: Determine which yoga guests are running
+  ansible.builtin.set_fact:
+    pve_yoga_sdn_running_guests: >-
+      {{ (pve_yoga_sdn_guests.stdout | default('') | regex_replace('^RUNNING:', '') | trim).split()
+         | select('match', '^[0-9]+$') | list }}
+  when: pve_yoga_sdn_needs_change
+
+- name: Stop yoga guests before SDN changes when explicitly permitted
+  ansible.builtin.shell: |
+    set -euo pipefail
+    for vmid in {{ pve_yoga_sdn_running_guests | join(' ') }}; do
+      if [ "$vmid" = "{{ pve_yoga_workload_kvm_vmid }}" ]; then
+        qm stop "$vmid"
+      else
+        pct stop "$vmid"
+      fi
+    done
+  args:
+    executable: /bin/bash
+  when:
+    - pve_yoga_sdn_needs_change
+    - pve_yoga_sdn_running_guests | length > 0
+    - pve_yoga_sdn_stop_guests | bool
+
+- name: Require yoga guests to be stopped before SDN changes
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_sdn_running_guests | length == 0
+    fail_msg: >-
+      yoga guests are still running (vmid {{ pve_yoga_sdn_running_guests | join(', ') }}).
+      SDN vnets can only be registered/applied while every guest is stopped, otherwise ifupdown2 removes the veths in use on the bridge.
+      stop these guests first, or let this role stop them with -e pve_yoga_sdn_stop_guests=true.
+  when:
+    - pve_yoga_sdn_needs_change
+    - not (pve_yoga_sdn_stop_guests | bool)
+
+- name: Create missing SDN zones
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - create
+      - /cluster/sdn/zones
+      - --type
+      - simple
+      - --zone
+      - "{{ item }}"
+      - --ipam
+      - pve
+  loop: "{{ pve_yoga_sdn_missing_zones }}"
+  loop_control:
+    label: "zone {{ item }}"
+
+- name: Create missing SDN vnets
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - create
+      - /cluster/sdn/vnets
+      - --vnet
+      - "{{ item.bridge }}"
+      - --zone
+      - "{{ item.zone }}"
+  loop: "{{ pve_yoga_network_spaces }}"
+  loop_control:
+    label: "vnet {{ item.bridge }} (zone {{ item.zone }})"
+  when: item.bridge in pve_yoga_sdn_missing_vnets
+
+- name: Create missing SDN subnets
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - create
+      - "/cluster/sdn/vnets/{{ item.bridge }}/subnets"
+      - --subnet
+      - "{{ item.cidr }}"
+      - --type
+      - subnet
+      - --gateway
+      - "{{ item.cidr | regex_replace('\\.0/24$', '.1') }}"
+      - --snat
+      - "{{ 1 if item.snat else 0 }}"
+  loop: "{{ pve_yoga_network_spaces }}"
+  loop_control:
+    label: "subnet {{ item.zone }}-{{ item.cidr | replace('/', '-') }}"
+  when: (item.zone ~ '-' ~ (item.cidr | replace('/', '-'))) in pve_yoga_sdn_missing_subnets
+
+- name: Apply the SDN configuration
+  ansible.builtin.command: pvesh set /cluster/sdn
+  when: pve_yoga_sdn_needs_change
+  changed_when: true
+
+- name: Read final SDN vnets
+  ansible.builtin.command: pvesh get /cluster/sdn/vnets --output-format json
+  register: pve_yoga_sdn_vnets_after
+  changed_when: false
+
+- name: Require every yoga vnet to be registered in its declared zone
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((pve_yoga_sdn_vnets_after.stdout | from_json)
+         | selectattr('vnet', 'equalto', item.bridge) | list | length) == 1
+      - >-
+        ((pve_yoga_sdn_vnets_after.stdout | from_json)
+         | selectattr('vnet', 'equalto', item.bridge) | map(attribute='zone') | first) == item.zone
+    fail_msg: "vnet {{ item.bridge }} is not registered as zone {{ item.zone }}."
+  loop: "{{ pve_yoga_network_spaces }}"
+  loop_control:
+    label: "{{ item.bridge }}"
+
+- name: Read final SDN subnets for every yoga vnet
+  ansible.builtin.command: "pvesh get /cluster/sdn/vnets/{{ item.bridge }}/subnets --output-format json"
+  loop: "{{ pve_yoga_network_spaces }}"
+  loop_control:
+    label: "{{ item.bridge }}"
+  register: pve_yoga_sdn_subnets_after
+  changed_when: false
+
+- name: Require every yoga subnet to exist with the expected gateway and snat
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((item.stdout | from_json)
+         | selectattr('subnet', 'equalto', item.item.zone ~ '-' ~ (item.item.cidr | replace('/', '-')))
+         | list | length) == 1
+      - >-
+        ((item.stdout | from_json)
+         | selectattr('subnet', 'equalto', item.item.zone ~ '-' ~ (item.item.cidr | replace('/', '-')))
+         | map(attribute='gateway') | first) == (item.item.cidr | regex_replace('\\.0/24$', '.1'))
+      - >-
+        ((item.stdout | from_json)
+         | selectattr('subnet', 'equalto', item.item.zone ~ '-' ~ (item.item.cidr | replace('/', '-')))
+         | map(attribute='snat', default=0) | first | int) == (1 if item.item.snat else 0)
+    fail_msg: "subnet {{ item.item.zone }}-{{ item.item.cidr | replace('/', '-') }} does not exist, or its gateway/snat differs."
+  loop: "{{ pve_yoga_sdn_subnets_after.results }}"
+  loop_control:
+    label: "{{ item.item.bridge }}"
+
+- name: Require the yoga bridges to exist on the PVE host
+  ansible.builtin.command: "ip -o link show {{ item.bridge }}"
+  loop: "{{ pve_yoga_network_spaces }}"
+  loop_control:
+    label: "{{ item.bridge }}"
+  changed_when: false

@@ -1,0 +1,256 @@
+---
+
+- name: Require the yoga teardown to be explicitly requested
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_run_teardown | bool
+    fail_msg: >-
+      pve-yoga-teardown **destroys** the whole yoga environment (Juju controller/model + every guest + the host OSD loops).
+      once the target env is confirmed, run it explicitly with -e pve_yoga_run_teardown=true.
+
+- name: Forbid tearing down env-1 without an explicit extra confirmation
+  ansible.builtin.assert:
+    that:
+      - (pve_yoga_env_slug != 'jammy-yoga') or (pve_yoga_teardown_allow_env1 | bool)
+    fail_msg: >-
+      env_slug=jammy-yoga is the **env-1 currently in use** (the group_vars default). If you really want to tear it down,
+      add -e pve_yoga_teardown_allow_env1=true as well.
+
+- name: Define the isolated Juju 3.x command prefix and derived targets
+  ansible.builtin.set_fact:
+    pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
+    pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
+    pve_yoga_teardown_osd_indices: >-
+      {{ range(pve_yoga_osd_loop_base_index,
+               pve_yoga_osd_loop_base_index + (pve_yoga_osd_vmids | length)) | list }}
+    pve_yoga_teardown_guest_vmids: "{{ [pve_yoga_controller_vmid] + pve_yoga_workload_vmids }}"
+    pve_yoga_snat_cidrs: >-
+      {{ pve_yoga_network_spaces | selectattr('snat', 'defined') | selectattr('snat')
+         | map(attribute='cidr') | list }}
+
+- name: Announce the teardown target
+  ansible.builtin.debug:
+    msg: >-
+      tearing down env "{{ pve_yoga_env_slug }}": model {{ pve_yoga_model }}, controller
+      {{ pve_yoga_controller_name }},guest {{ pve_yoga_teardown_guest_vmids | join(', ') }}
+      (KVM = {{ pve_yoga_workload_kvm_vmid }}),OSD loop idx {{ pve_yoga_teardown_osd_indices | join(', ') }}.
+
+- name: Probe whether the yoga OpenStack model still exists
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }}"
+  register: pve_yoga_teardown_model_probe
+  changed_when: false
+  failed_when: false
+
+- name: Destroy the yoga OpenStack model
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} destroy-model {{ pve_yoga_model }} --no-prompt --force --timeout 15m"
+  register: pve_yoga_teardown_model_destroy
+  changed_when: true
+  when: (pve_yoga_teardown_model_probe.rc | default(1)) == 0
+
+- name: Report a skipped model destruction
+  ansible.builtin.debug:
+    msg: "model {{ pve_yoga_model }} does not exist (the controller may be gone already), skipping destroy-model."
+  when: (pve_yoga_teardown_model_probe.rc | default(1)) != 0
+
+- name: Probe whether the yoga Juju controller still exists
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} controllers --format json"
+  register: pve_yoga_teardown_controller_probe
+  changed_when: false
+  failed_when: false
+
+- name: Destroy the yoga Juju controller
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_yoga_juju_cmd }} destroy-controller {{ pve_yoga_controller_name }}
+        --no-prompt --destroy-all-models --force --model-timeout 15m
+  register: pve_yoga_teardown_controller_destroy
+  changed_when: true
+  when: >-
+    (pve_yoga_teardown_controller_probe.rc | default(1)) == 0
+    and pve_yoga_controller_name in (pve_yoga_teardown_controller_probe.stdout | default(''))
+
+- name: Report a skipped controller destruction
+  ansible.builtin.debug:
+    msg: "controller {{ pve_yoga_controller_name }} does not exist, skipping destroy-controller."
+  when: >-
+    (pve_yoga_teardown_controller_probe.rc | default(1)) != 0
+    or pve_yoga_controller_name not in (pve_yoga_teardown_controller_probe.stdout | default(''))
+
+- name: Stop and destroy every yoga guest
+  ansible.builtin.shell: |
+    set -u
+    destroyed=0
+    for vmid in {{ pve_yoga_teardown_guest_vmids | join(' ') }}; do
+      if [ "$vmid" = "{{ pve_yoga_workload_kvm_vmid }}" ]; then
+        qm status "$vmid" >/dev/null 2>&1 || { echo "qm $vmid: absent"; continue; }
+        qm stop "$vmid" >/dev/null 2>&1 || true
+        sleep 1
+        qm destroy "$vmid" --purge --destroy-unreferenced-disks
+        echo "qm $vmid: destroyed"; destroyed=$((destroyed + 1))
+      else
+        pct status "$vmid" >/dev/null 2>&1 || { echo "pct $vmid: absent"; continue; }
+        pct stop "$vmid" >/dev/null 2>&1 || true
+        sleep 1
+        pct destroy "$vmid" --purge
+        echo "pct $vmid: destroyed"; destroyed=$((destroyed + 1))
+      fi
+    done
+    echo "YOGA-TEARDOWN-GUESTS-DONE destroyed=$destroyed"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_teardown_guests
+  changed_when: "'destroyed=' in pve_yoga_teardown_guests.stdout and 'destroyed=0' not in pve_yoga_teardown_guests.stdout"
+
+- name: Tear down the yoga OSD loop devices on the host
+  ansible.builtin.shell: |
+    set -u
+    files_dir="${OSD_FILES_DIR:-/var/lib/ceph-osd-files}"
+    base="${OSD_LOOP_BASE:-100}"
+    remove_imgs={{ 1 if (pve_yoga_teardown_remove_osd_files | bool) else 0 }}
+    changed=0
+    for idx in {{ pve_yoga_teardown_osd_indices | join(' ') }}; do
+      unit="/etc/systemd/system/ceph-osd-loopback-$idx.service"
+      img="$files_dir/ceph-osd-compute-$idx.img"
+      if [ -f "$unit" ]; then
+        systemctl disable --now "ceph-osd-loopback-$idx.service" >/dev/null 2>&1 || true
+        rm -f "$unit"
+        changed=1
+      fi
+      devs=$(losetup -j "$img" -O NAME --noheadings 2>/dev/null || true)
+      devs="$devs $(losetup -a 2>/dev/null | grep -F "$img" | cut -d: -f1)"
+      for d in $devs; do
+        for h in $(ls /sys/block/"${d#/dev/}"/holders 2>/dev/null || true); do
+          dmname=$(cat /sys/block/"$h"/dm/name 2>/dev/null || true)
+          if [ -n "$dmname" ]; then dmsetup remove "$dmname" >/dev/null 2>&1 || true; fi
+        done
+        losetup -d "$d" 2>/dev/null || true
+        changed=1
+      done
+      if [ "$remove_imgs" = "1" ] && [ -e "$img" ]; then
+        rm -f "$img"
+        changed=1
+      fi
+      if [ -e "$img" ]; then echo "idx $idx: img kept"; else echo "idx $idx: loop/unit/image cleaned up"; fi
+    done
+    systemctl daemon-reload
+    echo "YOGA-TEARDOWN-OSD-DONE changed=$changed"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_teardown_osd
+  changed_when: "'changed=1' in pve_yoga_teardown_osd.stdout"
+
+- name: Remove this environment's SDN vnets
+  ansible.builtin.include_tasks: sdn-remove.yml
+  when: pve_yoga_teardown_remove_sdn | bool
+
+- name: Flush this environment's stale SNAT rules
+  ansible.builtin.shell: |
+    set -u
+    n=0
+    for cidr in {{ pve_yoga_snat_cidrs | join(' ') }}; do
+      while spec=$(iptables -t nat -S POSTROUTING | grep -m1 -F -- "-s $cidr " \
+                   | sed 's/^-A POSTROUTING //'); [ -n "$spec" ]; do
+        iptables -t nat -D POSTROUTING $spec || break
+        n=$((n + 1))
+      done
+    done
+    echo "YOGA-TEARDOWN-SNAT-DONE removed=$n"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_teardown_snat
+  changed_when: "'removed=0' not in pve_yoga_teardown_snat.stdout"
+  when: pve_yoga_snat_cidrs | length > 0
+
+- name: Remove this environment's credential files on the control node
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: >-
+    {{ [pve_yoga_keystone_admin_password_file, pve_yoga_vault_init_file,
+        pve_yoga_openrc_file, pve_yoga_ca_cert_file, pve_yoga_keypair_private_key_file]
+       + (pve_yoga_teardown_credential_files | default([], true)) }}
+  loop_control:
+    label: "{{ item | basename }}"
+  delegate_to: localhost
+  become: false
+
+- name: Require every yoga guest to be gone
+  ansible.builtin.shell: |
+    set -u
+    left=""
+    for vmid in {{ pve_yoga_teardown_guest_vmids | join(' ') }}; do
+      if [ "$vmid" = "{{ pve_yoga_workload_kvm_vmid }}" ]; then
+        qm status "$vmid" >/dev/null 2>&1 && left="$left $vmid"
+      else
+        pct status "$vmid" >/dev/null 2>&1 && left="$left $vmid"
+      fi
+    done
+    echo "LEFT:${left:- none}"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_teardown_left
+  changed_when: false
+  when: not ansible_check_mode
+  failed_when: "'LEFT: none' not in (pve_yoga_teardown_left.stdout | default(''))"
+
+- name: Require every yoga OSD loop device to be released
+  ansible.builtin.shell: |
+    set -u
+    files_dir="${OSD_FILES_DIR:-/var/lib/ceph-osd-files}"
+    left=""
+    for idx in {{ pve_yoga_teardown_osd_indices | join(' ') }}; do
+      img="$files_dir/ceph-osd-compute-$idx.img"
+      if losetup -a 2>/dev/null | grep -qF "$img"; then left="$left $idx"; fi
+    done
+    echo "LOOPLEFT:${left:- none}"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_teardown_loopleft
+  changed_when: false
+  failed_when: "'LOOPLEFT: none' not in (pve_yoga_teardown_loopleft.stdout | default(''))"
+
+- name: Report the teardown result
+  ansible.builtin.debug:
+    msg: >-
+      env "{{ pve_yoga_env_slug }}" torn down: no guests left, OSD loop idx
+      {{ pve_yoga_teardown_osd_indices | join(', ') }} cleaned up (loop and dm released),
+      model/controller destroyed, leftover SNAT rules removed, credentials deleted.

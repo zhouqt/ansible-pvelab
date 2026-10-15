@@ -1,7 +1,7 @@
 name: openstack-yoga-pve
 series: jammy
 variables:
-  openstack-origin: &openstack-origin cloud:jammy-yoga
+  openstack-origin: &openstack-origin distro
   ceph-origin: &ceph-origin ""
 
 relations:
@@ -14,8 +14,6 @@ relations:
 - - cinder:identity-service
   - keystone:identity-service
 - - placement:identity-service
-  - keystone:identity-service
-- - openstack-dashboard:identity-service
   - keystone:identity-service
 - - nova-cloud-controller:amqp
   - rabbitmq-server:amqp
@@ -41,8 +39,6 @@ relations:
   - placement:placement
 - - nova-cloud-controller:cinder-volume-service
   - cinder:cinder-volume-service
-- - keystone:memcache
-  - memcached:cache
 - - keystone:shared-db
   - keystone-mysql-router:shared-db
 - - nova-cloud-controller:shared-db
@@ -55,8 +51,6 @@ relations:
   - cinder-mysql-router:shared-db
 - - placement:shared-db
   - placement-mysql-router:shared-db
-- - openstack-dashboard:shared-db
-  - dashboard-mysql-router:shared-db
 - - vault:shared-db
   - vault-mysql-router:shared-db
 - - keystone-mysql-router:db-router
@@ -70,8 +64,6 @@ relations:
 - - cinder-mysql-router:db-router
   - mysql-innodb-cluster:db-router
 - - placement-mysql-router:db-router
-  - mysql-innodb-cluster:db-router
-- - dashboard-mysql-router:db-router
   - mysql-innodb-cluster:db-router
 - - vault-mysql-router:db-router
   - mysql-innodb-cluster:db-router
@@ -97,8 +89,6 @@ relations:
   - cinder:certificates
 - - vault:certificates
   - placement:certificates
-- - vault:certificates
-  - openstack-dashboard:certificates
 - - vault:certificates
   - ovn-central:certificates
 - - vault:certificates
@@ -131,8 +121,6 @@ relations:
   - cinder:juju-info
 - - nrpe:general-info
   - placement:juju-info
-- - nrpe:general-info
-  - openstack-dashboard:juju-info
 - - nrpe:general-info
   - rabbitmq-server:juju-info
 - - nrpe:general-info
@@ -180,15 +168,6 @@ applications:
     charm: ch:mysql-router
     channel: 8.0/stable
 
-  openstack-dashboard:
-    charm: ch:openstack-dashboard
-    channel: yoga/stable
-    options:
-      openstack-origin: *openstack-origin
-  dashboard-mysql-router:
-    charm: ch:mysql-router
-    channel: 8.0/stable
-
   neutron-api:
     charm: ch:neutron-api
     channel: yoga/stable
@@ -202,9 +181,6 @@ applications:
   neutron-api-plugin-ovn:
     charm: ch:neutron-api-plugin-ovn
     channel: yoga/stable
-    options:
-      openstack-origin: *openstack-origin
-      ovn-dhcp4-global-options: ""
 
   cinder:
     charm: ch:cinder
@@ -219,12 +195,6 @@ applications:
   cinder-ceph:
     charm: ch:cinder-ceph
     channel: yoga/stable
-    options:
-      openstack-origin: *openstack-origin
-
-  memcached:
-    charm: ch:memcached
-    channel: latest/stable
 
   vault:
     charm: ch:vault
@@ -251,6 +221,16 @@ applications:
     channel: 22.03/stable
     options:
       ovn-bridge-mappings: physnet1:br-ex
+
+  nova-compute:
+    charm: ch:nova-compute
+    channel: yoga/stable
+    options:
+      openstack-origin: *openstack-origin
+      config-flags: default_ephemeral_format=ext4
+      enable-live-migration: true
+      enable-resize: true
+      migration-auth-type: ssh
 
   ceph-mon:
     charm: ch:ceph-mon

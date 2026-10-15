@@ -1,0 +1,109 @@
+---
+
+- name: Define the isolated Juju 3.x command prefix
+  ansible.builtin.set_fact:
+    pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
+    pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
+
+- name: Read OpenStack Juju status to locate the yoga Vault unit
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+  register: pve_yoga_unseal_status
+  changed_when: false
+
+- name: Derive the yoga Vault unit address
+  ansible.builtin.set_fact:
+    pve_yoga_unseal_vault_address: >-
+      {{ ((pve_yoga_unseal_status.stdout | from_json).applications.vault.units
+          | default({}, true) | dict2items | map(attribute='value') | first
+          | default({}, true))['public-address'] | default('') }}
+  when: "'vault' in (pve_yoga_unseal_status.stdout | from_json).applications"
+
+- name: Derive the yoga Vault unit CT vmid
+  ansible.builtin.set_fact:
+    pve_yoga_unseal_vault_vmid: >-
+      {{ (pve_yoga_unseal_vault_address.split('.') | last | int) + (pve_yoga_ip_offset | int) }}
+  when:
+    - "'vault' in (pve_yoga_unseal_status.stdout | from_json).applications"
+    - pve_yoga_unseal_vault_address | default('') | length > 0
+
+- name: Ensure the yoga Vault service is running on its machine
+  ansible.builtin.shell: |
+    set -euo pipefail
+    vmid={{ pve_yoga_unseal_vault_vmid | default(0) | int }}
+    if pct exec "$vmid" -- systemctl is-active --quiet vault.service; then
+      echo "VAULT-SERVICE-ALREADY-ACTIVE"
+    else
+      pct exec "$vmid" -- systemctl reset-failed vault.service || true
+      pct exec "$vmid" -- systemctl start vault.service
+      echo "VAULT-SERVICE-STARTED"
+    fi
+  args:
+    executable: /bin/bash
+  register: pve_yoga_unseal_service
+  changed_when: "'VAULT-SERVICE-STARTED' in pve_yoga_unseal_service.stdout"
+  when: pve_yoga_unseal_vault_vmid | default(0) | int > 0
+
+- name: Load the yoga Vault unseal keys from the credentials file
+  ansible.builtin.set_fact:
+    pve_yoga_unseal_vault_keys: >-
+      {{ (lookup('ansible.builtin.file', pve_yoga_vault_init_file, errors='ignore')
+          | default('{}', true) | from_json)['keys'] | default([], true) }}
+  no_log: true
+
+- name: Read the yoga Vault seal status
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -sk
+      - "http://{{ pve_yoga_unseal_vault_address | default('') }}:8200/v1/sys/seal-status"
+  register: pve_yoga_unseal_seal_status
+  changed_when: false
+  failed_when: false
+  until: pve_yoga_unseal_seal_status.rc == 0
+  retries: 24
+  delay: 5
+  when: pve_yoga_unseal_vault_address | default('') | length > 0
+
+- name: Unseal the yoga Vault with the first three keys when sealed
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -sk
+      - "http://{{ pve_yoga_unseal_vault_address }}:8200/v1/sys/unseal"
+      - -X
+      - PUT
+      - -d
+      - '{"key": "{{ item }}"}'
+  loop: "{{ pve_yoga_unseal_vault_keys[:3] }}"
+  when:
+    - pve_yoga_unseal_vault_address | default('') | length > 0
+    - pve_yoga_unseal_vault_keys | length >= 3
+    - pve_yoga_unseal_seal_status.stdout | default('') | trim | length > 0
+    - (pve_yoga_unseal_seal_status.stdout | from_json).sealed | default(true)
+  no_log: true
+
+- name: Require the yoga Vault to be unsealed
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -sk
+      - "http://{{ pve_yoga_unseal_vault_address }}:8200/v1/sys/seal-status"
+  register: pve_yoga_unseal_seal_after
+  changed_when: false
+  failed_when: false
+  until: >-
+    (pve_yoga_unseal_seal_after.stdout | default('') | trim | length > 0)
+    and not ((pve_yoga_unseal_seal_after.stdout | from_json).sealed | default(true))
+  retries: 24
+  delay: 5
+  when: pve_yoga_unseal_vault_address | default('') | length > 0

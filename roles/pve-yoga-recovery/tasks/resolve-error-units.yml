@@ -1,0 +1,60 @@
+---
+
+- name: Define the isolated Juju 3.x command prefix
+  ansible.builtin.set_fact:
+    pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
+    pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
+
+- name: Read OpenStack Juju status to find units in error state
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+  register: pve_yoga_resolve_status
+  changed_when: false
+
+- name: Detect units currently in error state
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json, sys
+        apps = json.load(sys.stdin).get('applications', {})
+        out = []
+        for app, body in apps.items():
+            for u, v in (body.get('units') or {}).items():
+                if (v.get('workload-status') or {}).get('current') == 'error':
+                    out.append(u)
+        print('\n'.join(sorted(out)))
+    stdin: "{{ pve_yoga_resolve_status.stdout }}"
+  register: pve_yoga_resolve_error_units
+  changed_when: false
+
+- name: Resolve units in error state so their failed hooks retry
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} resolved {{ item }} -m {{ pve_yoga_model }}"
+  loop: "{{ pve_yoga_resolve_error_units.stdout_lines | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  register: pve_yoga_resolve_units
+  changed_when: true
+  failed_when: >-
+    pve_yoga_resolve_units.rc != 0
+    and 'not in an error state' not in (pve_yoga_resolve_units.stderr | default(''))

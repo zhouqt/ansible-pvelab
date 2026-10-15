@@ -1,0 +1,48 @@
+---
+
+- name: Define the isolated Juju 3.x command prefix
+  ansible.builtin.set_fact:
+    pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
+    pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
+
+- name: Wait for the MySQL InnoDB cluster to form before reconciling grants
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} wait-for application mysql-innodb-cluster --timeout 45m -m {{ pve_yoga_model }}"
+  changed_when: false
+
+- name: Copy the MySQL grant reconcile helper to the PVE host
+  ansible.builtin.copy:
+    src: reconcile-mysql-grants.py
+    dest: /root/yoga-reconcile-mysql-grants.py
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Reconcile the MySQL grants the co-located leader failed to create
+  ansible.builtin.command:
+    argv:
+      - python3
+      - /root/yoga-reconcile-mysql-grants.py
+      - --client-ct
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --client-user
+      - "{{ pve_yoga_juju_client_user }}"
+      - --juju-bin
+      - "{{ pve_yoga_juju_bin }}"
+      - --juju-data
+      - "{{ pve_yoga_juju_data }}"
+      - --model
+      - "{{ pve_yoga_model }}"
+      - --machine-vmids
+      - "{{ pve_yoga_workload_vmids | join(',') }}"
+  register: pve_yoga_control_mysql_reconcile
+  changed_when: "'RECONCILE-CREATED' in pve_yoga_control_mysql_reconcile.stdout"

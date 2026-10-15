@@ -13,26 +13,26 @@
       - "{{ pve_yoga_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_yoga_juju_client_user }}"
       - -c
       - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
   register: pve_yoga_network_status
   changed_when: false
 
-- name: Require machines 0-4 registered with no applications before space changes
+- name: Require machines 0-5 registered with no applications before space changes
   ansible.builtin.assert:
     that:
       - pve_yoga_network_status.rc == 0
       - "'machines' in (pve_yoga_network_status.stdout | from_json)"
       - >-
-        ((pve_yoga_network_status.stdout | from_json).machines | default({})
+        ((pve_yoga_network_status.stdout | from_json).machines | default({}, true)
           | dict2items | map(attribute='key') | map('int') | list | sort)
         == (range(0, pve_yoga_workload_vmids | length) | list)
       - >-
-        (((pve_yoga_network_status.stdout | from_json).applications | default({}) | length) == 0)
+        (((pve_yoga_network_status.stdout | from_json).applications | default({}, true) | length) == 0)
     fail_msg: >-
-      Juju machines 0-4 are not all registered yet, or an application already exists. Spaces can only be configured after the machines report
+      Juju machines 0-5 are not all registered yet, or an application already exists. Spaces can only be configured after the machines report
       all the NICs and before any charm is deployed.
 
 - name: Read Juju subnet inventory before space changes
@@ -43,7 +43,7 @@
       - "{{ pve_yoga_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_yoga_juju_client_user }}"
       - -c
       - "{{ pve_yoga_juju_cmd }} subnets -m {{ pve_yoga_model }} --format json"
@@ -56,11 +56,11 @@
       - pve_yoga_network_subnets_before.rc == 0
       - "'subnets' in (pve_yoga_network_subnets_before.stdout | from_json)"
       - >-
-        ((pve_yoga_network_subnets_before.stdout | from_json).subnets.keys() | list | sort)
+        (((pve_yoga_network_subnets_before.stdout | from_json).subnets | default({}, true)).keys() | list | sort)
         == (pve_yoga_network_spaces | map(attribute='cidr') | list | sort)
     fail_msg: >-
-      the Juju subnet list is not exactly the four CIDRs 192.168.31/32/33/34.0/24. Make sure every workload guest reports
-      all four NICs, then retry.
+      the Juju subnet list is not exactly the four CIDRs {{ pve_yoga_network_spaces | map(attribute='cidr') | join('/') }}.
+      make sure every workload guest reports all four NICs, then retry.
 
 - name: Read existing Juju spaces
   ansible.builtin.command:
@@ -70,7 +70,7 @@
       - "{{ pve_yoga_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_yoga_juju_client_user }}"
       - -c
       - "{{ pve_yoga_juju_cmd }} spaces -m {{ pve_yoga_model }} --format json"
@@ -85,7 +85,7 @@
       - "{{ pve_yoga_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_yoga_juju_client_user }}"
       - -c
       - "{{ pve_yoga_juju_cmd }} add-space {{ item.name }} -m {{ pve_yoga_model }}"
@@ -102,7 +102,7 @@
       - "{{ pve_yoga_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_yoga_juju_client_user }}"
       - -c
       - "{{ pve_yoga_juju_cmd }} move-to-space {{ item.name }} {{ item.cidr }} -m {{ pve_yoga_model }} --force"
@@ -118,7 +118,7 @@
     msg: >-
       move-to-space {{ item.item.name }} {{ item.item.cidr }} returned rc={{ item.rc }}:
       {{ item.stderr | default('') | trim }}. If Juju refuses to use the machine the bootstrap lives on
-      moving 192.168.31.0/24 out of alpha; use the fallback (keep alpha, bind with public=alpha,
+      moving {{ pve_yoga_public_cidr }} out of alpha; use the fallback (keep alpha, bind with public=alpha,
       see docs/pve-yoga-openstack-deploy-runbook.md).
   loop: "{{ pve_yoga_network_move_results.results }}"
   loop_control:
@@ -133,7 +133,7 @@
       - "{{ pve_yoga_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_yoga_juju_client_user }}"
       - -c
       - "{{ pve_yoga_juju_cmd }} subnets -m {{ pve_yoga_model }} --format json"
@@ -147,7 +147,7 @@
       - >-
         (pve_yoga_network_subnets_after.stdout | from_json).subnets[item.cidr].space == item.name
     fail_msg: >-
-      subnet {{ item.cidr }} is not in the expected space {{ item.name }}. If Juju treats 192.168.31.0/24 as
+      subnet {{ item.cidr }} is not in the expected space {{ item.name }}. If Juju treats {{ pve_yoga_public_cidr }} as
       refusing to move it out of alpha; use the fallback and record it in the runbook.
   loop: "{{ pve_yoga_network_spaces }}"
   loop_control:
@@ -161,7 +161,7 @@
       - "{{ pve_yoga_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_yoga_juju_client_user }}"
       - -c
       - "{{ pve_yoga_juju_cmd }} model-config -m {{ pve_yoga_model }} default-space"
@@ -176,7 +176,7 @@
       - "{{ pve_yoga_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_yoga_juju_client_user }}"
       - -c
       - "{{ pve_yoga_juju_cmd }} model-config -m {{ pve_yoga_model }} default-space={{ pve_yoga_default_space }}"
@@ -190,7 +190,7 @@
       - "{{ pve_yoga_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_yoga_juju_client_user }}"
       - -c
       - "{{ pve_yoga_juju_cmd }} model-config -m {{ pve_yoga_model }} default-space"
@@ -212,7 +212,7 @@
       - "{{ pve_yoga_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_yoga_juju_client_user }}"
       - -c
       - "{{ pve_yoga_juju_cmd }} spaces -m {{ pve_yoga_model }} --format json"

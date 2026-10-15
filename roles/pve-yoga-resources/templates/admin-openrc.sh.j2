@@ -1,0 +1,12 @@
+#!/bin/bash
+
+export OS_AUTH_URL=https://{{ pve_yoga_keystone_address }}:5000/v3
+export OS_USERNAME={{ pve_yoga_resources_user }}
+export OS_PASSWORD={{ pve_yoga_keystone_admin_password }}
+export OS_PROJECT_NAME={{ pve_yoga_resources_project }}
+export OS_USER_DOMAIN_NAME={{ pve_yoga_resources_project_domain }}
+export OS_PROJECT_DOMAIN_NAME={{ pve_yoga_resources_project_domain }}
+export OS_IDENTITY_API_VERSION=3
+export OS_AUTH_TYPE=password
+export OS_REGION_NAME={{ pve_yoga_resources_region }}
+export OS_CACERT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/{{ pve_yoga_ca_cert_file | basename }}"

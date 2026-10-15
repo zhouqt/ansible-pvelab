@@ -4,74 +4,25 @@ machines:
   '2':
   '3':
   '4':
+  '5':
 
 applications:
   keystone:
+    num_units: 1
     bindings:
       "": internal
       public: public
-    to:
-    - '0'
-
-  nova-cloud-controller:
-    bindings:
-      "": internal
-      public: public
-    to:
-    - '0'
-
-  placement:
-    bindings:
-      "": internal
-      public: public
-    to:
-    - '0'
-
-  glance:
-    bindings:
-      "": internal
-      public: public
-    to:
-    - '0'
-
-  openstack-dashboard:
-    bindings:
-      "": internal
-      public: public
-    to:
-    - '0'
-
-  memcached:
-    bindings:
-      "": internal
     to:
     - '0'
 
   vault:
+    num_units: 1
     bindings:
       "": internal
     to:
     - '0'
 
   mysql-innodb-cluster:
-    num_units: 3
-    bindings:
-      "": internal
-    to:
-    - '0'
-    - '1'
-    - '2'
-
-  ovn-central:
-    num_units: 3
-    bindings:
-      "": internal
-    to:
-    - '0'
-    - '1'
-    - '2'
-
-  ceph-mon:
     num_units: 3
     bindings:
       "": internal
@@ -88,33 +39,71 @@ applications:
     - '0'
     - '1'
     - '2'
-    - '3'
+    - '4'
 
-  cinder:
+  nova-cloud-controller:
+    num_units: 1
     bindings:
       "": internal
       public: public
     to:
     - '1'
 
-  cinder-ceph:
+  ceph-mon:
+    num_units: 3
     bindings:
       "": internal
     to:
     - '1'
+    - '3'
+    - '5'
 
-  rabbitmq-server:
-    bindings:
-      "": internal
-    to:
-    - '1'
-
-  neutron-api:
+  glance:
+    num_units: 1
     bindings:
       "": internal
       public: public
     to:
     - '2'
+
+  cinder:
+    num_units: 1
+    bindings:
+      "": internal
+      public: public
+    to:
+    - '3'
+
+  rabbitmq-server:
+    num_units: 1
+    bindings:
+      "": internal
+    to:
+    - '3'
+
+  ovn-central:
+    num_units: 3
+    bindings:
+      "": internal
+    to:
+    - '3'
+    - '4'
+    - '5'
+
+  placement:
+    num_units: 1
+    bindings:
+      "": internal
+    to:
+    - '4'
+
+  neutron-api:
+    num_units: 1
+    bindings:
+      "": internal
+      public: public
+    to:
+    - '5'
 
   neutron-api-plugin-ovn:
     bindings:
@@ -125,8 +114,8 @@ applications:
     bindings:
       "": public
     to:
-    - '3'
     - '4'
+    - '5'
 
   keystone-mysql-router:
     bindings:
@@ -146,9 +135,8 @@ applications:
   placement-mysql-router:
     bindings:
       "": internal
-  dashboard-mysql-router:
-    bindings:
-      "": internal
   vault-mysql-router:
+    options:
+      base-port: 3314
     bindings:
       "": internal

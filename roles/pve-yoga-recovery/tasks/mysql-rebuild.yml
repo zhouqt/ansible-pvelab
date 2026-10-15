@@ -1,0 +1,85 @@
+---
+
+- name: Define the isolated Juju 3.x command prefix
+  ansible.builtin.set_fact:
+    pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
+    pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
+
+- name: Assess the MySQL InnoDB cluster before deciding on a rebuild
+  ansible.builtin.include_tasks: mysql-assess.yml
+
+- name: Give the charm a bounded chance to recover the InnoDB cluster on its own
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} wait-for application mysql-innodb-cluster --timeout 30m -m {{ pve_yoga_model }}"
+  register: pve_yoga_mysql_selfheal
+  changed_when: false
+  failed_when: false
+  when: pve_yoga_mysql_rebuild_bad | length > 0
+
+- name: Re-assess the MySQL InnoDB cluster after the self-heal window
+  ansible.builtin.include_tasks: mysql-assess.yml
+  when: pve_yoga_mysql_rebuild_bad | length > 0
+
+- name: Rebuild the MySQL InnoDB cluster from the most up-to-date instance
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - |
+        set -u
+        ok=""
+        for unit in {{ pve_yoga_mysql_rebuild_units | join(' ') }}; do
+          echo "== reboot-cluster-from-complete-outage on $unit"
+          out=$({{ pve_yoga_juju_cmd }} run "$unit" reboot-cluster-from-complete-outage \
+                  --wait 20m -m {{ pve_yoga_model }} --format json 2>&1) || true
+          json=$(printf '%s\n' "$out" | grep -m1 '^{' || true)
+          done_flag=$(printf '%s' "$json" | python3 -c 'import json, sys
+        d = json.load(sys.stdin)
+        print("1" if any((b.get("results") or {}).get("outcome") == "Success"
+                         for b in d.values()) else "0")' 2>/dev/null || echo 0)
+          if [ "$done_flag" = "1" ]; then
+            ok="$unit"
+            break
+          fi
+          printf '   %s\n' "$(printf '%s' "$json" | head -c 400)"
+        done
+        if [ -n "$ok" ]; then
+          echo "YOGA-MYSQL-REBUILD-OK $ok"
+        else
+          echo "YOGA-MYSQL-REBUILD-NOT-NEEDED-OR-REFUSED"
+          echo "(a failed action does not mean the cluster is lost: the charm may have recovered on its own, see the wait-for below)"
+        fi
+        exit 0
+  register: pve_yoga_mysql_recovery_rebuild
+  changed_when: true
+  when: pve_yoga_mysql_rebuild_bad | length > 0
+
+- name: Wait for mysql-innodb-cluster to become active after recovery
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} wait-for application mysql-innodb-cluster --timeout 30m -m {{ pve_yoga_model }}"
+  changed_when: false
+  when: pve_yoga_mysql_rebuild_bad | length > 0

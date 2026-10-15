@@ -635,6 +635,12 @@
   tags: [never, pve-yoga-prepare]
   roles: [pve-yoga-prepare]
 
+- name: Register the PVE yoga SDN vnets and apply
+  hosts: pve
+  become: false
+  tags: [never, pve-yoga-sdn]
+  roles: [pve-yoga-sdn]
+
 - name: Bootstrap Juju 3.x manual controller for the yoga environment
   hosts: pve
   become: false
@@ -670,3 +676,21 @@
   become: false
   tags: [never, pve-yoga-ovn-uplink]
   roles: [pve-yoga-ovn-uplink]
+
+- name: Recover the PVE yoga environment after a host or guest reboot
+  hosts: pve
+  become: false
+  tags: [never, pve-yoga-recovery]
+  roles: [pve-yoga-recovery]
+
+- name: Tear down the PVE yoga environment
+  hosts: pve
+  become: false
+  tags: [never, pve-yoga-teardown]
+  roles: [pve-yoga-teardown]
+
+- name: Create the OpenStack resources for the PVE yoga environment
+  hosts: localhost
+  become: false
+  tags: [never, pve-yoga-resources]
+  roles: [pve-yoga-resources]
