@@ -1,0 +1,27 @@
+---
+
+- name: Reconcile the MySQL grants the co-located leader failed to create
+  ansible.builtin.include_tasks: reconcile-mysql-grants.yml
+  vars:
+    pve_yoga_mysql_reconcile_wait: 600
+    pve_yoga_mysql_reconcile_skip_cluster_wait: true
+
+- name: Clear the vault.service start-rate latch and start it again
+  ansible.builtin.shell: |
+    set -uo pipefail
+    before=$(pct exec {{ pve_yoga_vault_vmid }} -- systemctl is-active vault.service 2>/dev/null || true)
+    if [ "$before" = active ]; then
+      echo "VAULT-UNLATCH before=active skipped"
+      exit 0
+    fi
+    pct exec {{ pve_yoga_vault_vmid }} -- systemctl reset-failed vault.service >/dev/null 2>&1 || true
+    pct exec {{ pve_yoga_vault_vmid }} -- systemctl start vault.service >/dev/null 2>&1 || true
+    sleep 5
+    after=$(pct exec {{ pve_yoga_vault_vmid }} -- systemctl is-active vault.service 2>/dev/null || true)
+    echo "VAULT-UNLATCH before=${before:-unknown} after=${after:-unknown}"
+    [ "$after" = active ]
+  args:
+    executable: /bin/bash
+  register: pve_yoga_vault_unlatch
+  changed_when: "' after=active' in pve_yoga_vault_unlatch.stdout"
+  failed_when: false

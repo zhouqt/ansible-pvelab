@@ -330,20 +330,50 @@
         (((pve_yoga_vault_status.stdout | from_json).applications.vault.units | default({}, true)) | length) > 0
     fail_msg: "the OpenStack model has no vault unit; check the bundle deploy output."
 
-- name: Derive the yoga Vault unit address
+- name: Derive the yoga Vault unit address and its PVE guest
   ansible.builtin.set_fact:
     pve_yoga_vault_address: >-
       {{ ((pve_yoga_vault_status.stdout | from_json).applications.vault.units
           | dict2items | map(attribute='value') | first)['public-address'] }}
+    pve_yoga_vault_vmid: >-
+      {{ pve_yoga_workload_vmids[
+           ((pve_yoga_vault_status.stdout | from_json).applications.vault.units
+            | dict2items | map(attribute='value') | first)['machine'] | int] }}
 
-- name: Read the yoga Vault initialization state
+- name: Probe the yoga Vault API briefly before touching its storage
   ansible.builtin.command:
     argv:
       - curl
       - -sk
+      - --max-time
+      - "5"
       - "http://{{ pve_yoga_vault_address }}:8200/v1/sys/init"
-  register: pve_yoga_vault_init_state
+  register: pve_yoga_vault_api_probe
   changed_when: false
+  failed_when: false
+  retries: 18
+  delay: 10
+  until: pve_yoga_vault_api_probe.rc == 0
+
+- name: Repair the co-located-leader grants when the Vault API is still not answering
+  ansible.builtin.include_tasks: vault-unlatch.yml
+  when: pve_yoga_vault_api_probe.rc != 0
+
+- name: Read the yoga Vault initialization state
+  ansible.builtin.shell: |
+    set -uo pipefail
+    out=$(curl -sk --max-time 5 "http://{{ pve_yoga_vault_address }}:8200/v1/sys/init") && rc=0 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      pct exec {{ pve_yoga_vault_vmid }} -- systemctl reset-failed vault.service >/dev/null 2>&1 || true
+      pct exec {{ pve_yoga_vault_vmid }} -- systemctl start vault.service >/dev/null 2>&1 || true
+      echo "VAULT-LATCH-CLEARED attempt failed, latch reset and service started" >&2
+    fi
+    printf '%s' "$out"
+    exit "$rc"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_vault_init_state
+  changed_when: "'VAULT-LATCH-CLEARED' in (pve_yoga_vault_init_state.stderr | default(''))"
   failed_when: false
   retries: 60
   delay: 10
@@ -355,10 +385,12 @@
       - pve_yoga_vault_init_state.rc == 0
       - "'initialized' in (pve_yoga_vault_init_state.stdout | default('', true))"
     fail_msg: >-
-      the Vault API http://{{ pve_yoga_vault_address }}:8200/v1/sys/init gave no parsable response within 10 min
+      the Vault API at http://{{ pve_yoga_vault_address }}:8200/v1/sys/init gave no parseable response within 3 + 10 minutes
       (rc={{ pve_yoga_vault_init_state.rc }}). The usual cause is that vault's storage is not ready yet --
-      vault-mysql-router can only bootstrap once reconcile-mysql-grants has added the mysqlrouteruser grant.
-      once vault-mysql-router is active, re-run this playbook (it is idempotent).
+      vault-mysql-router waits for the mysqlrouteruser grant that reconcile-mysql-grants fills in before it can bootstrap;
+      if it is active while vault.service still shows `Start request repeated too quickly` (the systemd start-limit latch),
+      break the latch by hand: `pct exec {{ pve_yoga_vault_vmid }} -- systemctl reset-failed vault.service` then start it.
+      re-run this playbook once that is confirmed (it is idempotent).
 
 - name: Initialize the yoga Vault when it is not yet initialized
   ansible.builtin.command:
