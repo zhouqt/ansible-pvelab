@@ -28,7 +28,12 @@
                      if (v.get('workload-status') or {}).get('current') in ('blocked', 'error'))
         leader = sorted(u for u, v in units.items() if v.get('leader'))
         order = leader + [u for u in sorted(units) if u not in leader]
-        print(json.dumps({'bad': bad, 'order': order}))
+        msgs = [(v.get('workload-status') or {}).get('message', '') for v in units.values()]
+        total = [u for u, v in units.items()
+                 if (v.get('workload-status') or {}).get('current') not in ('active',)]
+        complete = bool(units) and len(total) == len(units) and any(
+            'not active' in m or 'complete outage' in m or 'inaccessible' in m for m in msgs)
+        print(json.dumps({'bad': bad, 'order': order, 'complete_outage': complete}))
     stdin: "{{ pve_yoga_mysql_recovery_status.stdout }}"
   register: pve_yoga_mysql_recovery_assess
   changed_when: false
@@ -37,3 +42,4 @@
   ansible.builtin.set_fact:
     pve_yoga_mysql_rebuild_bad: "{{ (pve_yoga_mysql_recovery_assess.stdout | from_json).bad }}"
     pve_yoga_mysql_rebuild_units: "{{ (pve_yoga_mysql_recovery_assess.stdout | from_json).order }}"
+    pve_yoga_mysql_complete_outage: "{{ (pve_yoga_mysql_recovery_assess.stdout | from_json).complete_outage }}"

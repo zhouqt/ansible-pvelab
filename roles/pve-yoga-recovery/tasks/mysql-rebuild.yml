@@ -23,7 +23,9 @@
   register: pve_yoga_mysql_selfheal
   changed_when: false
   failed_when: false
-  when: pve_yoga_mysql_rebuild_bad | length > 0
+  when:
+    - pve_yoga_mysql_rebuild_bad | length > 0
+    - not (pve_yoga_mysql_complete_outage | bool)
 
 - name: Re-assess the MySQL InnoDB cluster after the self-heal window
   ansible.builtin.include_tasks: mysql-assess.yml

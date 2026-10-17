@@ -683,6 +683,18 @@
   tags: [never, pve-yoga-recovery]
   roles: [pve-yoga-recovery]
 
+- name: Take a savepoint of the PVE yoga environment
+  hosts: pve
+  become: false
+  tags: [never, pve-yoga-savepoint]
+  roles: [pve-yoga-savepoint]
+
+- name: Restore the PVE yoga environment from a savepoint
+  hosts: pve
+  become: false
+  tags: [never, pve-yoga-savepoint-restore]
+  roles: [pve-yoga-savepoint-restore]
+
 - name: Tear down the PVE yoga environment
   hosts: pve
   become: false

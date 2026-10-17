@@ -487,6 +487,10 @@ pve_yoga_teardown_discard_lvs: true
 pve_yoga_teardown_remove_legacy_files_dir: false
 pve_yoga_teardown_credential_files: []
 pve_yoga_teardown_remove_legacy_client: false
+pve_yoga_savepoint_take: false
+pve_yoga_savepoint_restore: false
+pve_yoga_savepoint_name: ""
+pve_yoga_savepoint_include_osd: true
 pve_yoga_credentials_dir: "{{ playbook_dir }}/credentials"
 pve_yoga_keystone_admin_password_file: "{{ pve_yoga_credentials_dir }}/{{ pve_yoga_env_slug }}-keystone-admin-password.txt"
 pve_yoga_vault_init_file: "{{ pve_yoga_credentials_dir }}/{{ pve_yoga_env_slug }}-vault-init.json"
