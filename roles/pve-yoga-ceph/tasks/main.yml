@@ -210,43 +210,6 @@
   loop_control:
     label: "CT {{ item }}"
 
-- name: Wait for the ceph-osd charm to publish the bootstrap-osd keyring in each OSD guest
-  ansible.builtin.shell: |
-    set -euo pipefail
-    pct exec {{ item }} -- test -f /var/lib/ceph/bootstrap-osd/ceph.keyring
-  args:
-    executable: /bin/bash
-  loop: "{{ pve_yoga_osd_vmids }}"
-  loop_control:
-    label: "CT {{ item }}"
-  register: pve_yoga_ceph_bootstrap_keyring
-  until: pve_yoga_ceph_bootstrap_keyring.rc == 0
-  retries: 60
-  delay: 10
-  changed_when: false
-
-- name: Create one Ceph OSD per device when missing
-  ansible.builtin.shell: |
-    set -euo pipefail
-    vmid={{ item }}
-    if pct exec "$vmid" -- bash -c '
-         vg=$(pvs --noheadings -o vg_name /dev/osd-block 2>/dev/null | tr -d " ")
-         [ -n "$vg" ] && lvs --noheadings -o lv_tags "$vg" 2>/dev/null | grep -q "ceph.osd_id"
-       '; then
-      echo "OSD-EXISTS $vmid"
-    else
-      pct exec "$vmid" -- bash /root/mk-osd.sh
-    fi
-  args:
-    executable: /bin/bash
-  loop: "{{ pve_yoga_osd_vmids }}"
-  loop_control:
-    label: "CT {{ item }}"
-  register: pve_yoga_ceph_osd_create
-  changed_when: >-
-    'OSD-EXISTS' not in pve_yoga_ceph_osd_create.stdout
-    and 'MKOSD-SKIP-EXISTS' not in pve_yoga_ceph_osd_create.stdout
-
 - name: Map each ceph-osd unit to the guest that runs it
   ansible.builtin.set_fact:
     pve_yoga_ceph_osd_units: >-
@@ -324,6 +287,43 @@
   when: >-
     (pve_yoga_ceph_status_patched.stdout | from_json)
     .applications['ceph-osd'].units[item.unit]['workload-status'].current == 'error'
+
+- name: Wait for the ceph-osd charm to publish the bootstrap-osd keyring in each OSD guest
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ item }} -- test -f /var/lib/ceph/bootstrap-osd/ceph.keyring
+  args:
+    executable: /bin/bash
+  loop: "{{ pve_yoga_osd_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+  register: pve_yoga_ceph_bootstrap_keyring
+  until: pve_yoga_ceph_bootstrap_keyring.rc == 0
+  retries: 60
+  delay: 10
+  changed_when: false
+
+- name: Create one Ceph OSD per device when missing
+  ansible.builtin.shell: |
+    set -euo pipefail
+    vmid={{ item }}
+    if pct exec "$vmid" -- bash -c '
+         vg=$(pvs --noheadings -o vg_name /dev/osd-block 2>/dev/null | tr -d " ")
+         [ -n "$vg" ] && lvs --noheadings -o lv_tags "$vg" 2>/dev/null | grep -q "ceph.osd_id"
+       '; then
+      echo "OSD-EXISTS $vmid"
+    else
+      pct exec "$vmid" -- bash /root/mk-osd.sh
+    fi
+  args:
+    executable: /bin/bash
+  loop: "{{ pve_yoga_osd_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+  register: pve_yoga_ceph_osd_create
+  changed_when: >-
+    'OSD-EXISTS' not in pve_yoga_ceph_osd_create.stdout
+    and 'MKOSD-SKIP-EXISTS' not in pve_yoga_ceph_osd_create.stdout
 
 - name: Register the prepared OSD device with the ceph-osd charm and publish the OSD count
   ansible.builtin.command:
