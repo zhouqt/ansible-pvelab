@@ -1,5 +1,5 @@
 pve_yoga_openstack_series: jammy
-pve_yoga_openstack_version: "yoga"
+pve_yoga_openstack_version: "2024.1"
 pve_yoga_env_number: 4
 
 pve_yoga_http_proxy: ""

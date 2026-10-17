@@ -28,10 +28,32 @@
       `--tags pve-yoga-sdn -e pve_yoga_run_sdn=true -e @env/yoga-env<N>.yml` register this env's
       the 4 SDN vnets (registering/applying them requires every guest of this env to be stopped), then re-run this stage.
 
+- name: Define this environment's SNAT network list
+  ansible.builtin.set_fact:
+    pve_yoga_snat_cidrs: >-
+      {{ pve_yoga_network_spaces | selectattr('snat', 'defined') | selectattr('snat')
+         | map(attribute='cidr') | list }}
+
 - name: Read PVE host NAT POSTROUTING rules
   ansible.builtin.command: iptables -t nat -S POSTROUTING
   register: pve_yoga_prepare_nat_rules
   changed_when: false
+
+- name: Ensure this environment's public SNAT rules exist
+  ansible.builtin.shell: |
+    set -euo pipefail
+    snat_ip=$(ip -4 -o addr show vmbr0 | awk '{print $4}' | cut -d/ -f1 | head -1)
+    [ -n "$snat_ip" ] || { echo "PREPARE-FAIL: vmbr0 has no IPv4 address" >&2; exit 1; }
+    n=0
+    for cidr in {{ pve_yoga_snat_cidrs | join(' ') }}; do
+      if ! iptables -t nat -C POSTROUTING -s "$cidr" -o vmbr0 -j SNAT --to-source "$snat_ip" 2>/dev/null; then
+        iptables -t nat -A POSTROUTING -s "$cidr" -o vmbr0 -j SNAT --to-source "$snat_ip"
+        n=$((n + 1))
+      fi
+    done
+    echo "PREPARE-SNAT-DONE added=$n to=$snat_ip"
+  register: pve_yoga_prepare_snat
+  changed_when: "'added=0' not in pve_yoga_prepare_snat.stdout"
 
 - name: Require public SNAT for internet egress
   ansible.builtin.assert:
