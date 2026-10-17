@@ -19,7 +19,7 @@
       - "-"
       - "{{ pve_yoga_juju_client_user }}"
       - -c
-      - "{{ pve_yoga_juju_cmd }} wait-for application mysql-innodb-cluster --timeout 30m -m {{ pve_yoga_model }}"
+      - "{{ pve_yoga_juju_cmd }} wait-for application mysql-innodb-cluster --timeout {{ pve_yoga_mysql_selfheal_timeout }} -m {{ pve_yoga_model }}"
   register: pve_yoga_mysql_selfheal
   changed_when: false
   failed_when: false

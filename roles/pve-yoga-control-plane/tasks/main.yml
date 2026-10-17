@@ -81,8 +81,12 @@
       - src: "{{ playbook_dir }}/bundles/openstack-pve-overlay.yaml"
         staged: openstack-pve-overlay.yaml
         render: false
+      - src: "{{ playbook_dir }}/bundles/openstack-pve-wave1-overlay.yaml"
+        staged: openstack-pve-wave1-overlay.yaml
+        render: false
     pve_yoga_bundle_staged: "{{ pve_yoga_juju_stage_dir }}/openstack-pve-bundle.yaml"
     pve_yoga_overlay_staged: "{{ pve_yoga_juju_stage_dir }}/openstack-pve-overlay.yaml"
+    pve_yoga_wave1_overlay_staged: "{{ pve_yoga_juju_stage_dir }}/openstack-pve-wave1-overlay.yaml"
 
 - name: Render the bundle template into /root on the PVE host
   ansible.builtin.template:
@@ -173,6 +177,25 @@
       - "'applications' in (pve_yoga_control_status.stdout | from_json)"
     fail_msg: "cannot read the OpenStack model status; refusing to deploy while the state is unknown."
 
+- name: Deploy the critical path of the OpenStack bundle (wave 1, P0-5)
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_yoga_juju_cmd }} deploy {{ pve_yoga_bundle_staged }}
+        --overlay {{ pve_yoga_wave1_overlay_staged }}
+        --map-machines=existing,0=0,1=1,2=2,3=3,4=4,5=5 -m {{ pve_yoga_model }}
+  register: pve_yoga_control_deploy_wave1
+  changed_when: "'Deploying' in pve_yoga_control_deploy_wave1.stdout or 'added' in pve_yoga_control_deploy_wave1.stdout"
+  when: pve_yoga_control_plane_two_wave | bool
+
 - name: Deploy the OpenStack bundle with the placement/binding overlay
   ansible.builtin.command:
     argv:
@@ -190,9 +213,29 @@
         --map-machines=existing,0=0,1=1,2=2,3=3,4=4,5=5 -m {{ pve_yoga_model }}
   register: pve_yoga_control_deploy
   changed_when: "'Deploying' in pve_yoga_control_deploy.stdout or 'added' in pve_yoga_control_deploy.stdout"
+  when: not (pve_yoga_control_plane_two_wave | bool)
 
 - name: Reconcile the MySQL grants the co-located leader failed to create
   ansible.builtin.include_tasks: reconcile-mysql-grants.yml
+
+- name: Deploy the rest of the OpenStack bundle (wave 2, P0-5)
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_yoga_juju_cmd }} deploy {{ pve_yoga_bundle_staged }}
+        --overlay {{ pve_yoga_overlay_staged }}
+        --map-machines=existing,0=0,1=1,2=2,3=3,4=4,5=5 -m {{ pve_yoga_model }}
+  register: pve_yoga_control_deploy
+  changed_when: "'Deploying' in pve_yoga_control_deploy.stdout or 'added' in pve_yoga_control_deploy.stdout"
+  when: pve_yoga_control_plane_two_wave | bool
 
 - name: Read the OpenStack model status before Vault initialization
   ansible.builtin.command:
