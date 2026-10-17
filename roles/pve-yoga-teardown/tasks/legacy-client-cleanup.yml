@@ -1,0 +1,40 @@
+---
+
+- name: Refuse to remove the legacy juju client while any environment still points at it
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_juju_client_user != 'jujuyoga'
+      - "'jujuyoga' not in pve_yoga_juju_data"
+      - "'jujuyoga' not in pve_yoga_juju_stage_dir"
+    fail_msg: >-
+      the current config still points at the legacy user (pve_yoga_juju_client_user={{ pve_yoga_juju_client_user }},
+      pve_yoga_juju_data={{ pve_yoga_juju_data }},stage={{ pve_yoga_juju_stage_dir }}).
+      switch the client to the ubuntu home first (see pve_yoga_juju_client_* in group_vars/all.yml),
+      then clean up the leftover user.
+
+- name: Remove the legacy jujuyoga user and its juju client store inside the client CT
+  ansible.builtin.shell: |
+    set -u
+    pct exec {{ pve_yoga_juju_client_vmid }} -- bash -c '
+      set -u
+      changed=0
+      if id jujuyoga >/dev/null 2>&1; then
+        if pgrep -u jujuyoga >/dev/null 2>&1; then
+          echo "REFUSE: processes of the jujuyoga user are still running: $(pgrep -u jujuyoga | tr "\n" " ")"
+          exit 1
+        fi
+        if [ -s /home/jujuyoga/.local/share/juju/controllers.yaml ]; then
+          echo "WARN: /home/jujuyoga/.local/share/juju/controllers.yaml is not empty, contents below (make sure it is safe to delete):"
+          cat /home/jujuyoga/.local/share/juju/controllers.yaml
+        fi
+        userdel -r jujuyoga && echo "deleted user jujuyoga (home directory included)" && changed=1
+      else
+        echo "user jujuyoga does not exist (already cleaned up)"
+      fi
+      [ -e /home/jujuyoga ] && echo "WARN: /home/jujuyoga still exists, inspect it by hand before deleting it."
+      echo "YOGA-LEGACY-CLIENT-DONE changed=$changed"
+    '
+  args:
+    executable: /bin/bash
+  register: pve_yoga_teardown_legacy_client
+  changed_when: "'changed=1' in pve_yoga_teardown_legacy_client.stdout"

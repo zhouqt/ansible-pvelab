@@ -36,25 +36,73 @@
     group: root
     mode: "0700"
   loop:
-    - yoga-setup-osd-loop.sh
+    - yoga-setup-osd-lv.sh
     - mk-osd.sh
     - yoga-osd-lvm.conf
     - ceph-osd-boot-activate.sh
     - ceph-osd-activate.service
+    - ceph-osd-charm-lxc-patch.py
 
-- name: Build the vmid:loopindex mapping
+- name: Refuse to run while any OSD CT conf still carries the old loop block
+  ansible.builtin.shell: |
+    set -euo pipefail
+    bad=""
+    for vmid in {{ pve_yoga_osd_vmids | join(' ') }}; do
+      conf="/etc/pve/lxc/$vmid.conf"
+      [ -e "$conf" ] || continue
+      grep -q '# yoga-osd-loop-' "$conf" && bad="$bad $vmid"
+    done
+    if [ -n "$bad" ]; then
+      echo "OSD-LOOP-RESIDUE:$bad"
+      exit 1
+    fi
+    echo "OSD-LOOP-CLEAN"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_ceph_loop_residue
+  changed_when: false
+  failed_when: "'OSD-LOOP-CLEAN' not in pve_yoga_ceph_loop_residue.stdout"
+
+- name: Read the host thin pool utilisation before creating OSD volumes
+  ansible.builtin.command:
+    argv:
+      - lvs
+      - --noheadings
+      - -o
+      - lv_size,data_percent,metadata_percent
+      - --units
+      - g
+      - "{{ pve_yoga_osd_thinpool }}"
+  register: pve_yoga_ceph_pool_usage
+  changed_when: false
+
+- name: Require enough thin pool headroom for this environment
+  ansible.builtin.assert:
+    that:
+      - (pve_yoga_ceph_pool_usage.stdout.split()[1] | float) < (pve_yoga_osd_thinpool_max_data_percent | float)
+    fail_msg: >-
+      thin pool {{ pve_yoga_osd_thinpool }} usage
+      {{ pve_yoga_ceph_pool_usage.stdout.split()[1] }}% has reached the cap
+      {{ pve_yoga_osd_thinpool_max_data_percent }}%({{ pve_yoga_ceph_pool_usage.stdout | trim }}).
+      tear down unused envs first (--tags pve-yoga-teardown) to free pool space, or raise
+      pve_yoga_osd_thinpool_max_data_percent.
+
+- name: Build the vmid:osdindex mapping
   ansible.builtin.set_fact:
-    pve_yoga_osd_loop_spec: >-
+    pve_yoga_osd_lv_spec: >-
       {{ pve_yoga_osd_vmids
-         | zip(range(pve_yoga_osd_loop_base_index, pve_yoga_osd_loop_base_index + (pve_yoga_osd_vmids | length)))
+         | zip(range(0, pve_yoga_osd_vmids | length))
          | map('join', ':') | join(' ') }}
 
-- name: Set up host loopback OSD devices and CT device mounts
-  ansible.builtin.command: "bash /root/yoga-setup-osd-loop.sh '{{ pve_yoga_osd_loop_spec }}'"
+- name: Set up host thin-LV OSD devices and CT device mounts
+  ansible.builtin.command: "bash /root/yoga-setup-osd-lv.sh '{{ pve_yoga_osd_lv_spec }}'"
   environment:
     OSD_SIZE_MB: "{{ pve_yoga_osd_size_mb }}"
-  register: pve_yoga_ceph_loop_setup
-  changed_when: "'YOGA-SETUP-OSD-LOOP-DONE' in pve_yoga_ceph_loop_setup.stdout"
+    OSD_LV_PREFIX: "{{ pve_yoga_osd_lv_prefix }}"
+    OSD_THINPOOL: "{{ pve_yoga_osd_thinpool }}"
+    OSD_THINPOOL_MAX_DATA_PERCENT: "{{ pve_yoga_osd_thinpool_max_data_percent }}"
+  register: pve_yoga_ceph_lv_setup
+  changed_when: "'YOGA-SETUP-OSD-LV-DONE' in pve_yoga_ceph_lv_setup.stdout"
 
 - name: Start (or restart) OSD CTs so the new device mount and cgroup rules apply
   ansible.builtin.shell: |
@@ -69,7 +117,7 @@
   loop: "{{ pve_yoga_osd_vmids }}"
   loop_control:
     label: "CT {{ item }}"
-  when: pve_yoga_ceph_loop_setup.changed
+  when: pve_yoga_ceph_lv_setup.changed
 
 - name: Wait for OSD CTs to come back
   ansible.builtin.command: "pct exec {{ item }} -- systemctl is-system-running"
@@ -162,11 +210,29 @@
   loop_control:
     label: "CT {{ item }}"
 
+- name: Wait for the ceph-osd charm to publish the bootstrap-osd keyring in each OSD guest
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ item }} -- test -f /var/lib/ceph/bootstrap-osd/ceph.keyring
+  args:
+    executable: /bin/bash
+  loop: "{{ pve_yoga_osd_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+  register: pve_yoga_ceph_bootstrap_keyring
+  until: pve_yoga_ceph_bootstrap_keyring.rc == 0
+  retries: 60
+  delay: 10
+  changed_when: false
+
 - name: Create one Ceph OSD per device when missing
   ansible.builtin.shell: |
     set -euo pipefail
     vmid={{ item }}
-    if pct exec "$vmid" -- bash -c "lvs -o lv_tags --noheadings 2>/dev/null | grep -q 'ceph.osd_id'"; then
+    if pct exec "$vmid" -- bash -c '
+         vg=$(pvs --noheadings -o vg_name /dev/osd-block 2>/dev/null | tr -d " ")
+         [ -n "$vg" ] && lvs --noheadings -o lv_tags "$vg" 2>/dev/null | grep -q "ceph.osd_id"
+       '; then
       echo "OSD-EXISTS $vmid"
     else
       pct exec "$vmid" -- bash /root/mk-osd.sh
@@ -177,7 +243,105 @@
   loop_control:
     label: "CT {{ item }}"
   register: pve_yoga_ceph_osd_create
-  changed_when: "'OSD-EXISTS' not in pve_yoga_ceph_osd_create.stdout"
+  changed_when: >-
+    'OSD-EXISTS' not in pve_yoga_ceph_osd_create.stdout
+    and 'MKOSD-SKIP-EXISTS' not in pve_yoga_ceph_osd_create.stdout
+
+- name: Map each ceph-osd unit to the guest that runs it
+  ansible.builtin.set_fact:
+    pve_yoga_ceph_osd_units: >-
+      {{ pve_yoga_ceph_osd_units | default([])
+         + [ {'unit': item.key,
+              'vmid': pve_yoga_workload_vmids[item.value.machine | int]} ] }}
+  loop: "{{ ((pve_yoga_ceph_status.stdout | from_json).applications['ceph-osd'].units) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Push the ceph-osd charm patcher into the OSD guests
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ item.vmid }}"
+      - /root/ceph-osd-charm-lxc-patch.py
+      - /root/ceph-osd-charm-lxc-patch.py
+      - --perms
+      - "0700"
+  loop: "{{ pve_yoga_ceph_osd_units }}"
+  loop_control:
+    label: "{{ item.unit }}"
+
+- name: Accept PVE LXC passthrough device nodes in the ceph-osd charm
+  ansible.builtin.shell: |
+    set -euo pipefail
+    vmid={{ item.vmid }}
+    charm="/var/lib/juju/agents/unit-{{ item.unit | replace('/', '-') }}/charm"
+    out="$(pct exec "$vmid" -- python3 /root/ceph-osd-charm-lxc-patch.py \
+             "$charm/lib/charms_ceph/utils.py")"
+    echo "$out"
+    if [ "$out" = "PATCHED" ]; then
+      pct exec "$vmid" -- bash -c "rm -f $charm/lib/charms_ceph/__pycache__/utils.cpython-*.pyc"
+    fi
+  args:
+    executable: /bin/bash
+  loop: "{{ pve_yoga_ceph_osd_units }}"
+  loop_control:
+    label: "{{ item.unit }}"
+  register: pve_yoga_ceph_charm_patch
+  changed_when: "'PATCHED' in pve_yoga_ceph_charm_patch.stdout_lines"
+
+- name: Re-read OpenStack Juju status after patching the ceph-osd charm
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+  register: pve_yoga_ceph_status_patched
+  changed_when: false
+
+- name: Re-run the ceph-osd hooks that failed before the charm was patched
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} resolved -m {{ pve_yoga_model }} {{ item.unit }}"
+  loop: "{{ pve_yoga_ceph_osd_units }}"
+  loop_control:
+    label: "{{ item.unit }}"
+  changed_when: false
+  when: >-
+    (pve_yoga_ceph_status_patched.stdout | from_json)
+    .applications['ceph-osd'].units[item.unit]['workload-status'].current == 'error'
+
+- name: Register the prepared OSD device with the ceph-osd charm and publish the OSD count
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} run {{ item.unit }} add-disk osd-devices=/dev/osd-block --wait=10m -m {{ pve_yoga_model }}"
+  loop: "{{ pve_yoga_ceph_osd_units }}"
+  loop_control:
+    label: "{{ item.unit }}"
+  register: pve_yoga_ceph_add_disk
+  changed_when: false
 
 - name: Wait for ceph-mon to become active
   ansible.builtin.command:

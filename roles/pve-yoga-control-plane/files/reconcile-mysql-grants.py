@@ -8,6 +8,12 @@ import time
 
 DB_ROUTER_ENDPOINT = "db-router"
 MYSQL_APP = "mysql-innodb-cluster"
+ROUTER_CHARM = "mysql-router"
+RW_MARKER = "Mode: R/W"
+
+SETTLED_WORKLOAD = {"active", "blocked", "error"}
+
+TRANSIENT_WORKLOAD = {"install", "maintenance", "unknown"}
 
 def die(msg, code=1):
     print("RECONCILE-ERROR " + msg, file=sys.stderr)
@@ -49,9 +55,13 @@ class Runner:
         return self.pct(mysql_vmid, ["mysql", "--defaults-file=/root/.my.cnf",
                                      "-N", "-B", "-e", sql])
 
+def show_unit(runner, unit):
+
+    return runner.juju_json(["show-unit", "-m", runner.args.model, unit])
+
 def relation_units(runner, unit, endpoint):
 
-    data = runner.juju_json(["show-unit", unit])
+    data = show_unit(runner, unit)
     out = []
     for rel in (data.get(unit, {}).get("relation-info") or []):
         if rel.get("endpoint") != endpoint:
@@ -102,16 +112,102 @@ def existing_grants(runner, mysql_vmid):
             pairs.add((user, host))
     return pairs
 
-def ensure_root_access(runner, leader, mysql_vmid, dump_db):
+def ensure_root_access(runner, unit, mysql_vmid, dump_db):
 
     if runner.pct(mysql_vmid, ["test", "-f", "/root/.my.cnf"]).returncode == 0:
         return
     print("RECONCILE-INFO wrote /root/.my.cnf (side effect of the charm mysqldump action)")
 
-    runner.juju(["run", leader, "mysqldump", "databases=" + dump_db,
+    runner.juju(["run", unit, "mysqldump", "databases=" + dump_db,
                  "--wait", "5m", "-m", runner.args.model], check=False)
     if runner.pct(mysql_vmid, ["test", "-f", "/root/.my.cnf"]).returncode != 0:
         die("the charm mysqldump action did not write /root/.my.cnf")
+
+def super_read_only(runner, mysql_vmid):
+
+    res = runner.mysql("SELECT @@super_read_only", mysql_vmid)
+    if res.returncode != 0:
+        return None
+    return res.stdout.strip()
+
+def assert_writable(runner, unit, mysql_vmid):
+
+    val = super_read_only(runner, mysql_vmid)
+    if val is None:
+        die("reading @@super_read_only on {} (CT {}) failed (was /root/.my.cnf written?)".format(
+            unit, mysql_vmid))
+    if val != "0":
+        die("{} (CT {}) is not the R/W primary (@@super_read_only={}), refusing to apply SQL here;"
+            "just re-run this playbook (it is idempotent); it re-detects the primary.".format(
+                unit, mysql_vmid, val))
+
+def parse_juju_run_json(out):
+
+    for line in reversed((out or "").splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            return json.loads(line)
+        except ValueError:
+            continue
+    return None
+
+def primary_from_status(units):
+
+    rw = sorted(u for u, v in units.items()
+                if RW_MARKER in ((v.get("workload-status") or {}).get("message") or ""))
+    return rw[0] if len(rw) == 1 else None
+
+def primary_from_action(runner, units, any_unit):
+
+    out = runner.juju(["run", any_unit, "cluster-status", "--format", "json",
+                       "--wait", "2m", "-m", runner.args.model], check=False)
+    payload = parse_juju_run_json(out)
+    if not payload:
+        return None
+    raw = ((payload.get(any_unit) or {}).get("results") or {}).get("cluster-status")
+    if not raw:
+        return None
+    try:
+        primary = json.loads(raw)["defaultReplicaSet"]["primary"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    octet = str(primary).split(":")[0].rsplit(".", 1)[-1]
+    hits = sorted(u for u, v in units.items()
+                  if str(v.get("public-address") or "").rsplit(".", 1)[-1] == octet)
+    return hits[0] if len(hits) == 1 else None
+
+def router_units(status):
+
+    out = []
+    for app in (status.get("applications") or {}).values():
+        if (app.get("charm") or app.get("charm-name")) != ROUTER_CHARM:
+            continue
+        out.extend((app.get("units") or {}).items())
+    return out
+
+def routers_settled(runner, args):
+
+    status = runner.juju_json(["status", "-m", args.model])
+    pending = []
+    for unit_name, body in router_units(status):
+        agent = (body.get("juju-status") or {}).get("current")
+        wl = (body.get("workload-status") or {}).get("current")
+        if agent != "idle" or wl not in SETTLED_WORKLOAD:
+            pending.append("{}(agent={}, workload={})".format(unit_name, agent, wl))
+    return sorted(pending)
+
+def routers_transient(runner, args):
+
+    status = runner.juju_json(["status", "-m", args.model])
+    out = []
+    for unit_name, body in router_units(status):
+        agent = (body.get("juju-status") or {}).get("current")
+        wl = (body.get("workload-status") or {}).get("current")
+        if agent != "idle" or wl in TRANSIENT_WORKLOAD:
+            out.append("{}(agent={}, workload={})".format(unit_name, agent, wl))
+    return sorted(out)
 
 def clone_grants(runner, user, src_host, dst_host, mysql_vmid):
 
@@ -143,6 +239,53 @@ def pick_source_host(user, existing):
             return h
     return hosts[0]
 
+def assert_same_model(runner, leader, status_address):
+
+    data = show_unit(runner, leader)
+    unit_body = data.get(leader) or {}
+    got = unit_body.get("public-address")
+    if got != status_address:
+        die("show-unit and status point at different models: the public-address of {} "
+            "show-unit={!r} / status={!r}. Check that the juju client's current model "
+            "(juju switch) and the -m argument.".format(leader, got, status_address))
+
+def machine_of(units, unit):
+    machine = units[unit].get("machine")
+    if machine is None:
+        die("cannot determine the machine of {}".format(unit))
+    return int(machine)
+
+def vmid_of(machine_vmids, machine, unit):
+    if not (0 <= machine < len(machine_vmids)):
+        die("{}: machine {} is outside the {} entries of --machine-vmids".format(
+            unit, machine, len(machine_vmids)))
+    return machine_vmids[machine]
+
+def detect_write_target(runner, args, leader, machine_vmids, status=None):
+
+    if status is None:
+        status = runner.juju_json(["status", "-m", args.model])
+    units = ((status.get("applications") or {}).get(MYSQL_APP) or {}).get("units") or {}
+    if not units:
+        die("status has no unit for {}".format(MYSQL_APP))
+
+    unit = primary_from_status(units)
+    how = "{} from workload-status".format(RW_MARKER)
+    if not unit:
+        unit = primary_from_action(runner, units, leader)
+        how = "defaultReplicaSet.primary from the cluster-status action"
+    if not unit:
+        print("RECONCILE-INFO warning: neither path identified an R/W primary, falling back to juju leader {}"
+              "(if it happens to be an R/O replica, assert_writable below will stop it)".format(leader))
+        unit = leader
+        how = "juju leader (fallback)"
+
+    machine = machine_of(units, unit)
+    vmid = vmid_of(machine_vmids, machine, unit)
+    print("RECONCILE-INFO write target {} machine={} CT={} (detected from {})".format(
+        unit, machine, vmid, how))
+    return unit, vmid
+
 def main():
     parser = argparse.ArgumentParser(description="Fill in the mysql-innodb-cluster user entries that were skipped because the service unit shares a machine with the MySQL leader.")
     parser.add_argument("--client-ct", type=int, required=True,
@@ -156,7 +299,11 @@ def main():
                              "(machine i corresponds to entry i, the order is the numbering, see group_vars "
                              " pve_yoga_workload_vmids)")
     parser.add_argument("--wait", type=int, default=300,
-                        help="seconds to wait for the charm to finish the db-router relation (default 300)")
+                        help="fallback timeout in seconds (default 300). The normal path is **event driven**:"
+                             "the expected set stayed quiet for --quiet-rounds rounds and no mysql-router "
+                             "is in a transitional state it stops at once (empty delta -> RECONCILE-OK, returns immediately;"
+                             "delta not empty -> starts applying SQL at once). It really waits only while the request set keeps changing (the charm is still"
+                             "handling relations); see the \"Waiting\" section at the top of the file")
     parser.add_argument("--interval", type=int, default=20,
                         help="poll interval in seconds (default 20)")
     parser.add_argument("--quiet-rounds", type=int, default=3,
@@ -177,15 +324,19 @@ def main():
     leaders = sorted(u for u, v in units.items() if v.get("leader"))
     if not leaders:
         die("{} has not elected a leader yet".format(MYSQL_APP))
+
     leader = leaders[0]
-    machine = units[leader].get("machine")
-    if machine is None:
-        die("cannot determine the machine of {}".format(leader))
     machine_vmids = [int(x) for x in args.machine_vmids.split(",") if x.strip()]
-    if not (0 <= int(machine) < len(machine_vmids)):
-        die("machine {} is outside the {} entries of --machine-vmids".format(machine, len(machine_vmids)))
-    mysql_vmid = machine_vmids[int(machine)]
-    print("RECONCILE-INFO leader={} machine={} CT={}".format(leader, machine, mysql_vmid))
+    print("RECONCILE-INFO leader={} machine={}".format(leader, machine_of(units, leader)))
+
+    assert_same_model(runner, leader, units[leader].get("public-address"))
+
+    target_unit, mysql_vmid = detect_write_target(
+        runner, args, leader, machine_vmids, status=status)
+
+    ensure_root_access(runner, target_unit, mysql_vmid, args.dump_db)
+
+    assert_writable(runner, target_unit, mysql_vmid)
 
     requests = expected_requests(runner, leader)
     if not requests:
@@ -193,8 +344,6 @@ def main():
             "confirm the bundle is deployed and mysql-router is related".format(leader))
     expected = {(e["user"], e["host"]) for e in requests}
     print("RECONCILE-INFO expected {} grants".format(len(expected)))
-
-    ensure_root_access(runner, leader, mysql_vmid, args.dump_db)
 
     deadline = time.time() + args.wait
     stable = 0
@@ -204,15 +353,18 @@ def main():
         expected = {(e["user"], e["host"]) for e in requests}
         existing = existing_grants(runner, mysql_vmid)
         missing = sorted(expected - existing)
-        if not missing:
-            stable = stable + 1 if expected == prev else 0
-            if stable >= args.quiet_rounds:
+        transient = routers_transient(runner, args)
+        stable = stable + 1 if expected == prev else 0
+        if stable >= args.quiet_rounds and not transient:
+            if not missing:
                 print("RECONCILE-OK all {} grants are present (the charm built them itself;"
-                      "the request set has been quiet for {}s)".format(
-                          len(expected), args.quiet_rounds * args.interval))
+                      "the request set has been quiet for {}s)".format(len(expected),
+                                                args.quiet_rounds * args.interval))
                 return 0
-        else:
-            stable = 0
+            print("RECONCILE-INFO the request set has been quiet for {}s and no router is transitional, yet {} are still missing"
+                  " -> filling in right away (without waiting out --wait)".format(args.quiet_rounds * args.interval,
+                                                    len(missing)))
+            break
         prev = expected
         if time.time() >= deadline:
             break
@@ -222,6 +374,17 @@ def main():
         args.wait, len(expected), len(missing),
         ("(" + ", ".join("{}@{}".format(u, h) for u, h in missing) + ")")
         if missing else ""))
+    pending = routers_settled(runner, args)
+    if pending:
+        print("RECONCILE-INFO mysql-router units still not settled: {}".format(", ".join(pending)))
+
+    if super_read_only(runner, mysql_vmid) != "0":
+        print("RECONCILE-INFO write target {} (CT {}) is no longer the R/W primary, re-detecting".format(
+            target_unit, mysql_vmid))
+        target_unit, mysql_vmid = detect_write_target(
+            runner, args, leader, machine_vmids)
+        ensure_root_access(runner, target_unit, mysql_vmid, args.dump_db)
+        assert_writable(runner, target_unit, mysql_vmid)
 
     requests = expected_requests(runner, leader)
     expected = {(e["user"], e["host"]) for e in requests}

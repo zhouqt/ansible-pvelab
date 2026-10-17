@@ -22,7 +22,7 @@
   ansible.builtin.shell: |
     set -euo pipefail
     cd /var/tmp
-    image=ubuntu-22.04-server-cloudimg-amd64.img
+    image={{ pve_yoga_kvm_image }}
     if [ ! -s "$image" ]; then
       curl -fsSLo "$image" "{{ pve_yoga_kvm_image_url }}"
     fi
@@ -39,7 +39,7 @@
       --onboot 1 --startup order=3 --agent 1 --serial0 socket --vga std
     qm importdisk {{ pve_yoga_kvm_workload.vmid }} "$image" '{{ pve_storage }}'
     qm set {{ pve_yoga_kvm_workload.vmid }} --scsihw virtio-scsi-pci \
-      --scsi0 '{{ pve_storage }}:vm-{{ pve_yoga_kvm_workload.vmid }}-disk-0,iothread=1'
+      --scsi0 '{{ pve_storage }}:vm-{{ pve_yoga_kvm_workload.vmid }}-disk-0,iothread=1,discard=on'
     qm resize {{ pve_yoga_kvm_workload.vmid }} scsi0 {{ pve_yoga_kvm_workload.disk }}G
     qm set {{ pve_yoga_kvm_workload.vmid }} --ide2 '{{ pve_storage }}:cloudinit' --boot order=scsi0
     qm set {{ pve_yoga_kvm_workload.vmid }} \
@@ -80,6 +80,38 @@
       - "'ciuser: ubuntu' in pve_yoga_kvm_config.stdout"
       - "'sshkeys:' in pve_yoga_kvm_config.stdout"
     fail_msg: "the name, NICs, addresses or cloud-init user of VMID {{ pve_yoga_kvm_workload.vmid }} do not match the inventory; refusing to change them automatically."
+
+- name: Check whether the KVM workload disk passes discards through to the thin pool
+  ansible.builtin.set_fact:
+    pve_yoga_kvm_discard_ok: "{{ pve_yoga_kvm_config.stdout is search('(?m)^scsi0: .*discard=on(?:,|$)') }}"
+  changed_when: false
+
+- name: Read the runtime state of the KVM workload VM before touching its disk
+  ansible.builtin.command: "qm status {{ pve_yoga_kvm_workload.vmid }}"
+  register: pve_yoga_kvm_discard_state
+  changed_when: false
+  when: not (pve_yoga_kvm_discard_ok | bool)
+
+- name: Enable discard pass-through on the KVM workload disk
+  ansible.builtin.command: >-
+    qm set {{ pve_yoga_kvm_workload.vmid }} --scsi0
+    {{ (pve_yoga_kvm_config.stdout | regex_search('(?m)^scsi0: (.+)$', '\\1') | first)
+       | regex_replace(',discard=[a-z]+', '') }},discard=on
+  when:
+    - not (pve_yoga_kvm_discard_ok | bool)
+    - "'status: stopped' in pve_yoga_kvm_discard_state.stdout"
+
+- name: Warn when a running KVM workload VM still drops its discards
+  ansible.builtin.debug:
+    msg: >-
+      VM {{ pve_yoga_kvm_workload.vmid }} is running, so PVE cannot change the discard flag of scsi0 online:
+      the fstrim it issues nowadays is dropped by QEMU (neither the thin pool nor the SSD gets the blocks back). This does **not** affect what a teardown reclaims
+      (pve-yoga-teardown blkdiscards the whole volume itself); it only affects hole reclaim at runtime. Re-run it after the next shutdown
+      `--tags pve-yoga-machines` adds it automatically, or run by hand:
+      qm set {{ pve_yoga_kvm_workload.vmid }} --scsi0 '<the scsi0 value from qm config>,discard=on'  (shut the VM down first)
+  when:
+    - not (pve_yoga_kvm_discard_ok | bool)
+    - "'status: stopped' not in pve_yoga_kvm_discard_state.stdout"
 
 - name: Read rendered cloud-init user data for the KVM workload VM
   ansible.builtin.command: "qm cloudinit dump {{ pve_yoga_kvm_workload.vmid }} user"

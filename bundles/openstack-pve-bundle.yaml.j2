@@ -1,7 +1,9 @@
-name: openstack-yoga-pve
-series: jammy
+{% set p = pve_yoga_profiles[pve_yoga_profile] %}
+
+name: openstack-pve
+series: {{ pve_yoga_openstack_series }}
 variables:
-  openstack-origin: &openstack-origin distro
+  openstack-origin: &openstack-origin {{ p.origin }}
   ceph-origin: &ceph-origin ""
 
 relations:
@@ -109,122 +111,106 @@ relations:
   - ceph-mon:osd
 - - ntp:juju-info
   - nova-compute:juju-info
-- - nrpe:general-info
-  - keystone:juju-info
-- - nrpe:general-info
-  - nova-cloud-controller:juju-info
-- - nrpe:general-info
-  - glance:juju-info
-- - nrpe:general-info
-  - neutron-api:juju-info
-- - nrpe:general-info
-  - cinder:juju-info
-- - nrpe:general-info
-  - placement:juju-info
-- - nrpe:general-info
-  - rabbitmq-server:juju-info
-- - nrpe:general-info
-  - mysql-innodb-cluster:juju-info
-- - nrpe:general-info
-  - vault:juju-info
-- - nrpe:general-info
-  - ovn-central:juju-info
 
 applications:
   keystone:
     charm: ch:keystone
-    channel: yoga/stable
+    channel: {{ p.openstack }}
     options:
       openstack-origin: *openstack-origin
   keystone-mysql-router:
     charm: ch:mysql-router
-    channel: 8.0/stable
+    channel: {{ p.mysql }}
 
   nova-cloud-controller:
     charm: ch:nova-cloud-controller
-    channel: yoga/stable
+    channel: {{ p.openstack }}
     options:
       openstack-origin: *openstack-origin
       network-manager: Neutron
   nova-mysql-router:
     charm: ch:mysql-router
-    channel: 8.0/stable
+    channel: {{ p.mysql }}
 
   placement:
     charm: ch:placement
-    channel: yoga/stable
+    channel: {{ p.openstack }}
     options:
       openstack-origin: *openstack-origin
   placement-mysql-router:
     charm: ch:mysql-router
-    channel: 8.0/stable
+    channel: {{ p.mysql }}
 
   glance:
     charm: ch:glance
-    channel: yoga/stable
+    channel: {{ p.openstack }}
     options:
       openstack-origin: *openstack-origin
   glance-mysql-router:
     charm: ch:mysql-router
-    channel: 8.0/stable
+    channel: {{ p.mysql }}
 
   neutron-api:
     charm: ch:neutron-api
-    channel: yoga/stable
+    channel: {{ p.openstack }}
     options:
       openstack-origin: *openstack-origin
       neutron-security-groups: true
       flat-network-providers: physnet1
   neutron-mysql-router:
     charm: ch:mysql-router
-    channel: 8.0/stable
+    channel: {{ p.mysql }}
   neutron-api-plugin-ovn:
     charm: ch:neutron-api-plugin-ovn
-    channel: yoga/stable
+    channel: {{ p.openstack }}
 
   cinder:
     charm: ch:cinder
-    channel: yoga/stable
+    channel: {{ p.openstack }}
     options:
       openstack-origin: *openstack-origin
       block-device: None
       glance-api-version: 2
   cinder-mysql-router:
     charm: ch:mysql-router
-    channel: 8.0/stable
+    channel: {{ p.mysql }}
   cinder-ceph:
     charm: ch:cinder-ceph
-    channel: yoga/stable
+    channel: {{ p.openstack }}
 
   vault:
     charm: ch:vault
-    channel: 1.7/stable
+    channel: {{ p.vault }}
   vault-mysql-router:
     charm: ch:mysql-router
-    channel: 8.0/stable
+    channel: {{ p.mysql }}
 
   mysql-innodb-cluster:
     charm: ch:mysql-innodb-cluster
-    channel: 8.0/stable
+    channel: {{ p.mysql }}
     options:
       innodb-buffer-pool-size: 256M
 
   rabbitmq-server:
     charm: ch:rabbitmq-server
-    channel: 3.9/stable
+    channel: {{ p.rabbitmq }}
 
   ovn-central:
     charm: ch:ovn-central
-    channel: 22.03/stable
+    channel: {{ p.ovn }}
+{% if p.ovn_source %}
+    options:
+      source: {{ p.ovn_source }}
+{% endif %}
   ovn-chassis:
     charm: ch:ovn-chassis
-    channel: 22.03/stable
+    channel: {{ p.ovn }}
     options:
       ovn-bridge-mappings: physnet1:br-ex
 
   nova-compute:
     charm: ch:nova-compute
-    channel: yoga/stable
+    channel: {{ p.openstack }}
     options:
       openstack-origin: *openstack-origin
       config-flags: default_ephemeral_format=ext4
@@ -234,20 +220,17 @@ applications:
 
   ceph-mon:
     charm: ch:ceph-mon
-    channel: quincy/stable
+    channel: {{ p.ceph }}
     options:
       expected-osd-count: 4
       monitor-count: 3
   ceph-osd:
     charm: ch:ceph-osd
-    channel: quincy/stable
+    channel: {{ p.ceph }}
     options:
       osd-devices: /dev/osd-block
       osd-encrypt: false
 
   ntp:
     charm: ch:ntp
-    channel: stable
-  nrpe:
-    charm: ch:nrpe
     channel: stable

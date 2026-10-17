@@ -5,24 +5,24 @@
     that:
       - pve_yoga_run_teardown | bool
     fail_msg: >-
-      pve-yoga-teardown **destroys** the whole yoga environment (Juju controller/model + every guest + the host OSD loops).
+      pve-yoga-teardown **destroys** the whole yoga environment (Juju controller/model + every guest + the host OSD thin LVs).
       once the target env is confirmed, run it explicitly with -e pve_yoga_run_teardown=true.
 
-- name: Forbid tearing down env-1 without an explicit extra confirmation
+- name: Forbid tearing down the default environment without an explicit extra confirmation
   ansible.builtin.assert:
     that:
-      - (pve_yoga_env_slug != 'jammy-yoga') or (pve_yoga_teardown_allow_env1 | bool)
+      - >-
+        (pve_yoga_env_number | int != pve_yoga_default_env_number | int)
+        or (pve_yoga_teardown_allow_default_env | bool)
     fail_msg: >-
-      env_slug=jammy-yoga is the **env-1 currently in use** (the group_vars default). If you really want to tear it down,
-      add -e pve_yoga_teardown_allow_env1=true as well.
+      env-{{ pve_yoga_env_number }} is the **default env** (pve_yoga_env_number in group_vars, i.e. the
+      the one currently in use). If you really want to tear it down, also add -e pve_yoga_teardown_allow_default_env=true.
 
 - name: Define the isolated Juju 3.x command prefix and derived targets
   ansible.builtin.set_fact:
     pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
     pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
-    pve_yoga_teardown_osd_indices: >-
-      {{ range(pve_yoga_osd_loop_base_index,
-               pve_yoga_osd_loop_base_index + (pve_yoga_osd_vmids | length)) | list }}
+    pve_yoga_teardown_osd_indices: "{{ range(0, pve_yoga_osd_vmids | length) | list }}"
     pve_yoga_teardown_guest_vmids: "{{ [pve_yoga_controller_vmid] + pve_yoga_workload_vmids }}"
     pve_yoga_snat_cidrs: >-
       {{ pve_yoga_network_spaces | selectattr('snat', 'defined') | selectattr('snat')
@@ -33,7 +33,8 @@
     msg: >-
       tearing down env "{{ pve_yoga_env_slug }}": model {{ pve_yoga_model }}, controller
       {{ pve_yoga_controller_name }},guest {{ pve_yoga_teardown_guest_vmids | join(', ') }}
-      (KVM = {{ pve_yoga_workload_kvm_vmid }}),OSD loop idx {{ pve_yoga_teardown_osd_indices | join(', ') }}.
+      (KVM = {{ pve_yoga_workload_kvm_vmid }}),OSD thin LV
+      {{ pve_yoga_teardown_osd_indices | map('regex_replace', '^', pve_yoga_osd_lv_prefix ~ '-') | join(', ') }}.
 
 - name: Probe whether the yoga OpenStack model still exists
   ansible.builtin.command:
@@ -115,68 +116,209 @@
     (pve_yoga_teardown_controller_probe.rc | default(1)) != 0
     or pve_yoga_controller_name not in (pve_yoga_teardown_controller_probe.stdout | default(''))
 
+- name: Record the savepoint bases that must survive this teardown
+  ansible.builtin.shell: |
+    set -u
+    lvs --noheadings -o lv_name "{{ pve_yoga_osd_thinpool_vg }}" 2>/dev/null \
+      | tr -d ' ' | grep -E '^sp-{{ pve_yoga_env_slug }}-' | sort
+  args:
+    executable: /bin/bash
+  register: pve_yoga_teardown_savepoint_bases
+  changed_when: false
+
+- name: Require every recorded savepoint base to exist before deleting anything
+  ansible.builtin.assert:
+    that:
+      - item in (pve_yoga_teardown_savepoint_bases.stdout_lines | default([]))
+    fail_msg: >-
+      savepoint base "{{ item }}" was already gone before the teardown. Aborting: first find out who deleted it,
+      do not continue the teardown while the archive is incomplete (the teardown itself never restores it).
+  loop: "{{ pve_yoga_teardown_savepoint_bases.stdout_lines | default([]) }}"
+  when: (pve_yoga_teardown_savepoint_bases.stdout_lines | default([])) | length > 0
+
 - name: Stop and destroy every yoga guest
   ansible.builtin.shell: |
     set -u
+    vg="{{ pve_yoga_osd_thinpool_vg }}"
+    discard={{ 1 if (pve_yoga_teardown_discard_lvs | bool) else 0 }}
     destroyed=0
+    trimmed=0
+
+    discard_guest_lvs() {
+      local vmid="$1" lv dev
+      for lv in $(lvs --noheadings -o lv_name "$vg" 2>/dev/null | tr -d ' ' \
+                  | grep -E "^vm-${vmid}-" || true); do
+        lvchange -ay "$vg/$lv" >/dev/null 2>&1 || true
+        dev=""
+        [ -b "/dev/$vg/$lv" ] && dev="/dev/$vg/$lv"
+        if [ -z "$dev" ]; then
+          dev=$(lvs --noheadings -o lv_dm_path "$vg/$lv" 2>/dev/null | tr -d ' ')
+          [ -n "$dev" ] && [ -b "$dev" ] || dev=""
+        fi
+        if [ -n "$dev" ] && blkdiscard -f "$dev" >/dev/null 2>&1; then
+          echo "discard $vg/$lv"; trimmed=$((trimmed + 1))
+        else
+          echo "discard-skip $vg/$lv (no usable block device node, or blkdiscard refused)"
+        fi
+        lvchange -an "$vg/$lv" >/dev/null 2>&1 || true
+      done
+    }
+
     for vmid in {{ pve_yoga_teardown_guest_vmids | join(' ') }}; do
       if [ "$vmid" = "{{ pve_yoga_workload_kvm_vmid }}" ]; then
         qm status "$vmid" >/dev/null 2>&1 || { echo "qm $vmid: absent"; continue; }
         qm stop "$vmid" >/dev/null 2>&1 || true
         sleep 1
+        if [ "$discard" = "1" ]; then discard_guest_lvs "$vmid"; fi
         qm destroy "$vmid" --purge --destroy-unreferenced-disks
         echo "qm $vmid: destroyed"; destroyed=$((destroyed + 1))
       else
         pct status "$vmid" >/dev/null 2>&1 || { echo "pct $vmid: absent"; continue; }
         pct stop "$vmid" >/dev/null 2>&1 || true
         sleep 1
+        if [ "$discard" = "1" ]; then discard_guest_lvs "$vmid"; fi
         pct destroy "$vmid" --purge
         echo "pct $vmid: destroyed"; destroyed=$((destroyed + 1))
       fi
     done
-    echo "YOGA-TEARDOWN-GUESTS-DONE destroyed=$destroyed"
+    echo "YOGA-TEARDOWN-GUESTS-DONE destroyed=$destroyed trimmed=$trimmed"
   args:
     executable: /bin/bash
   register: pve_yoga_teardown_guests
   changed_when: "'destroyed=' in pve_yoga_teardown_guests.stdout and 'destroyed=0' not in pve_yoga_teardown_guests.stdout"
 
-- name: Tear down the yoga OSD loop devices on the host
+- name: Enable LVM discards before releasing any volume
+  ansible.builtin.script: "{{ playbook_dir }}/pve/scripts/yoga-set-issue-discards.sh"
+  register: pve_yoga_teardown_issue_discards
+  changed_when: "'changed=1' in (pve_yoga_teardown_issue_discards.stdout | default(''))"
+  failed_when: >-
+    (pve_yoga_teardown_issue_discards.rc | default(1)) != 0
+    or 'ISSUE-DISCARDS value=1' not in (pve_yoga_teardown_issue_discards.stdout | default(''))
+
+- name: Tear down the yoga OSD thin volumes on the host
   ansible.builtin.shell: |
     set -u
-    files_dir="${OSD_FILES_DIR:-/var/lib/ceph-osd-files}"
-    base="${OSD_LOOP_BASE:-100}"
-    remove_imgs={{ 1 if (pve_yoga_teardown_remove_osd_files | bool) else 0 }}
+    vg="{{ pve_yoga_osd_thinpool_vg }}"
+    prefix="{{ pve_yoga_osd_lv_prefix }}"
+    remove_lv={{ 1 if (pve_yoga_teardown_remove_osd_files | bool) else 0 }}
+    discard={{ 1 if (pve_yoga_teardown_discard_lvs | bool) else 0 }}
     changed=0
+    trimmed=0
     for idx in {{ pve_yoga_teardown_osd_indices | join(' ') }}; do
-      unit="/etc/systemd/system/ceph-osd-loopback-$idx.service"
-      img="$files_dir/ceph-osd-compute-$idx.img"
+      lv="$prefix-$idx"
+
+      unit="/etc/systemd/system/ceph-osd-lv-$idx.service"
       if [ -f "$unit" ]; then
-        systemctl disable --now "ceph-osd-loopback-$idx.service" >/dev/null 2>&1 || true
+        systemctl disable --now "ceph-osd-lv-$idx.service" >/dev/null 2>&1 || true
         rm -f "$unit"
         changed=1
       fi
-      devs=$(losetup -j "$img" -O NAME --noheadings 2>/dev/null || true)
-      devs="$devs $(losetup -a 2>/dev/null | grep -F "$img" | cut -d: -f1)"
-      for d in $devs; do
-        for h in $(ls /sys/block/"${d#/dev/}"/holders 2>/dev/null || true); do
-          dmname=$(cat /sys/block/"$h"/dm/name 2>/dev/null || true)
-          if [ -n "$dmname" ]; then dmsetup remove "$dmname" >/dev/null 2>&1 || true; fi
-        done
-        losetup -d "$d" 2>/dev/null || true
-        changed=1
-      done
-      if [ "$remove_imgs" = "1" ] && [ -e "$img" ]; then
-        rm -f "$img"
-        changed=1
+
+      if ! lvs "$vg/$lv" >/dev/null 2>&1; then
+        echo "idx $idx: LV $vg/$lv does not exist (already torn down)"
+        continue
       fi
-      if [ -e "$img" ]; then echo "idx $idx: img kept"; else echo "idx $idx: loop/unit/image cleaned up"; fi
+
+      dmpath=""
+      [ -e "/dev/$vg/$lv" ] && dmpath=$(readlink -f "/dev/$vg/$lv" 2>/dev/null || true)
+      [ -n "$dmpath" ] || dmpath=$(lvs --noheadings -o lv_dm_path "$vg/$lv" 2>/dev/null | tr -d ' ')
+      if [ -n "$dmpath" ] && [ -e "$dmpath" ]; then
+        dmb=$(basename "$dmpath")
+        for h in $(ls "/sys/block/$dmb/holders" 2>/dev/null || true); do
+          for h2 in $(ls "/sys/block/$h/holders" 2>/dev/null || true); do
+            n2=$(cat "/sys/block/$h2/dm/name" 2>/dev/null || true)
+            [ -n "$n2" ] && dmsetup remove "$n2" >/dev/null 2>&1 || true
+          done
+          dmname=$(cat "/sys/block/$h/dm/name" 2>/dev/null || true)
+          [ -n "$dmname" ] && dmsetup remove "$dmname" >/dev/null 2>&1 || true
+        done
+      fi
+
+      if [ "$remove_lv" = "1" ]; then
+        if [ "$discard" = "1" ]; then
+          lvchange -ay "$vg/$lv" >/dev/null 2>&1 || true
+          ddev=""
+          [ -b "/dev/$vg/$lv" ] && ddev="/dev/$vg/$lv"
+          if [ -z "$ddev" ]; then
+            ddev=$(lvs --noheadings -o lv_dm_path "$vg/$lv" 2>/dev/null | tr -d ' ')
+            [ -n "$ddev" ] && [ -b "$ddev" ] || ddev=""
+          fi
+          if [ -n "$ddev" ] && blkdiscard -f "$ddev" >/dev/null 2>&1; then
+            echo "idx $idx: LV $vg/$lv blkdiscarded"
+            trimmed=$((trimmed + 1))
+          else
+            echo "idx $idx: LV $vg/$lv not blkdiscarded (no usable block device node, or blkdiscard refused)"
+          fi
+        fi
+        lvchange -an "$vg/$lv" >/dev/null 2>&1 || true
+        if lvremove -f "$vg/$lv" >/dev/null 2>&1; then
+          echo "idx $idx: LV $vg/$lv removed"
+          changed=1
+        else
+          echo "idx $idx: failed to remove LV $vg/$lv ($(lvremove -f "$vg/$lv" 2>&1 | tail -1))"
+        fi
+      else
+        echo "idx $idx: LV $vg/$lv kept (pve_yoga_teardown_remove_osd_files=false)"
+      fi
     done
     systemctl daemon-reload
-    echo "YOGA-TEARDOWN-OSD-DONE changed=$changed"
+    echo "YOGA-TEARDOWN-OSD-DONE changed=$changed trimmed=$trimmed"
   args:
     executable: /bin/bash
   register: pve_yoga_teardown_osd
   changed_when: "'changed=1' in pve_yoga_teardown_osd.stdout"
+
+- name: Remove the legacy loop image directory and its backing LV
+  ansible.builtin.shell: |
+    set -u
+    dir=/var/lib/ceph-osd-files
+    vg="{{ pve_yoga_osd_thinpool_vg }}"
+    lv=ceph-osd-files
+
+    if [ ! -e "$dir" ] && ! lvs "$vg/$lv" >/dev/null 2>&1; then
+      echo "LEGACY-DIR: already absent"
+      echo "YOGA-TEARDOWN-LEGACY-DONE removed=0"
+      exit 0
+    fi
+
+    refs=""
+    for u in /etc/systemd/system/ceph-osd-loopback-*.service; do
+      [ -e "$u" ] || continue
+      grep -qF "$dir" "$u" && refs="$refs $(basename "$u")"
+    done
+    if [ -n "$refs" ]; then
+      echo "REFUSE: loop units still reference $dir: $refs"
+      echo "        which means some env (possibly the production ussuri one) still uses it as an OSD backend; this role does not touch it."
+      exit 1
+    fi
+
+    changed=0
+    if mountpoint -q "$dir"; then
+      umount "$dir" && echo "unmounted $dir" && changed=1
+    fi
+    if grep -qE "^/dev/$vg/ceph-osd-files[[:space:]]+$dir[[:space:]]" /etc/fstab; then
+      python3 - /etc/fstab "$vg" "$dir" <<'PY'
+    import re, sys
+    path, vg, dir_ = sys.argv[1], sys.argv[2], sys.argv[3]
+    pat = re.compile(r"^/dev/" + re.escape(vg) + r"/ceph-osd-files\s+" + re.escape(dir_) + r"\s")
+    src = open(path).read().splitlines(True)
+    dst = [l for l in src if not pat.match(l)]
+    if len(dst) != len(src):
+        open(path, "w").writelines(dst)
+        print("removed the ceph-osd-files line from fstab")
+    PY
+      changed=1
+    fi
+    if lvs "$vg/$lv" >/dev/null 2>&1; then
+      lvchange -an "$vg/$lv" >/dev/null 2>&1 || true
+      lvremove -f "$vg/$lv" && echo "removed LV $vg/$lv" && changed=1
+    fi
+    echo "YOGA-TEARDOWN-LEGACY-DONE removed=$changed"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_teardown_legacy
+  changed_when: "'removed=1' in pve_yoga_teardown_legacy.stdout"
+  when: pve_yoga_teardown_remove_legacy_files_dir | bool
 
 - name: Remove this environment's SDN vnets
   ansible.builtin.include_tasks: sdn-remove.yml
@@ -200,18 +342,18 @@
   changed_when: "'removed=0' not in pve_yoga_teardown_snat.stdout"
   when: pve_yoga_snat_cidrs | length > 0
 
-- name: Remove this environment's credential files on the control node
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop: >-
-    {{ [pve_yoga_keystone_admin_password_file, pve_yoga_vault_init_file,
-        pve_yoga_openrc_file, pve_yoga_ca_cert_file, pve_yoga_keypair_private_key_file]
-       + (pve_yoga_teardown_credential_files | default([], true)) }}
-  loop_control:
-    label: "{{ item | basename }}"
-  delegate_to: localhost
-  become: false
+- name: Keep this environment's credential files
+  ansible.builtin.debug:
+    msg: >-
+      credentials kept, not deleted: {{ ([pve_yoga_keystone_admin_password_file, pve_yoga_vault_init_file,
+      pve_yoga_openrc_file, pve_yoga_ca_cert_file, pve_yoga_keypair_private_key_file]
+      + (pve_yoga_teardown_credential_files | default([], true)))
+      | map('basename') | join(', ') }}.
+      restoring from a savepoint needs them; delete them by hand if you really want them gone.
+
+- name: Remove the legacy juju client user
+  ansible.builtin.include_tasks: legacy-client-cleanup.yml
+  when: pve_yoga_teardown_remove_legacy_client | bool
 
 - name: Require every yoga guest to be gone
   ansible.builtin.shell: |
@@ -232,25 +374,50 @@
   when: not ansible_check_mode
   failed_when: "'LEFT: none' not in (pve_yoga_teardown_left.stdout | default(''))"
 
-- name: Require every yoga OSD loop device to be released
+- name: Require every yoga OSD thin volume to be released
   ansible.builtin.shell: |
     set -u
-    files_dir="${OSD_FILES_DIR:-/var/lib/ceph-osd-files}"
-    left=""
-    for idx in {{ pve_yoga_teardown_osd_indices | join(' ') }}; do
-      img="$files_dir/ceph-osd-compute-$idx.img"
-      if losetup -a 2>/dev/null | grep -qF "$img"; then left="$left $idx"; fi
-    done
-    echo "LOOPLEFT:${left:- none}"
+    vg="{{ pve_yoga_osd_thinpool_vg }}"
+    prefix="{{ pve_yoga_osd_lv_prefix }}"
+    left="$(lvs --noheadings -o lv_name "$vg" 2>/dev/null | tr -d ' ' | grep -E "^${prefix}-[0-9]+$" || true)"
+    echo "LVLEFT:${left:- none}"
   args:
     executable: /bin/bash
-  register: pve_yoga_teardown_loopleft
+  register: pve_yoga_teardown_lvleft
   changed_when: false
-  failed_when: "'LOOPLEFT: none' not in (pve_yoga_teardown_loopleft.stdout | default(''))"
+  failed_when: >-
+    pve_yoga_teardown_remove_osd_files | bool
+    and 'LVLEFT: none' not in (pve_yoga_teardown_lvleft.stdout | default(''))
+
+- name: Require every savepoint base to have survived the teardown
+  ansible.builtin.shell: |
+    set -u
+    missing=""
+    for base in {{ pve_yoga_teardown_savepoint_bases.stdout_lines | default([]) | join(' ') }}; do
+      lvs "{{ pve_yoga_osd_thinpool_vg }}/$base" >/dev/null 2>&1 || missing="$missing $base"
+    done
+    echo "SPLEFT:${missing:- none}"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_teardown_spleft
+  changed_when: false
+  when: (pve_yoga_teardown_savepoint_bases.stdout_lines | default([])) | length > 0
+  failed_when: "'SPLEFT: none' not in (pve_yoga_teardown_spleft.stdout | default(''))"
 
 - name: Report the teardown result
   ansible.builtin.debug:
-    msg: >-
-      env "{{ pve_yoga_env_slug }}" torn down: no guests left, OSD loop idx
-      {{ pve_yoga_teardown_osd_indices | join(', ') }} cleaned up (loop and dm released),
-      model/controller destroyed, leftover SNAT rules removed, credentials deleted.
+    msg:
+      - >-
+        env "{{ pve_yoga_env_slug }}" torn down: no guests left, OSD thin LVs
+        {{ pve_yoga_teardown_osd_indices | map('regex_replace', '^', pve_yoga_osd_lv_prefix ~ '-') | join(', ') }}
+        cleaned up (dm holder and LVs released), model/controller destroyed, leftover SNAT rules removed, credentials kept.
+      - >-
+        savepoints: {{ (pve_yoga_teardown_savepoint_bases.stdout_lines | default([])) | length }}
+        every `sp-{{ pve_yoga_env_slug }}-*` base was recorded before the teardown and all of them survive it.
+      - >-
+        thin volumes blkdiscarded before deletion: guest disks
+        {{ (pve_yoga_teardown_guests.stdout | default('')) | regex_findall('trimmed=([0-9]+)') | last | default('0') }},
+        OSD LV
+        {{ (pve_yoga_teardown_osd.stdout | default('')) | regex_findall('trimmed=([0-9]+)') | last | default('0') }}
+        -- the blocks were released all the way down to the SSD (lvremove on a thin LV only frees the pool mapping and sends no discard).
+  when: not ansible_check_mode

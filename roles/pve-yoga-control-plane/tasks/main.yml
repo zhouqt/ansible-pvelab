@@ -5,11 +5,40 @@
     pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
     pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
 
+- name: Ensure the per-environment credentials directory exists on the control node
+  ansible.builtin.file:
+    path: "{{ pve_yoga_credentials_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+  when: pve_yoga_keystone_admin_password | length == 0
+
+- name: Generate a Keystone admin password when neither Vault nor a credentials file supplies one
+  ansible.builtin.copy:
+    content: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}\n"
+    dest: "{{ pve_yoga_keystone_admin_password_file }}"
+    mode: "0600"
+    force: false
+  delegate_to: localhost
+  become: false
+  when: pve_yoga_keystone_admin_password | length == 0
+
+- name: Adopt the generated Keystone admin password for the rest of the play
+  ansible.builtin.set_fact:
+    pve_yoga_keystone_admin_password: >-
+      {{ lookup('ansible.builtin.file', pve_yoga_keystone_admin_password_file) | trim }}
+  no_log: true
+  when: pve_yoga_keystone_admin_password | length == 0
+
 - name: Require the OpenStack keystone admin password
   ansible.builtin.assert:
     that:
       - pve_yoga_keystone_admin_password | length > 0
-    fail_msg: "set vault_pve_yoga_keystone_admin_password (or vault_pve_keystone_admin_password) through Ansible Vault."
+    fail_msg: >-
+      cannot obtain the keystone admin password, and cannot write {{ pve_yoga_keystone_admin_password_file }}.
+      set vault_pve_yoga_keystone_admin_password through Ansible Vault (or
+      vault_pve_keystone_admin_password), or make sure the Ansible controller can write to the credentials directory.
   no_log: true
 
 - name: Require the internal default space and public binding space
@@ -43,16 +72,41 @@
       the OpenStack model default-space must be {{ pve_yoga_default_space }}. Run
       --tags pve-yoga-network, then deploy the charms.
 
-- name: Copy Yoga bundle and overlay to PVE host
-  ansible.builtin.copy:
-    src: "{{ playbook_dir }}/bundles/{{ item }}"
-    dest: "/root/{{ item }}"
+- name: Define the bundle artifacts and their staged names
+  ansible.builtin.set_fact:
+    pve_yoga_bundle_artifacts:
+      - src: "{{ playbook_dir }}/bundles/openstack-pve-bundle.yaml.j2"
+        staged: openstack-pve-bundle.yaml
+        render: true
+      - src: "{{ playbook_dir }}/bundles/openstack-pve-overlay.yaml"
+        staged: openstack-pve-overlay.yaml
+        render: false
+    pve_yoga_bundle_staged: "{{ pve_yoga_juju_stage_dir }}/openstack-pve-bundle.yaml"
+    pve_yoga_overlay_staged: "{{ pve_yoga_juju_stage_dir }}/openstack-pve-overlay.yaml"
+
+- name: Render the bundle template into /root on the PVE host
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "/root/{{ item.staged }}"
     owner: root
     group: root
     mode: "0644"
-  loop:
-    - openstack-yoga-pve-bundle.yaml
-    - openstack-yoga-pve-overlay.yaml
+  loop: "{{ pve_yoga_bundle_artifacts }}"
+  loop_control:
+    label: "{{ item.staged }}"
+  when: item.render
+
+- name: Copy the version-independent artifacts into /root on the PVE host
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "/root/{{ item.staged }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ pve_yoga_bundle_artifacts }}"
+  loop_control:
+    label: "{{ item.staged }}"
+  when: not item.render
 
 - name: Ensure the bundle staging directory exists in the Juju client CT
   ansible.builtin.command:
@@ -71,17 +125,17 @@
       - "{{ pve_yoga_juju_client_user }}"
       - "{{ pve_yoga_juju_stage_dir }}"
 
-- name: Push Yoga bundle and overlay into the Juju client CT
+- name: Push the bundle artifacts into the Juju client CT
   ansible.builtin.command:
     argv:
       - pct
       - push
       - "{{ pve_yoga_juju_client_vmid }}"
-      - "/root/{{ item }}"
-      - "{{ pve_yoga_juju_stage_dir }}/{{ item }}"
-  loop:
-    - openstack-yoga-pve-bundle.yaml
-    - openstack-yoga-pve-overlay.yaml
+      - "/root/{{ item.staged }}"
+      - "{{ pve_yoga_juju_stage_dir }}/{{ item.staged }}"
+  loop: "{{ pve_yoga_bundle_artifacts }}"
+  loop_control:
+    label: "{{ item.staged }}"
 
 - name: Make the pushed bundle files readable by the Juju client user
   ansible.builtin.command:
@@ -92,10 +146,10 @@
       - --
       - chown
       - "{{ pve_yoga_juju_client_user }}:{{ pve_yoga_juju_client_user }}"
-      - "{{ pve_yoga_juju_stage_dir }}/{{ item }}"
-  loop:
-    - openstack-yoga-pve-bundle.yaml
-    - openstack-yoga-pve-overlay.yaml
+      - "{{ pve_yoga_juju_stage_dir }}/{{ item.staged }}"
+  loop: "{{ pve_yoga_bundle_artifacts }}"
+  loop_control:
+    label: "{{ item.staged }}"
 
 - name: Read existing OpenStack application inventory
   ansible.builtin.command:
@@ -119,7 +173,7 @@
       - "'applications' in (pve_yoga_control_status.stdout | from_json)"
     fail_msg: "cannot read the OpenStack model status; refusing to deploy while the state is unknown."
 
-- name: Deploy the Yoga bundle with the placement/binding overlay
+- name: Deploy the OpenStack bundle with the placement/binding overlay
   ansible.builtin.command:
     argv:
       - pct
@@ -131,43 +185,14 @@
       - "{{ pve_yoga_juju_client_user }}"
       - -c
       - >-
-        {{ pve_yoga_juju_cmd }} deploy {{ pve_yoga_juju_stage_dir }}/openstack-yoga-pve-bundle.yaml
-        --overlay {{ pve_yoga_juju_stage_dir }}/openstack-yoga-pve-overlay.yaml
+        {{ pve_yoga_juju_cmd }} deploy {{ pve_yoga_bundle_staged }}
+        --overlay {{ pve_yoga_overlay_staged }}
         --map-machines=existing,0=0,1=1,2=2,3=3,4=4,5=5 -m {{ pve_yoga_model }}
   register: pve_yoga_control_deploy
   changed_when: "'Deploying' in pve_yoga_control_deploy.stdout or 'added' in pve_yoga_control_deploy.stdout"
 
 - name: Reconcile the MySQL grants the co-located leader failed to create
   ansible.builtin.include_tasks: reconcile-mysql-grants.yml
-
-- name: Set the keystone admin password
-  ansible.builtin.command:
-    argv:
-      - pct
-      - exec
-      - "{{ pve_yoga_juju_client_vmid }}"
-      - --
-      - su
-      - "-"
-      - "{{ pve_yoga_juju_client_user }}"
-      - -c
-      - "{{ pve_yoga_juju_cmd }} config -m {{ pve_yoga_model }} keystone admin-password={{ pve_yoga_keystone_admin_password }}"
-  no_log: true
-
-- name: Wait for keystone to become active
-  ansible.builtin.command:
-    argv:
-      - pct
-      - exec
-      - "{{ pve_yoga_juju_client_vmid }}"
-      - --
-      - su
-      - "-"
-      - "{{ pve_yoga_juju_client_user }}"
-      - -c
-      - "{{ pve_yoga_juju_cmd }} wait-for application keystone --timeout 45m -m {{ pve_yoga_model }}"
-  register: pve_yoga_control_keystone_wait
-  changed_when: false
 
 - name: Read the OpenStack model status before Vault initialization
   ansible.builtin.command:
@@ -207,9 +232,20 @@
   register: pve_yoga_vault_init_state
   changed_when: false
   failed_when: false
-  retries: 30
+  retries: 60
   delay: 10
   until: pve_yoga_vault_init_state.rc == 0
+
+- name: Require the yoga Vault API to answer before touching its storage
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_vault_init_state.rc == 0
+      - "'initialized' in (pve_yoga_vault_init_state.stdout | default('', true))"
+    fail_msg: >-
+      the Vault API http://{{ pve_yoga_vault_address }}:8200/v1/sys/init gave no parsable response within 10 min
+      (rc={{ pve_yoga_vault_init_state.rc }}). The usual cause is that vault's storage is not ready yet --
+      vault-mysql-router can only bootstrap once reconcile-mysql-grants has added the mysqlrouteruser grant.
+      once vault-mysql-router is active, re-run this playbook (it is idempotent).
 
 - name: Initialize the yoga Vault when it is not yet initialized
   ansible.builtin.command:
@@ -222,7 +258,11 @@
       - -d
       - '{"secret_shares": 5, "secret_threshold": 3}'
   register: pve_yoga_vault_init_response
-  when: not ((pve_yoga_vault_init_state.stdout | default('{}') | from_json).initialized | default(false))
+  failed_when: >-
+    pve_yoga_vault_init_response.rc != 0
+    or 'root_token' not in (pve_yoga_vault_init_response.stdout | default('', true))
+  when: >-
+    not ((pve_yoga_vault_init_state.stdout | default('{}', true) | from_json).initialized | default(false))
   no_log: true
 
 - name: Persist the yoga Vault init material to the credentials directory
@@ -374,6 +414,35 @@
     - pve_yoga_vault_root_ca_check.rc != 0 or 'BEGIN CERTIFICATE' not in pve_yoga_vault_root_ca_check.stdout
   no_log: true
 
+- name: Set the keystone admin password
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} config -m {{ pve_yoga_model }} keystone admin-password={{ pve_yoga_keystone_admin_password }}"
+  no_log: true
+
+- name: Wait for keystone to become active
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} wait-for application keystone --timeout 45m -m {{ pve_yoga_model }}"
+  register: pve_yoga_control_keystone_wait
+  changed_when: false
+
 - name: Read the final OpenStack application inventory
   ansible.builtin.command:
     argv:
@@ -393,10 +462,99 @@
   ansible.builtin.assert:
     that:
       - >-
-        ['keystone', 'nova-cloud-controller', 'neutron-api', 'glance', 'cinder', 'placement']
+        pve_yoga_core_applications
         | difference((pve_yoga_control_status_after.stdout | from_json).applications.keys() | list)
         | length == 0
     fail_msg: "not all core OpenStack applications are deployed; check the bundle deploy output."
+
+- name: Reconcile the MySQL grants again once the routers are up
+  ansible.builtin.include_tasks: reconcile-mysql-grants.yml
+  vars:
+    pve_yoga_mysql_reconcile_wait: 600
+    pve_yoga_mysql_reconcile_skip_cluster_wait: true
+
+- name: Recover the units the co-located MySQL leader left in error
+  ansible.builtin.include_tasks: recover-error-units.yml
+
+- name: Read the OpenStack model status to look for the missing-grant symptom
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+  register: pve_yoga_control_gate_status
+  changed_when: false
+
+- name: Select the core applications that are unsettled for a reason other than Ceph
+  ansible.builtin.set_fact:
+    pve_yoga_control_core_unsettled_apps: "{{ pve_yoga_control_unsettled_doc | from_json }}"
+  vars:
+    pve_yoga_control_unsettled_doc: >-
+      {%- set apps = (pve_yoga_control_gate_status.stdout | from_json).applications | default({}) -%}
+      {%- set out = [] -%}
+      {%- for name in pve_yoga_core_applications -%}
+      {%- set st = (apps.get(name, {}) | default({})).get('application-status', {}) | default({}) -%}
+      {%- set cur = st.get('current', '') -%}
+      {%- set msg = (st.get('message', '') | default('')) | lower -%}
+      {%- if cur != 'active'
+             and not (cur == 'waiting'
+                      and 'storage-backend' in msg
+                      and 'database' not in msg) -%}
+      {%- set _ = out.append(name) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ out | to_json }}
+
+- name: Report the core applications that are unsettled for a reason other than Ceph
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'all core apps are active (or waiting on ceph)'
+         if pve_yoga_control_core_unsettled_apps | length == 0
+         else ('core apps not settled: ' ~ (pve_yoga_control_core_unsettled_apps | join(', '))
+               ~ '; apply one more round of MySQL grants and re-evaluate') }}
+
+- name: Reconcile the MySQL grants once more when a core application is still unsettled
+  ansible.builtin.include_tasks: reconcile-mysql-grants.yml
+  vars:
+    pve_yoga_mysql_reconcile_wait: 600
+    pve_yoga_mysql_reconcile_skip_cluster_wait: true
+  when: pve_yoga_control_core_unsettled_apps | length > 0
+
+- name: Wait for the unsettled core applications to settle after the final reconcile
+  ansible.builtin.shell: |
+    set -o pipefail
+    pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c \
+      "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json" \
+    | python3 -c '
+    import json, sys
+    core = {{ pve_yoga_core_applications | to_json }}
+    apps = json.load(sys.stdin).get("applications", {})
+    bad = []
+    for n in core:
+        st = apps.get(n, {}).get("application-status") or {}
+        cur = st.get("current", "")
+        msg = (st.get("message") or "").lower()
+        if cur != "active" and not (cur == "waiting"
+                                    and "storage-backend" in msg
+                                    and "database" not in msg):
+            bad.append(n + "(" + cur + ")")
+    print("unsettled: " + (", ".join(bad) if bad else "none"))
+    sys.exit(1 if bad else 0)
+    '
+  args:
+    executable: /bin/bash
+  register: pve_yoga_control_settle_wait
+  until: pve_yoga_control_settle_wait.rc == 0
+  retries: 40
+  delay: 30
+  changed_when: false
+  when: pve_yoga_control_core_unsettled_apps | length > 0
 
 - name: Repair the cinder-ceph keyring the co-located nova-compute clobbers
   ansible.builtin.include_role:

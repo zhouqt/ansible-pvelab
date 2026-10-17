@@ -14,7 +14,19 @@
   loop: "{{ pve_yoga_network_spaces }}"
   loop_control:
     label: "{{ item.bridge }} ({{ item.name }})"
+  register: pve_yoga_prepare_bridges
+  failed_when: false
   changed_when: false
+
+- name: Require all yoga bridges to exist on the PVE host
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_prepare_bridges.results | selectattr('rc', 'ne', 0) | list | length == 0
+    fail_msg: >-
+      missing on the host: bridge {{ pve_yoga_prepare_bridges.results | selectattr('rc', 'ne', 0)
+      | map(attribute='item.bridge') | join('/') }}. Run
+      `--tags pve-yoga-sdn -e pve_yoga_run_sdn=true -e @env/yoga-env<N>.yml` register this env's
+      the 4 SDN vnets (registering/applying them requires every guest of this env to be stopped), then re-run this stage.
 
 - name: Read PVE host NAT POSTROUTING rules
   ansible.builtin.command: iptables -t nat -S POSTROUTING
@@ -37,11 +49,19 @@
   register: pve_yoga_prepare_template_inventory
   changed_when: false
 
-- name: Require the jammy CT template
+- name: Require the {{ pve_yoga_openstack_series }} CT template
   ansible.builtin.assert:
     that:
-      - pve_yoga_jammy_template.split(':')[1] in pve_yoga_prepare_template_inventory.stdout
+      - pve_yoga_lxc_template.split(':')[1] in pve_yoga_prepare_template_inventory.stdout
     fail_msg: >-
-      {{ pve_yoga_jammy_template }} is missing. On the pve host run
-      `pveam update && pveam download local ubuntu-22.04-standard_22.04-1_amd64.tar.zst`
+      {{ pve_yoga_lxc_template }} is missing (profile {{ pve_yoga_profile }}). On the pve host run
+      `pveam update && pveam download local {{ pve_yoga_lxc_template.split(':')[1] }}`
       and retry.
+
+- name: Enable LVM discards on the PVE host
+  ansible.builtin.script: "{{ playbook_dir }}/pve/scripts/yoga-set-issue-discards.sh"
+  register: pve_yoga_prepare_issue_discards
+  changed_when: "'changed=1' in (pve_yoga_prepare_issue_discards.stdout | default(''))"
+  failed_when: >-
+    (pve_yoga_prepare_issue_discards.rc | default(1)) != 0
+    or 'ISSUE-DISCARDS value=1' not in (pve_yoga_prepare_issue_discards.stdout | default(''))

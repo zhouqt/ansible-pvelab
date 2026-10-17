@@ -18,6 +18,7 @@
       - -c
       - "{{ pve_yoga_juju_cmd }} wait-for application mysql-innodb-cluster --timeout 45m -m {{ pve_yoga_model }}"
   changed_when: false
+  when: not (pve_yoga_mysql_reconcile_skip_cluster_wait | default(false) | bool)
 
 - name: Copy the MySQL grant reconcile helper to the PVE host
   ansible.builtin.copy:
@@ -44,5 +45,7 @@
       - "{{ pve_yoga_model }}"
       - --machine-vmids
       - "{{ pve_yoga_workload_vmids | join(',') }}"
+      - --wait
+      - "{{ pve_yoga_mysql_reconcile_wait | default(300) }}"
   register: pve_yoga_control_mysql_reconcile
   changed_when: "'RECONCILE-CREATED' in pve_yoga_control_mysql_reconcile.stdout"

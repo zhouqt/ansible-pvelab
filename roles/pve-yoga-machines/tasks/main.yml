@@ -48,7 +48,7 @@
       - pct
       - create
       - "{{ item.item.vmid }}"
-      - "{{ pve_yoga_jammy_template }}"
+      - "{{ pve_yoga_lxc_template }}"
       - --hostname
       - "{{ item.item.hostname }}"
       - --ostype
@@ -187,6 +187,46 @@
   loop_control:
     label: "CT {{ item.item }}"
 
+- name: Push the thin-LV OSD helper to the PVE host
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/pve/scripts/yoga-setup-osd-lv.sh"
+    dest: /root/yoga-setup-osd-lv.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Build the vmid:osdindex mapping for the OSD thin LVs
+  ansible.builtin.set_fact:
+    pve_yoga_machines_osd_lv_spec: >-
+      {{ pve_yoga_osd_vmids
+         | zip(range(0, pve_yoga_osd_vmids | length))
+         | map('join', ':') | join(' ') }}
+
+- name: Create the OSD thin LVs and their CT device mounts before the CTs start
+  ansible.builtin.command: "bash /root/yoga-setup-osd-lv.sh '{{ pve_yoga_machines_osd_lv_spec }}'"
+  environment:
+    OSD_SIZE_MB: "{{ pve_yoga_osd_size_mb }}"
+    OSD_LV_PREFIX: "{{ pve_yoga_osd_lv_prefix }}"
+    OSD_THINPOOL: "{{ pve_yoga_osd_thinpool }}"
+    OSD_THINPOOL_MAX_DATA_PERCENT: "{{ pve_yoga_osd_thinpool_max_data_percent }}"
+  register: pve_yoga_machines_osd_lv
+  changed_when: "'YOGA-SETUP-OSD-LV-DONE' in pve_yoga_machines_osd_lv.stdout"
+
+- name: Require the OSD device mount to be present in every OSD CT configuration
+  ansible.builtin.shell: |
+    set -euo pipefail
+    bad=""
+    for vmid in {{ pve_yoga_osd_vmids | join(' ') }}; do
+      grep -q "dev/osd-block" "/etc/pve/lxc/$vmid.conf" || bad="$bad $vmid"
+    done
+    [ -z "$bad" ] || { echo "OSD-MOUNT-MISSING:$bad"; exit 1; }
+    echo "OSD-MOUNT-OK"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_machines_osd_mount
+  changed_when: false
+  failed_when: "'OSD-MOUNT-OK' not in pve_yoga_machines_osd_mount.stdout"
+
 - name: Check runtime state of yoga workload CTs
   ansible.builtin.command: "pct status {{ item.vmid }}"
   loop: "{{ pve_yoga_workload_cts }}"
@@ -213,6 +253,23 @@
   retries: 30
   delay: 5
   changed_when: false
+
+- name: Restore sys-kernel-config.mount inside the yoga workload CTs
+  ansible.builtin.shell: |
+    set -euo pipefail
+    unmasked=""
+    for vmid in {{ pve_yoga_workload_cts | map(attribute='vmid') | join(' ') }}; do
+      state="$(pct exec "$vmid" -- systemctl is-enabled sys-kernel-config.mount 2>/dev/null || true)"
+      if [ "$state" = "masked" ]; then
+        pct exec "$vmid" -- systemctl unmask sys-kernel-config.mount >/dev/null
+        unmasked="$unmasked $vmid"
+      fi
+    done
+    echo "UNMASKED:${unmasked:- none}"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_ct_unmask_kernel_config
+  changed_when: "'UNMASKED: none' not in pve_yoga_ct_unmask_kernel_config.stdout"
 
 - name: Push yoga CT init script to PVE host
   ansible.builtin.copy:
@@ -421,6 +478,24 @@
     done
   args:
     executable: /bin/bash
+  changed_when: false
+
+- name: Ensure the Juju client staging directory exists
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - install
+      - -d
+      - -o
+      - "{{ pve_yoga_juju_client_user }}"
+      - -g
+      - "{{ pve_yoga_juju_client_user }}"
+      - -m
+      - "0755"
+      - "{{ pve_yoga_juju_stage_dir }}"
   changed_when: false
 
 - name: Install the static name map into the yoga KVM guest

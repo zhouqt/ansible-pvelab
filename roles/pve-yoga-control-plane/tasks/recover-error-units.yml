@@ -1,0 +1,208 @@
+---
+
+- name: Define the isolated Juju 3.x command prefix
+  ansible.builtin.set_fact:
+    pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
+    pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
+
+- name: Read the OpenStack model status looking for units in the error state
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+  register: pve_yoga_recover_status
+  changed_when: false
+
+- name: Require a valid OpenStack model status
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_recover_status.rc == 0
+      - "'applications' in (pve_yoga_recover_status.stdout | from_json)"
+    fail_msg: "cannot read the OpenStack model status; refusing to recover while the state is unknown."
+
+- name: Collect the units in the error state
+  ansible.builtin.include_tasks: collect-error-units.yml
+  vars:
+    pve_yoga_status_raw: "{{ pve_yoga_recover_status.stdout }}"
+
+- name: Snapshot the units found in the error state
+  ansible.builtin.set_fact:
+    pve_yoga_recover_initial: "{{ pve_yoga_recover }}"
+
+- name: Report the units in the error state
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'no unit is in error' if pve_yoga_recover_initial.units | length == 0
+         else ('found ' ~ (pve_yoga_recover_initial.units | length) ~ ' error units: '
+               ~ (pve_yoga_recover_initial.units | join(', '))) }}
+
+- name: Report the error units that a later stage owns
+  ansible.builtin.debug:
+    msg: >-
+      {{ ('the error units below belong to later stages, this step leaves them alone:'
+          ~ (pve_yoga_recover_initial.deferred | join(', ')))
+         if pve_yoga_recover_initial.deferred | length > 0
+         else 'no deferred error units' }}
+
+- name: Recover the units the co-located MySQL leader left in error
+  when: pve_yoga_recover_initial.units | length > 0
+  block:
+    - name: Derive the applications that own the units to restart
+      ansible.builtin.set_fact:
+        pve_yoga_recover_apps: "{{ pve_yoga_recover_initial.restart | map('regex_replace', '/.*', '') | unique | list }}"
+
+    - name: Require the affected applications to expose pause and resume actions
+      ansible.builtin.command:
+        argv:
+          - pct
+          - exec
+          - "{{ pve_yoga_juju_client_vmid }}"
+          - --
+          - su
+          - "-"
+          - "{{ pve_yoga_juju_client_user }}"
+          - -c
+          - "{{ pve_yoga_juju_cmd }} actions -m {{ pve_yoga_model }} {{ item }} --format json"
+      loop: "{{ pve_yoga_recover_apps }}"
+      loop_control:
+        label: "{{ item }}"
+      register: pve_yoga_recover_actions
+      changed_when: false
+
+    - name: Assert the affected applications can restart their services
+      ansible.builtin.assert:
+        that:
+          - "'pause' in (item.stdout | from_json)"
+          - "'resume' in (item.stdout | from_json)"
+        fail_msg: >-
+          {{ item.item }} offers no pause/resume action, so the service cannot be made to re-read its config;
+          restart the service on that unit by hand, then re-run this stage.
+      loop: "{{ pve_yoga_recover_actions.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Mark the failed hooks resolved so the charms retry them
+      ansible.builtin.command:
+        argv:
+          - pct
+          - exec
+          - "{{ pve_yoga_juju_client_vmid }}"
+          - --
+          - su
+          - "-"
+          - "{{ pve_yoga_juju_client_user }}"
+          - -c
+          - "{{ pve_yoga_juju_cmd }} resolved -m {{ pve_yoga_model }} {{ item }}"
+      loop: "{{ pve_yoga_recover_initial.units }}"
+      loop_control:
+        label: "{{ item }}"
+      register: pve_yoga_recover_resolved
+      changed_when: "'not in an error state' not in (pve_yoga_recover_resolved.stderr | default(''))"
+      failed_when:
+        - pve_yoga_recover_resolved.rc != 0
+        - "'not in an error state' not in (pve_yoga_recover_resolved.stderr | default(''))"
+
+    - name: Wait for the recovered applications to settle
+      ansible.builtin.command:
+        argv:
+          - pct
+          - exec
+          - "{{ pve_yoga_juju_client_vmid }}"
+          - --
+          - su
+          - "-"
+          - "{{ pve_yoga_juju_client_user }}"
+          - -c
+          - "{{ pve_yoga_juju_cmd }} wait-for application {{ item }} --timeout 30m -m {{ pve_yoga_model }}"
+      loop: "{{ pve_yoga_recover_apps }}"
+      loop_control:
+        label: "{{ item }}"
+      changed_when: false
+
+    - name: Stop the recovered units' services
+      ansible.builtin.command:
+        argv:
+          - pct
+          - exec
+          - "{{ pve_yoga_juju_client_vmid }}"
+          - --
+          - su
+          - "-"
+          - "{{ pve_yoga_juju_client_user }}"
+          - -c
+          - "{{ pve_yoga_juju_cmd }} run {{ item }} pause --wait=10m -m {{ pve_yoga_model }}"
+      loop: "{{ pve_yoga_recover_initial.restart }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Start the recovered units' services again so they reload their config
+      ansible.builtin.command:
+        argv:
+          - pct
+          - exec
+          - "{{ pve_yoga_juju_client_vmid }}"
+          - --
+          - su
+          - "-"
+          - "{{ pve_yoga_juju_client_user }}"
+          - -c
+          - "{{ pve_yoga_juju_cmd }} run {{ item }} resume --wait=10m -m {{ pve_yoga_model }}"
+      loop: "{{ pve_yoga_recover_initial.restart }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Wait for the recovered applications to be ready again
+      ansible.builtin.command:
+        argv:
+          - pct
+          - exec
+          - "{{ pve_yoga_juju_client_vmid }}"
+          - --
+          - su
+          - "-"
+          - "{{ pve_yoga_juju_client_user }}"
+          - -c
+          - "{{ pve_yoga_juju_cmd }} wait-for application {{ item }} --timeout 30m -m {{ pve_yoga_model }}"
+      loop: "{{ pve_yoga_recover_apps }}"
+      loop_control:
+        label: "{{ item }}"
+      changed_when: false
+
+    - name: Read the OpenStack model status again to confirm the recovery
+      ansible.builtin.command:
+        argv:
+          - pct
+          - exec
+          - "{{ pve_yoga_juju_client_vmid }}"
+          - --
+          - su
+          - "-"
+          - "{{ pve_yoga_juju_client_user }}"
+          - -c
+          - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+      register: pve_yoga_recover_status_after
+      changed_when: false
+
+    - name: Collect the units still in the error state
+      ansible.builtin.include_tasks: collect-error-units.yml
+      vars:
+        pve_yoga_status_raw: "{{ pve_yoga_recover_status_after.stdout }}"
+
+    - name: Snapshot the units still in the error state
+      ansible.builtin.set_fact:
+        pve_yoga_recover_after: "{{ pve_yoga_recover }}"
+
+    - name: Require every recovered unit to have left the error state
+      ansible.builtin.assert:
+        that:
+          - pve_yoga_recover_after.units | length == 0
+        fail_msg: >-
+          units are still in error after recovery: {{ pve_yoga_recover_after.units | join(', ') }};
+          look at /var/log/juju/unit-<name>.log of that unit.

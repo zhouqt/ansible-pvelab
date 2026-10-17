@@ -206,3 +206,96 @@
     fail_msg: >-
       ovn-bridge-mappings must stay {{ pve_yoga_compute_uplink_ovn_bridge_mapping }},
       it is a setting independent of bridge-interface-mappings.
+
+- name: Probe whether the ovn-chassis charm exposes prefer-chassis-as-gw
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} config -m {{ pve_yoga_model }} ovn-chassis prefer-chassis-as-gw"
+  register: pve_yoga_ovn_gw_probe
+  failed_when: false
+  changed_when: false
+
+- name: Prefer the compute units as OVN gateway chassis
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} config -m {{ pve_yoga_model }} ovn-chassis prefer-chassis-as-gw=true"
+  when:
+    - pve_yoga_ovn_gw_probe.rc == 0
+    - pve_yoga_ovn_gw_probe.stdout | trim != 'true'
+
+- name: Note when the charm has no gateway option to set
+  ansible.builtin.debug:
+    msg: >-
+      ovn-chassis does not support prefer-chassis-as-gw ({{ pve_yoga_ovn_gw_probe.stderr | default('') | trim }});
+      keep the charm's default behaviour and skip the explicit gateway-chassis config and its assertion.
+  when: pve_yoga_ovn_gw_probe.rc != 0
+
+- name: Wait for ovn-chassis to apply the gateway setting
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} wait-for application ovn-chassis --timeout 15m -m {{ pve_yoga_model }}"
+  when: pve_yoga_ovn_gw_probe.rc == 0
+  changed_when: false
+
+- name: Read the CMS options advertised by every compute chassis
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_yoga_juju_cmd }} ssh -m {{ pve_yoga_model }} {{ item }}
+        sudo ovs-vsctl get Open_vSwitch . external_ids:ovn-cms-options
+  loop: "{{ pve_yoga_compute_machine_indices }}"
+  loop_control:
+    label: "Juju machine {{ item }}"
+  register: pve_yoga_ovn_cms_options
+  until: pve_yoga_ovn_cms_options.stdout | default('') | trim == 'enable-chassis-as-gw'
+  retries: 30
+  delay: 10
+  failed_when: false
+  changed_when: false
+  when: pve_yoga_ovn_gw_probe.rc == 0
+
+- name: Require every compute chassis to advertise itself as an OVN gateway
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout | trim == 'enable-chassis-as-gw'
+    fail_msg: >-
+      the OVS on Juju machine {{ item.item }} does not advertise ovn-cms-options=enable-chassis-as-gw
+      (actual: {{ item.stdout | default('') | trim }}). neutron will not schedule a gateway chassis for it,
+      floating IPs will not be reachable. Check that config-changed succeeded on the ovn-chassis unit.
+  loop: "{{ pve_yoga_ovn_cms_options.results }}"
+  loop_control:
+    label: "Juju machine {{ item.item }}"
+  when: pve_yoga_ovn_gw_probe.rc == 0

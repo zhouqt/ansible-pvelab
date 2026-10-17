@@ -54,18 +54,49 @@
   ansible.builtin.command: "pct exec {{ pve_yoga_juju_client_vmid }} -- test -x {{ pve_yoga_juju_bin }}"
   changed_when: false
 
-- name: Ensure Juju client account and SSH key in CT {{ pve_yoga_juju_client_vmid }}
+- name: Probe the Juju client account in CT {{ pve_yoga_juju_client_vmid }}
+  ansible.builtin.command: "pct exec {{ pve_yoga_juju_client_vmid }} -- id -u {{ pve_yoga_juju_client_user }}"
+  register: pve_yoga_juju_client_uid
+  failed_when: false
+  changed_when: false
+
+- name: Require the Juju client account to already exist
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_juju_client_uid.rc == 0
+    fail_msg: >-
+      there is no user {{ pve_yoga_juju_client_user }} on CT {{ pve_yoga_juju_client_vmid }}. First, as in the reference environment,
+      (--tags pve-juju-ctrl) to initialise that CT (pve/scripts/juju-ct-init.sh creates the ubuntu user
+      and NOPASSWD sudo); the yoga juju 3.x client lives under that user.
+
+- name: Ensure the Juju client SSH key exists
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_yoga_juju_client_vmid }} -- bash -lc '
-      id {{ pve_yoga_juju_client_user }} >/dev/null 2>&1 || useradd -m -s /bin/bash {{ pve_yoga_juju_client_user }}
-      usermod -s /bin/bash -aG sudo {{ pve_yoga_juju_client_user }}
-      install -d -m 0700 -o {{ pve_yoga_juju_client_user }} -g {{ pve_yoga_juju_client_user }} /home/{{ pve_yoga_juju_client_user }}/.ssh
+    pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c '
+      set -e
+      install -d -m 0700 ~/.ssh
+      test -s ~/.ssh/id_ed25519 && test -s ~/.ssh/id_ed25519.pub || ssh-keygen -q -t ed25519 -N "" -f ~/.ssh/id_ed25519
     '
-    pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c 'test -s ~/.ssh/id_ed25519 && test -s ~/.ssh/id_ed25519.pub' || \
-      pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c 'ssh-keygen -q -t ed25519 -N "" -f ~/.ssh/id_ed25519'
   args:
     executable: /bin/bash
+  changed_when: false
+
+- name: Ensure the Juju client staging directory exists
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - install
+      - -d
+      - -o
+      - "{{ pve_yoga_juju_client_user }}"
+      - -g
+      - "{{ pve_yoga_juju_client_user }}"
+      - -m
+      - "0755"
+      - "{{ pve_yoga_juju_stage_dir }}"
   changed_when: false
 
 - name: Read Juju client public key
@@ -101,7 +132,7 @@
       - pct
       - create
       - "{{ pve_yoga_controller_vmid }}"
-      - "{{ pve_yoga_jammy_template }}"
+      - "{{ pve_yoga_lxc_template }}"
       - --hostname
       - "{{ pve_yoga_controller_name }}"
       - --ostype

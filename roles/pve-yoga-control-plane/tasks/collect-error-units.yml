@@ -1,0 +1,34 @@
+---
+
+- name: Collect the units in the error state and the units to restart
+  ansible.builtin.set_fact:
+    pve_yoga_recover: "{{ pve_yoga_recover_doc | from_json }}"
+  vars:
+    pve_yoga_recover_doc: >-
+      {%- set units = [] -%}
+      {%- set restart = [] -%}
+      {%- set deferred = [] -%}
+      {%- set deferred_apps = pve_yoga_recover_deferred_apps | default([]) -%}
+      {%- for app_item in ((pve_yoga_status_raw | from_json).applications | dict2items) -%}
+      {%- for unit_item in ((app_item.value.units | default({})) | dict2items) -%}
+      {%- if ((unit_item.value['workload-status'] | default({})).current | default('')) == 'error' -%}
+      {%- if app_item.key in deferred_apps -%}
+      {%- set _ = deferred.append(unit_item.key) -%}
+      {%- else -%}
+      {%- set _ = units.append(unit_item.key) -%}
+      {%- set _ = restart.append(unit_item.key) -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- for sub_item in ((unit_item.value.subordinates | default({})) | dict2items) -%}
+      {%- if ((sub_item.value['workload-status'] | default({})).current | default('')) == 'error' -%}
+      {%- if app_item.key in deferred_apps -%}
+      {%- set _ = deferred.append(sub_item.key) -%}
+      {%- else -%}
+      {%- set _ = units.append(sub_item.key) -%}
+      {%- set _ = restart.append(unit_item.key) -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ {'units': units, 'restart': restart | unique, 'deferred': deferred} | to_json }}
