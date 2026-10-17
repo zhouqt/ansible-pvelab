@@ -34,11 +34,6 @@
       {{ pve_yoga_network_spaces | selectattr('snat', 'defined') | selectattr('snat')
          | map(attribute='cidr') | list }}
 
-- name: Read PVE host NAT POSTROUTING rules
-  ansible.builtin.command: iptables -t nat -S POSTROUTING
-  register: pve_yoga_prepare_nat_rules
-  changed_when: false
-
 - name: Ensure this environment's public SNAT rules exist
   ansible.builtin.shell: |
     set -euo pipefail
@@ -54,6 +49,11 @@
     echo "PREPARE-SNAT-DONE added=$n to=$snat_ip"
   register: pve_yoga_prepare_snat
   changed_when: "'added=0' not in pve_yoga_prepare_snat.stdout"
+
+- name: Read PVE host NAT POSTROUTING rules
+  ansible.builtin.command: iptables -t nat -S POSTROUTING
+  register: pve_yoga_prepare_nat_rules
+  changed_when: false
 
 - name: Require public SNAT for internet egress
   ansible.builtin.assert:
