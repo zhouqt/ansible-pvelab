@@ -480,6 +480,12 @@ pve_yoga_run_host_baseline: false
 pve_yoga_run_sdn: false
 pve_yoga_sdn_stop_guests: false
 pve_yoga_control_plane_two_wave: true
+pve_yoga_control_plane_wave1_apps:
+  - keystone
+  - keystone-mysql-router
+  - vault
+  - vault-mysql-router
+  - mysql-innodb-cluster
 pve_yoga_mysql_selfheal_timeout: 10m
 pve_yoga_run_teardown: false
 pve_yoga_teardown_allow_default_env: false

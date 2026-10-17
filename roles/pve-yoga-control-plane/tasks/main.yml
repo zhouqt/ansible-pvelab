@@ -81,12 +81,14 @@
       - src: "{{ playbook_dir }}/bundles/openstack-pve-overlay.yaml"
         staged: openstack-pve-overlay.yaml
         render: false
-      - src: "{{ playbook_dir }}/bundles/openstack-pve-wave1-overlay.yaml"
-        staged: openstack-pve-wave1-overlay.yaml
+      - src: null
+        staged: openstack-pve-wave1-bundle.yaml
         render: false
+        generated: true
     pve_yoga_bundle_staged: "{{ pve_yoga_juju_stage_dir }}/openstack-pve-bundle.yaml"
     pve_yoga_overlay_staged: "{{ pve_yoga_juju_stage_dir }}/openstack-pve-overlay.yaml"
-    pve_yoga_wave1_overlay_staged: "{{ pve_yoga_juju_stage_dir }}/openstack-pve-wave1-overlay.yaml"
+    pve_yoga_wave1_bundle_staged: "{{ pve_yoga_juju_stage_dir }}/openstack-pve-wave1-bundle.yaml"
+    pve_yoga_wave1_generator: /root/yoga-make-wave1-bundle.py
 
 - name: Render the bundle template into /root on the PVE host
   ansible.builtin.template:
@@ -110,7 +112,44 @@
   loop: "{{ pve_yoga_bundle_artifacts }}"
   loop_control:
     label: "{{ item.staged }}"
-  when: not item.render
+  when: not item.render and not (item.generated | default(false))
+
+- name: Copy the wave-1 bundle generator to the PVE host
+  ansible.builtin.copy:
+    src: make-wave1-bundle.py
+    dest: "{{ pve_yoga_wave1_generator }}"
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Derive the wave-1 bundle from the rendered bundle and the full overlay
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ pve_yoga_wave1_generator }}"
+      - --base
+      - /root/openstack-pve-bundle.yaml
+      - --overlay
+      - /root/openstack-pve-overlay.yaml
+      - --out
+      - /root/openstack-pve-wave1-bundle.yaml
+      - --apps
+      - "{{ pve_yoga_control_plane_wave1_apps | join(',') }}"
+  register: pve_yoga_control_wave1_gen
+  changed_when: "'WAVE1-OK' in pve_yoga_control_wave1_gen.stdout"
+  when: pve_yoga_control_plane_two_wave | bool
+
+- name: Adopt the derived wave-1 machine map and deferred application list
+  ansible.builtin.set_fact:
+    pve_yoga_wave1_map_machines: >-
+      {{ pve_yoga_control_wave1_gen.stdout_lines
+         | select('search', '^WAVE1-MAP-MACHINES ')
+         | first | regex_replace('^WAVE1-MAP-MACHINES\s+', '') | trim }}
+    pve_yoga_wave1_deferred_apps: >-
+      {{ (pve_yoga_control_wave1_gen.stdout_lines
+          | select('search', '^WAVE1-DEFERRED ')
+          | first | regex_replace('^WAVE1-DEFERRED\s+', '') | trim).split(',') }}
+  when: pve_yoga_control_plane_two_wave | bool
 
 - name: Ensure the bundle staging directory exists in the Juju client CT
   ansible.builtin.command:
@@ -177,6 +216,38 @@
       - "'applications' in (pve_yoga_control_status.stdout | from_json)"
     fail_msg: "cannot read the OpenStack model status; refusing to deploy while the state is unknown."
 
+- name: Dry-run the wave-1 bundle to prove it carries only the critical path
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_yoga_juju_cmd }} deploy {{ pve_yoga_wave1_bundle_staged }}
+        --map-machines={{ pve_yoga_wave1_map_machines }} --dry-run -m {{ pve_yoga_model }}
+  register: pve_yoga_control_wave1_dryrun
+  changed_when: false
+  when: pve_yoga_control_plane_two_wave | bool
+
+- name: Require the wave-1 dry-run to leave every deferred application out
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_control_wave1_dryrun.rc == 0
+      - >-
+        pve_yoga_control_wave1_dryrun.stdout_lines
+        | select('search', '(?<![\w-])(' ~ (pve_yoga_wave1_deferred_apps | join('|')) ~ ')(?![\w-])')
+        | list | length == 0
+    fail_msg: >-
+      the wave-1 bundle contains applications that were meant for wave two ({{ pve_yoga_wave1_deferred_apps | join(',') }}),
+      then wave one is no longer "critical path only". Check the
+      whether applications/relations still match the derivation logic in files/make-wave1-bundle.py.
+  when: pve_yoga_control_plane_two_wave | bool
+
 - name: Deploy the critical path of the OpenStack bundle (wave 1, P0-5)
   ansible.builtin.command:
     argv:
@@ -189,9 +260,8 @@
       - "{{ pve_yoga_juju_client_user }}"
       - -c
       - >-
-        {{ pve_yoga_juju_cmd }} deploy {{ pve_yoga_bundle_staged }}
-        --overlay {{ pve_yoga_wave1_overlay_staged }}
-        --map-machines=existing,0=0,1=1,2=2,3=3,4=4,5=5 -m {{ pve_yoga_model }}
+        {{ pve_yoga_juju_cmd }} deploy {{ pve_yoga_wave1_bundle_staged }}
+        --map-machines={{ pve_yoga_wave1_map_machines }} -m {{ pve_yoga_model }}
   register: pve_yoga_control_deploy_wave1
   changed_when: "'Deploying' in pve_yoga_control_deploy_wave1.stdout or 'added' in pve_yoga_control_deploy_wave1.stdout"
   when: pve_yoga_control_plane_two_wave | bool
