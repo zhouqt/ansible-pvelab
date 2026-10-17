@@ -410,8 +410,8 @@ pve_yoga_internal_cidr: >-
 pve_yoga_public_prefix: "{{ pve_yoga_public_cidr | regex_replace('\\.0/24$', '') }}"
 pve_yoga_public_gateway: "{{ pve_yoga_public_cidr | regex_replace('\\.0/24$', '.1') }}"
 pve_yoga_no_proxy_cidrs: "{{ pve_yoga_network_spaces | map(attribute='cidr') | join(',') }}"
-pve_yoga_http_proxy: "{{ pve_maas_http_proxy }}"
-pve_yoga_https_proxy: "{{ pve_maas_https_proxy }}"
+pve_yoga_http_proxy: ""
+pve_yoga_https_proxy: ""
 pve_yoga_apt_mirror: "{{ apt_mirror }}"
 pve_yoga_compute_uplink_bridge: "pub{{ pve_yoga_env_number }}0"
 pve_yoga_compute_uplink_net_index: 4
