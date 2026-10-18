@@ -327,6 +327,7 @@ pve_yoga_profiles:
     origin: distro
     openstack: yoga/stable
     ceph: quincy/stable
+    ceph_source: ""
     ovn: "22.03/stable"
     ovn_source: ""
     vault: 1.7/stable
@@ -339,9 +340,10 @@ pve_yoga_profiles:
     version_short: caracal
     origin: cloud:jammy-caracal
     openstack: 2024.1/stable
-    ceph: reef/stable
-    ovn: "22.03/stable"
-    ovn_source: ""
+    ceph: squid/stable
+    ceph_source: cloud:jammy-caracal
+    ovn: "24.03/stable"
+    ovn_source: cloud:jammy-caracal
     vault: 1.7/stable
     rabbitmq: 3.9/stable
     mysql: 8.0/stable
@@ -353,6 +355,7 @@ pve_yoga_profiles:
     origin: distro
     openstack: 2024.1/stable
     ceph: squid/stable
+    ceph_source: distro
     ovn: "24.03/stable"
     ovn_source: distro
     vault: 1.8/stable

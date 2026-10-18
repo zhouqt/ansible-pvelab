@@ -58,7 +58,7 @@
       ansible.builtin.set_fact:
         pve_yoga_recover_apps: "{{ pve_yoga_recover_initial.restart | map('regex_replace', '/.*', '') | unique | list }}"
 
-    - name: Require the affected applications to expose pause and resume actions
+    - name: Read the actions the affected applications expose
       ansible.builtin.command:
         argv:
           - pct
@@ -76,17 +76,37 @@
       register: pve_yoga_recover_actions
       changed_when: false
 
-    - name: Assert the affected applications can restart their services
-      ansible.builtin.assert:
-        that:
-          - "'pause' in (item.stdout | from_json)"
-          - "'resume' in (item.stdout | from_json)"
-        fail_msg: >-
-          {{ item.item }} offers no pause/resume action, so the service cannot be made to re-read its config;
-          restart the service on that unit by hand, then re-run this stage.
-      loop: "{{ pve_yoga_recover_actions.results }}"
-      loop_control:
-        label: "{{ item.item }}"
+    - name: Split the affected applications by whether they can be restarted
+      ansible.builtin.set_fact:
+        pve_yoga_recover_restartable: "{{ pve_yoga_recover_split_doc | from_json }}"
+      vars:
+        pve_yoga_recover_split_doc: >-
+          {%- set ns = namespace(yes=[], no=[]) -%}
+          {%- for res in pve_yoga_recover_actions.results -%}
+          {%- set acts = (res.stdout | from_json) if res.rc == 0 else {} -%}
+          {%- if 'pause' in acts and 'resume' in acts -%}
+          {%- set _ = ns.yes.append(res.item) -%}
+          {%- else -%}
+          {%- set _ = ns.no.append(res.item) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ {'apps': ns.yes, 'unrestartable': ns.no} | to_json }}
+
+    - name: Report the applications that cannot be restarted through pause/resume
+      ansible.builtin.debug:
+        msg: >-
+          {{ ('the applications below offer no pause/resume, so this step only runs resolved without restarting them,'
+              ~ 'left for later stages to settle: ' ~ (pve_yoga_recover_restartable.unrestartable | join(', ')))
+             if pve_yoga_recover_restartable.unrestartable | length > 0
+             else 'every affected application supports pause/resume' }}
+
+    - name: Remember the pattern that matches the units this stage is responsible for
+      ansible.builtin.set_fact:
+        pve_yoga_recover_restart_pattern: "^({{ pve_yoga_recover_restartable.apps | join('|') }})/"
+
+    - name: Keep only the units owned by the restartable applications
+      ansible.builtin.set_fact:
+        pve_yoga_recover_restart: "{{ pve_yoga_recover_initial.restart | select('match', pve_yoga_recover_restart_pattern) | list }}"
 
     - name: Mark the failed hooks resolved so the charms retry them
       ansible.builtin.command:
@@ -121,7 +141,7 @@
           - "{{ pve_yoga_juju_client_user }}"
           - -c
           - "{{ pve_yoga_juju_cmd }} wait-for application {{ item }} --timeout 30m -m {{ pve_yoga_model }}"
-      loop: "{{ pve_yoga_recover_apps }}"
+      loop: "{{ pve_yoga_recover_restartable.apps }}"
       loop_control:
         label: "{{ item }}"
       changed_when: false
@@ -138,7 +158,7 @@
           - "{{ pve_yoga_juju_client_user }}"
           - -c
           - "{{ pve_yoga_juju_cmd }} run {{ item }} pause --wait=10m -m {{ pve_yoga_model }}"
-      loop: "{{ pve_yoga_recover_initial.restart }}"
+      loop: "{{ pve_yoga_recover_restart }}"
       loop_control:
         label: "{{ item }}"
 
@@ -154,7 +174,7 @@
           - "{{ pve_yoga_juju_client_user }}"
           - -c
           - "{{ pve_yoga_juju_cmd }} run {{ item }} resume --wait=10m -m {{ pve_yoga_model }}"
-      loop: "{{ pve_yoga_recover_initial.restart }}"
+      loop: "{{ pve_yoga_recover_restart }}"
       loop_control:
         label: "{{ item }}"
 
@@ -170,7 +190,7 @@
           - "{{ pve_yoga_juju_client_user }}"
           - -c
           - "{{ pve_yoga_juju_cmd }} wait-for application {{ item }} --timeout 30m -m {{ pve_yoga_model }}"
-      loop: "{{ pve_yoga_recover_apps }}"
+      loop: "{{ pve_yoga_recover_restartable.apps }}"
       loop_control:
         label: "{{ item }}"
       changed_when: false
@@ -199,10 +219,20 @@
       ansible.builtin.set_fact:
         pve_yoga_recover_after: "{{ pve_yoga_recover }}"
 
-    - name: Require every recovered unit to have left the error state
+    - name: Report the units still in error that a later stage owns
+      ansible.builtin.debug:
+        msg: >-
+          {{ ('units still in error after recovery (not this stage's job, left to later stages):'
+              ~ (pve_yoga_recover_after.units | join(', ')))
+             if pve_yoga_recover_after.units | length > 0
+             else 'no error units are left in the model after recovery' }}
+
+    - name: Require every unit this stage is responsible for to have left the error state
+      when: pve_yoga_recover_restart | length > 0
       ansible.builtin.assert:
         that:
-          - pve_yoga_recover_after.units | length == 0
+          - pve_yoga_recover_after.units | select('match', pve_yoga_recover_restart_pattern) | list | length == 0
         fail_msg: >-
-          units are still in error after recovery: {{ pve_yoga_recover_after.units | join(', ') }};
-          look at /var/log/juju/unit-<name>.log of that unit.
+          units this stage owns are still in error after recovery: {{
+            pve_yoga_recover_after.units | select('match', pve_yoga_recover_restart_pattern) | join(', ')
+          }}; look at /var/log/juju/unit-<name>.log of that unit.

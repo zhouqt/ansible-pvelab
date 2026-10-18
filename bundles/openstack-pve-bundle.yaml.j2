@@ -4,7 +4,6 @@ name: openstack-pve
 series: {{ pve_yoga_openstack_series }}
 variables:
   openstack-origin: &openstack-origin {{ p.origin }}
-  ceph-origin: &ceph-origin ""
 
 relations:
 - - nova-cloud-controller:identity-service
@@ -224,12 +223,18 @@ applications:
     options:
       expected-osd-count: 4
       monitor-count: 3
+{% if p.ceph_source %}
+      source: {{ p.ceph_source }}
+{% endif %}
   ceph-osd:
     charm: ch:ceph-osd
     channel: {{ p.ceph }}
     options:
       osd-devices: /dev/osd-block
       osd-encrypt: false
+{% if p.ceph_source %}
+      source: {{ p.ceph_source }}
+{% endif %}
 
   ntp:
     charm: ch:ntp
