@@ -336,6 +336,7 @@ pve_yoga_profiles:
     lxc_template: "local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
     kvm_image: ubuntu-22.04-server-cloudimg-amd64.img
     kvm_image_url: "https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
+    unit_python3_packages: []
   "jammy-2024.1":
     version_short: caracal
     origin: cloud:jammy-caracal
@@ -350,6 +351,7 @@ pve_yoga_profiles:
     lxc_template: "local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
     kvm_image: ubuntu-22.04-server-cloudimg-amd64.img
     kvm_image_url: "https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
+    unit_python3_packages: []
   "noble-2024.1":
     version_short: caracal
     origin: distro
@@ -364,6 +366,9 @@ pve_yoga_profiles:
     lxc_template: "local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst"
     kvm_image: ubuntu-24.04-server-cloudimg-amd64.img
     kvm_image_url: "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    unit_python3_packages:
+      - python3-setuptools
+      - python3-six
 pve_yoga_juju_bin: /snap/bin/juju_yoga
 pve_yoga_juju_channel: "3.6/stable"
 pve_yoga_juju_agent_version: ""
@@ -468,6 +473,7 @@ pve_yoga_workload_secondary_network_ips: >-
 pve_yoga_lxc_template: "{{ pve_yoga_profiles[pve_yoga_profile].lxc_template }}"
 pve_yoga_kvm_image: "{{ pve_yoga_profiles[pve_yoga_profile].kvm_image }}"
 pve_yoga_kvm_image_url: "{{ pve_yoga_profiles[pve_yoga_profile].kvm_image_url }}"
+pve_yoga_unit_python3_packages: "{{ pve_yoga_profiles[pve_yoga_profile].unit_python3_packages }}"
 pve_yoga_core_applications:
   - keystone
   - nova-cloud-controller

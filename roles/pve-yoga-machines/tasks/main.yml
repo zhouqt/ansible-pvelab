@@ -317,6 +317,30 @@
   tags: [pve-yoga-apt-mirror]
   when: pve_yoga_apt_mirror | length > 0
 
+- name: Install the python3 modules the OpenStack charms expect from the OS
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pkgs="{{ pve_yoga_unit_python3_packages | join(' ') }}"
+    if [ -z "$pkgs" ]; then
+      echo "PY3DEPS: none (profile {{ pve_yoga_profile }})"
+      exit 0
+    fi
+    installed=""
+    for vmid in {{ pve_yoga_workload_cts | map(attribute='vmid') | join(' ') }}; do
+      for pkg in $pkgs; do
+        if ! pct exec "$vmid" -- dpkg -s "$pkg" >/dev/null 2>&1; then
+          pct exec "$vmid" -- env DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" >/dev/null
+          installed="$installed $vmid:$pkg"
+        fi
+      done
+    done
+    echo "PY3DEPS:${installed:- none}"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_ct_python3_deps
+  changed_when: "'PY3DEPS: none' not in pve_yoga_ct_python3_deps.stdout"
+  tags: [pve-yoga-unit-python3-deps]
+
 - name: Create and configure the yoga KVM workload VM
   ansible.builtin.include_tasks: kvm-workload.yml
 
@@ -533,3 +557,28 @@
   changed_when: "'changed=1' in pve_yoga_kvm_apt_mirror.stdout"
   tags: [pve-yoga-apt-mirror]
   when: pve_yoga_apt_mirror | length > 0
+
+- name: Install the python3 modules the OpenStack charms expect from the OS (KVM workload)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pkgs="{{ pve_yoga_unit_python3_packages | join(' ') }}"
+    if [ -z "$pkgs" ]; then
+      echo "PY3DEPS: none (profile {{ pve_yoga_profile }})"
+      exit 0
+    fi
+    out="$(pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c '
+      set -e
+      ip={{ pve_yoga_public_prefix }}.{{ pve_yoga_workload_kvm_vmid - pve_yoga_ip_offset }}
+      ssh -o StrictHostKeyChecking=no -q ubuntu@$ip "sudo DEBIAN_FRONTEND=noninteractive apt-get -y install {{ pve_yoga_unit_python3_packages | join(' ') }}"
+    ' 2>&1)"
+    echo "$out" | tail -3
+    if echo "$out" | grep -q "0 upgraded, 0 newly installed"; then
+      echo "PY3DEPS: none"
+    else
+      echo "PY3DEPS: kvm {{ pve_yoga_unit_python3_packages | join(' ') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: pve_yoga_kvm_python3_deps
+  changed_when: "'PY3DEPS: none' not in pve_yoga_kvm_python3_deps.stdout"
+  tags: [pve-yoga-unit-python3-deps]
