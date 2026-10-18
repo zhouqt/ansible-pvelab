@@ -573,21 +573,6 @@
       - "{{ pve_yoga_juju_cmd }} config -m {{ pve_yoga_model }} keystone admin-password={{ pve_yoga_keystone_admin_password }}"
   no_log: true
 
-- name: Wait for keystone to become active
-  ansible.builtin.command:
-    argv:
-      - pct
-      - exec
-      - "{{ pve_yoga_juju_client_vmid }}"
-      - --
-      - su
-      - "-"
-      - "{{ pve_yoga_juju_client_user }}"
-      - -c
-      - "{{ pve_yoga_juju_cmd }} wait-for application keystone --timeout 45m -m {{ pve_yoga_model }}"
-  register: pve_yoga_control_keystone_wait
-  changed_when: false
-
 - name: Read the final OpenStack application inventory
   ansible.builtin.command:
     argv:
@@ -620,6 +605,21 @@
 
 - name: Recover the units the co-located MySQL leader left in error
   ansible.builtin.include_tasks: recover-error-units.yml
+
+- name: Wait for keystone to become active
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} wait-for application keystone --timeout 45m -m {{ pve_yoga_model }}"
+  register: pve_yoga_control_keystone_wait
+  changed_when: false
 
 - name: Read the OpenStack model status to look for the missing-grant symptom
   ansible.builtin.command:
