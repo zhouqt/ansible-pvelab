@@ -283,7 +283,11 @@
   loop: "{{ pve_yoga_ceph_osd_units }}"
   loop_control:
     label: "{{ item.unit }}"
-  changed_when: false
+  register: pve_yoga_ceph_resolved
+  changed_when: "'not in an error state' not in (pve_yoga_ceph_resolved.stderr | default(''))"
+  failed_when:
+    - pve_yoga_ceph_resolved.rc != 0
+    - "'not in an error state' not in (pve_yoga_ceph_resolved.stderr | default(''))"
   when: >-
     (pve_yoga_ceph_status_patched.stdout | from_json)
     .applications['ceph-osd'].units[item.unit]['workload-status'].current == 'error'
