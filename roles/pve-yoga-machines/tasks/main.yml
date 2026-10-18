@@ -327,11 +327,17 @@
     fi
     installed=""
     for vmid in {{ pve_yoga_workload_cts | map(attribute='vmid') | join(' ') }}; do
+      missing=""
       for pkg in $pkgs; do
-        if ! pct exec "$vmid" -- dpkg -s "$pkg" >/dev/null 2>&1; then
-          pct exec "$vmid" -- env DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" >/dev/null
-          installed="$installed $vmid:$pkg"
-        fi
+        pct exec "$vmid" -- dpkg -s "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+      done
+      if [ -z "$missing" ]; then
+        continue
+      fi
+      pct exec "$vmid" -- env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+      for pkg in $missing; do
+        pct exec "$vmid" -- env DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" >/dev/null
+        installed="$installed $vmid:$pkg"
       done
     done
     echo "PY3DEPS:${installed:- none}"
@@ -569,10 +575,21 @@
     out="$(pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c '
       set -e
       ip={{ pve_yoga_public_prefix }}.{{ pve_yoga_workload_kvm_vmid - pve_yoga_ip_offset }}
-      ssh -o StrictHostKeyChecking=no -q ubuntu@$ip "sudo DEBIAN_FRONTEND=noninteractive apt-get -y install {{ pve_yoga_unit_python3_packages | join(' ') }}"
+      ssh -o StrictHostKeyChecking=no -q ubuntu@$ip "
+        miss=\"\"
+        for p in {{ pve_yoga_unit_python3_packages | join(' ') }}; do
+          dpkg -s \"\$p\" >/dev/null 2>&1 || miss=\"\$miss \$p\"
+        done
+        if [ -z \"\$miss\" ]; then
+          echo PY3DEPS-KVM: none
+          exit 0
+        fi
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+        sudo DEBIAN_FRONTEND=noninteractive apt-get -y install \$miss
+      "
     ' 2>&1)"
     echo "$out" | tail -3
-    if echo "$out" | grep -q "0 upgraded, 0 newly installed"; then
+    if echo "$out" | grep -q "PY3DEPS-KVM: none"; then
       echo "PY3DEPS: none"
     else
       echo "PY3DEPS: kvm {{ pve_yoga_unit_python3_packages | join(' ') }}"
