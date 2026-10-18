@@ -62,18 +62,23 @@ class Runner:
     def mysql(self, sql, mysql_vmid):
 
         delay = getattr(self.args, "mysql_retry_delay", 10)
-        for attempt in range(1, getattr(self.args, "mysql_retries", 6) + 1):
+        timeout = getattr(self.args, "mysql_retry_timeout", 600)
+        retries = getattr(self.args, "mysql_retries", 30)
+        deadline = time.time() + timeout
+        attempt = 0
+        while True:
+            attempt += 1
             res = self.pct(mysql_vmid, ["mysql", "--defaults-file=/root/.my.cnf",
                                         "-N", "-B", "-e", sql])
             if res.returncode == 0 or not TRANSIENT_SQL_RE.search(res.stderr or ""):
                 return res
-            if attempt < getattr(self.args, "mysql_retries", 6):
-                tail = (res.stderr or "").strip().splitlines()
-                print("RECONCILE-INFO MySQL transient connection error (attempt {}/{}), retrying in {}s: {}"
-                      .format(attempt, getattr(self.args, "mysql_retries", 6), delay,
-                              tail[-1] if tail else ""))
-                time.sleep(delay)
-        return res
+            if attempt >= retries or time.time() >= deadline:
+                return res
+            tail = (res.stderr or "").strip().splitlines()
+            print("RECONCILE-INFO MySQL transient connection error (attempt {}, waited {}s/{}s), retrying in {}s: {}"
+                  .format(attempt, int(time.time() - (deadline - timeout)), timeout, delay,
+                          tail[-1] if tail else ""))
+            time.sleep(delay)
 
 def show_unit(runner, unit):
 
@@ -358,9 +363,14 @@ def main():
                         help="before filling in, wait for the charm to write back the password of every request that is **still missing one** "
                              "upper bound in seconds for <prefix>_password (default 180). Only kicks in when something really is missing;"
                              "see the notes on wait_for_published_passwords()")
-    parser.add_argument("--mysql-retries", type=int, default=6,
+    parser.add_argument("--mysql-retries", type=int, default=30,
                         help="retry budget of a single SQL statement on a **transient connection error** (2013/2002/2003/2006/1040/1053)"
-                             "maximum attempts (default 6; with --mysql-retry-delay 10 that is a ~50s tolerance window)")
+                             "maximum attempts (default 30, a secondary cap; the main cap is --mysql-retry-timeout)")
+    parser.add_argument("--mysql-retry-timeout", type=int, default=600,
+                        help="total retry budget in seconds for transient connection errors (default 600). ★ The main cap is **time**, not"
+                             "count: a single attempt measured up to ~25s on a loaded host, so a count alone runs out inside the rolling restart's"
+                             "downtime window (measured on env-4 on 2026-10-18: it died 3 seconds early, see"
+                             " the docstring of Runner.mysql)")
     parser.add_argument("--mysql-retry-delay", type=int, default=10,
                         help="retry interval in seconds for transient connection errors (default 10)")
     parser.add_argument("--dump-db", default="mysql",
