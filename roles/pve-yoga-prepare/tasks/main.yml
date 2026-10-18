@@ -5,7 +5,7 @@
     that:
       - pve_yoga_run_host_baseline | bool
     fail_msg: >-
-      pve-yoga-prepare is a one-off validation step. Make sure the pve host has registered
+      openstack-pve-prepare is a one-off validation step. Make sure the pve host has registered
       the four SDN vnets {{ pve_yoga_network_spaces | map(attribute='bridge') | join('/') }}
       (zone public/internal) and applied, run it explicitly with -e pve_yoga_run_host_baseline=true.
 
@@ -25,7 +25,7 @@
     fail_msg: >-
       missing on the host: bridge {{ pve_yoga_prepare_bridges.results | selectattr('rc', 'ne', 0)
       | map(attribute='item.bridge') | join('/') }}. Run
-      `--tags pve-yoga-sdn -e pve_yoga_run_sdn=true -e @env/yoga-env<N>.yml` register this env's
+      `--tags openstack-pve-sdn -e pve_yoga_run_sdn=true -e @env/yoga-env<N>.yml` register this env's
       the 4 SDN vnets (registering/applying them requires every guest of this env to be stopped), then re-run this stage.
 
 - name: Define this environment's SNAT network list

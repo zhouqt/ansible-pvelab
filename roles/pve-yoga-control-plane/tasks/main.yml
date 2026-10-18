@@ -70,7 +70,7 @@
       - pve_yoga_control_default_space.stdout | trim == pve_yoga_default_space
     fail_msg: >-
       the OpenStack model default-space must be {{ pve_yoga_default_space }}. Run
-      --tags pve-yoga-network, then deploy the charms.
+      --tags openstack-pve-network, then deploy the charms.
 
 - name: Define the bundle artifacts and their staged names
   ansible.builtin.set_fact:

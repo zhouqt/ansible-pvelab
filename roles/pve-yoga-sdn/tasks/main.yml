@@ -5,7 +5,7 @@
     that:
       - pve_yoga_run_sdn | bool
     fail_msg: >-
-      pve-yoga-sdn changes the host's SDN config. Once you confirm you want yoga's 4 bridges registered as SDN vnets,
+      openstack-pve-sdn changes the host's SDN config. Once you confirm you want yoga's 4 bridges registered as SDN vnets,
       run it explicitly with -e pve_yoga_run_sdn=true.
 
 - name: Require the network space inventory to declare zones

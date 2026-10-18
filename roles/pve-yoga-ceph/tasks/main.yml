@@ -26,7 +26,7 @@
       - pve_yoga_ceph_status.rc == 0
       - "'ceph-mon' in (pve_yoga_ceph_status.stdout | from_json).applications"
       - "'ceph-osd' in (pve_yoga_ceph_status.stdout | from_json).applications"
-    fail_msg: "run --tags pve-yoga-control-plane to deploy ceph-mon / ceph-osd first, then run the Ceph role."
+    fail_msg: "run --tags openstack-pve-control-plane to deploy ceph-mon / ceph-osd first, then run the Ceph role."
 
 - name: Copy OSD helper scripts to PVE host
   ansible.builtin.copy:
@@ -84,7 +84,7 @@
       thin pool {{ pve_yoga_osd_thinpool }} usage
       {{ pve_yoga_ceph_pool_usage.stdout.split()[1] }}% has reached the cap
       {{ pve_yoga_osd_thinpool_max_data_percent }}%({{ pve_yoga_ceph_pool_usage.stdout | trim }}).
-      tear down unused envs first (--tags pve-yoga-teardown) to free pool space, or raise
+      tear down unused envs first (--tags openstack-pve-teardown) to free pool space, or raise
       pve_yoga_osd_thinpool_max_data_percent.
 
 - name: Build the vmid:osdindex mapping

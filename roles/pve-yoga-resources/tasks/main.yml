@@ -52,7 +52,7 @@
       authentication against Keystone {{ pve_yoga_keystone_address }} failed. Common causes:
         1. the controller machine has no route to {{ pve_yoga_public_cidr }} -- add one:
            sudo ip route add {{ pve_yoga_public_cidr }} via {{ pve_yoga_control_route_gateway }} dev <local NIC>
-        2. the control plane of this env is not deployed yet (run --tags pve-yoga-control-plane and confirm the keystone unit is active)
+        2. this env's control plane is not deployed yet (run --tags openstack-pve-control-plane first and confirm the keystone unit is active)
       --- stderr ---
       {{ pve_yoga_resources_token.stderr | default('') }}
       --- stdout ---

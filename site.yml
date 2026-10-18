@@ -632,77 +632,77 @@
 - name: Validate the PVE yoga host baseline (bridges, pub31 SNAT, jammy template)
   hosts: pve
   become: false
-  tags: [never, pve-yoga-prepare]
+  tags: [never, openstack-pve-prepare]
   roles: [pve-yoga-prepare]
 
 - name: Register the PVE yoga SDN vnets and apply
   hosts: pve
   become: false
-  tags: [never, pve-yoga-sdn]
+  tags: [never, openstack-pve-sdn]
   roles: [pve-yoga-sdn]
 
 - name: Bootstrap Juju 3.x manual controller for the yoga environment
   hosts: pve
   become: false
-  tags: [never, pve-yoga-juju-ctrl]
+  tags: [never, openstack-pve-juju-ctrl]
   roles: [pve-yoga-juju-ctrl]
 
 - name: Create and register PVE yoga workload machines
   hosts: pve
   become: false
-  tags: [never, pve-yoga-machines]
+  tags: [never, openstack-pve-machines]
   roles: [pve-yoga-machines]
 
 - name: Configure Juju spaces for the yoga environment
   hosts: pve
   become: false
-  tags: [never, pve-yoga-network]
+  tags: [never, openstack-pve-network]
   roles: [pve-yoga-network]
 
 - name: Deploy OpenStack Yoga control plane on PVE
   hosts: pve
   become: false
-  tags: [never, pve-yoga-control-plane]
+  tags: [never, openstack-pve-control-plane]
   roles: [pve-yoga-control-plane]
 
 - name: Set up Ceph OSDs for the yoga environment
   hosts: pve
   become: false
-  tags: [never, pve-yoga-ceph]
+  tags: [never, openstack-pve-ceph]
   roles: [pve-yoga-ceph]
 
 - name: Configure the PVE yoga compute uplink for OVN br-ex
   hosts: pve
   become: false
-  tags: [never, pve-yoga-ovn-uplink]
+  tags: [never, openstack-pve-ovn-uplink]
   roles: [pve-yoga-ovn-uplink]
 
 - name: Recover the PVE yoga environment after a host or guest reboot
   hosts: pve
   become: false
-  tags: [never, pve-yoga-recovery]
+  tags: [never, openstack-pve-recovery]
   roles: [pve-yoga-recovery]
 
 - name: Take a savepoint of the PVE yoga environment
   hosts: pve
   become: false
-  tags: [never, pve-yoga-savepoint]
+  tags: [never, openstack-pve-savepoint]
   roles: [pve-yoga-savepoint]
 
 - name: Restore the PVE yoga environment from a savepoint
   hosts: pve
   become: false
-  tags: [never, pve-yoga-savepoint-restore]
+  tags: [never, openstack-pve-savepoint-restore]
   roles: [pve-yoga-savepoint-restore]
 
 - name: Tear down the PVE yoga environment
   hosts: pve
   become: false
-  tags: [never, pve-yoga-teardown]
+  tags: [never, openstack-pve-teardown]
   roles: [pve-yoga-teardown]
 
 - name: Create the OpenStack resources for the PVE yoga environment
   hosts: localhost
   become: false
-  tags: [never, pve-yoga-resources]
+  tags: [never, openstack-pve-resources]
   roles: [pve-yoga-resources]

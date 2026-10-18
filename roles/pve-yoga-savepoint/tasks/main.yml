@@ -121,5 +121,5 @@
       savepoint taken: {{ pve_yoga_savepoint_prefix }}-*
       ({{ pve_yoga_savepoint_guests | length }} guest volumes
       {% if pve_yoga_savepoint_include_osd | bool %}+ {{ pve_yoga_savepoint_osd_lvs | length }} OSD volumes{% endif %}).
-      restore: --tags pve-yoga-savepoint-restore -e pve_yoga_savepoint_restore=true
+      restore: --tags openstack-pve-savepoint-restore -e pve_yoga_savepoint_restore=true
       -e pve_yoga_savepoint_name={{ pve_yoga_savepoint_name }}

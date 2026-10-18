@@ -290,7 +290,7 @@
     owner: root
     group: root
     mode: "0700"
-  tags: [pve-yoga-apt-mirror]
+  tags: [openstack-pve-apt-mirror]
   when: pve_yoga_apt_mirror | length > 0
 
 - name: Point the Juju controller CT at the APT mirror
@@ -303,7 +303,7 @@
     executable: /bin/bash
   register: pve_yoga_controller_apt_mirror
   changed_when: "'changed=1' in pve_yoga_controller_apt_mirror.stdout"
-  tags: [pve-yoga-apt-mirror]
+  tags: [openstack-pve-apt-mirror]
   when: pve_yoga_apt_mirror | length > 0
 
 - name: Initialize Juju controller CT account, SSH, and snapd

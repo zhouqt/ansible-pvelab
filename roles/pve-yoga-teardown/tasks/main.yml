@@ -5,7 +5,7 @@
     that:
       - pve_yoga_run_teardown | bool
     fail_msg: >-
-      pve-yoga-teardown **destroys** the whole yoga environment (Juju controller/model + every guest + the host OSD thin LVs).
+      openstack-pve-teardown **destroys** the whole yoga environment (Juju controller/model + every guest + the host OSD thin LVs).
       once the target env is confirmed, run it explicitly with -e pve_yoga_run_teardown=true.
 
 - name: Forbid tearing down the default environment without an explicit extra confirmation

@@ -57,7 +57,7 @@ if [ "$need_create" -gt 0 ]; then
     "$(echo "$used_b" | awk '{print $1/1073741824}')" "$need_create" "$SIZE_MB"
   if awk -v d="$data_pct" -v m="$MAX_DATA_PCT" 'BEGIN{exit !(d >= m)}'; then
     echo "ERROR: thin pool usage ${data_pct}% >= ${MAX_DATA_PCT}% (threshold), refusing to create more OSD volumes;" >&2
-    echo "       free up pool space first (tear down unused envs: --tags pve-yoga-teardown) or raise OSD_THINPOOL_MAX_DATA_PERCENT." >&2
+    echo "       free up pool space first (tear down unused envs: --tags openstack-pve-teardown) or raise OSD_THINPOOL_MAX_DATA_PERCENT." >&2
     exit 1
   fi
   over=$(awk -v u="$used_b" -v n="$new_b" -v s="$size_b" 'BEGIN{print (u+n > s) ? 1 : 0}')
