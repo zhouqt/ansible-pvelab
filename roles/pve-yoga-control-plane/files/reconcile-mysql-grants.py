@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -14,6 +15,13 @@ RW_MARKER = "Mode: R/W"
 SETTLED_WORKLOAD = {"active", "blocked", "error"}
 
 TRANSIENT_WORKLOAD = {"install", "maintenance", "unknown"}
+
+TRANSIENT_SQL_RE = re.compile(
+    r"ERROR (?:20(?:0[236]|13)|1040|1053) \(HY000\)"
+    r"|Lost connection to MySQL server"
+    r"|Can't connect to (?:local )?MySQL server"
+    r"|MySQL server has gone away"
+    r"|Too many connections")
 
 def die(msg, code=1):
     print("RECONCILE-ERROR " + msg, file=sys.stderr)
@@ -52,8 +60,20 @@ class Runner:
         return json.loads(self.juju(argv + ["--format", "json"]))
 
     def mysql(self, sql, mysql_vmid):
-        return self.pct(mysql_vmid, ["mysql", "--defaults-file=/root/.my.cnf",
-                                     "-N", "-B", "-e", sql])
+
+        delay = getattr(self.args, "mysql_retry_delay", 10)
+        for attempt in range(1, getattr(self.args, "mysql_retries", 6) + 1):
+            res = self.pct(mysql_vmid, ["mysql", "--defaults-file=/root/.my.cnf",
+                                        "-N", "-B", "-e", sql])
+            if res.returncode == 0 or not TRANSIENT_SQL_RE.search(res.stderr or ""):
+                return res
+            if attempt < getattr(self.args, "mysql_retries", 6):
+                tail = (res.stderr or "").strip().splitlines()
+                print("RECONCILE-INFO MySQL transient connection error (attempt {}/{}), retrying in {}s: {}"
+                      .format(attempt, getattr(self.args, "mysql_retries", 6), delay,
+                              tail[-1] if tail else ""))
+                time.sleep(delay)
+        return res
 
 def show_unit(runner, unit):
 
@@ -338,6 +358,11 @@ def main():
                         help="before filling in, wait for the charm to write back the password of every request that is **still missing one** "
                              "upper bound in seconds for <prefix>_password (default 180). Only kicks in when something really is missing;"
                              "see the notes on wait_for_published_passwords()")
+    parser.add_argument("--mysql-retries", type=int, default=6,
+                        help="retry budget of a single SQL statement on a **transient connection error** (2013/2002/2003/2006/1040/1053)"
+                             "maximum attempts (default 6; with --mysql-retry-delay 10 that is a ~50s tolerance window)")
+    parser.add_argument("--mysql-retry-delay", type=int, default=10,
+                        help="retry interval in seconds for transient connection errors (default 10)")
     parser.add_argument("--dump-db", default="mysql",
                         help="database used when writing /root/.my.cnf (default: the mysql system schema)")
     args = parser.parse_args()
