@@ -100,6 +100,30 @@ def published_password(runner, router_unit, prefix):
             return unquote(rdata[prefix + "_password"])
     return None
 
+def password_for(runner, requests, user, host):
+
+    entry = next((e for e in requests
+                  if e["user"] == user and e["host"] == host), None)
+    return published_password(runner, entry["router"], entry["prefix"]) if entry else None
+
+def wait_for_published_passwords(runner, requests, missing, timeout, interval):
+
+    pending = list(missing)
+    if not pending:
+        return []
+    deadline = time.time() + timeout
+    while True:
+        pending = [p for p in pending
+                   if not password_for(runner, requests, p[0], p[1])]
+        if not pending:
+            return []
+        if time.time() >= deadline:
+            print("RECONCILE-INFO after {}s, {} requests still have no password written back: {}".format(
+                timeout, len(pending),
+                ", ".join("{}@{}".format(u, h) for u, h in pending)))
+            return pending
+        time.sleep(interval)
+
 def existing_grants(runner, mysql_vmid):
     res = runner.mysql("SELECT CONCAT(user, '@', host) FROM mysql.user", mysql_vmid)
     if res.returncode != 0:
@@ -310,6 +334,10 @@ def main():
                         help="how many consecutive polls the expected set must stay unchanged before the requests count as complete"
                              "(default 3; with --interval 20 that is a ~60s quiet window;"
                              "see the \"Integrity\" section at the top of the file)")
+    parser.add_argument("--password-wait", type=int, default=180,
+                        help="before filling in, wait for the charm to write back the password of every request that is **still missing one** "
+                             "upper bound in seconds for <prefix>_password (default 180). Only kicks in when something really is missing;"
+                             "see the notes on wait_for_published_passwords()")
     parser.add_argument("--dump-db", default="mysql",
                         help="database used when writing /root/.my.cnf (default: the mysql system schema)")
     args = parser.parse_args()
@@ -391,12 +419,14 @@ def main():
     existing = existing_grants(runner, mysql_vmid)
     missing = sorted(expected - existing)
 
+    wait_for_published_passwords(runner, requests, missing, args.password_wait,
+                                 args.interval)
+
     created, skipped = [], []
     for user, host in missing:
         entry = next((e for e in requests
                       if e["user"] == user and e["host"] == host), None)
-        password = (published_password(runner, entry["router"], entry["prefix"])
-                    if entry else None)
+        password = password_for(runner, requests, user, host)
         if not password:
             skipped.append((user, host, "the charm has not written {}_password back yet (relation not settled)"
                             .format(entry["prefix"] if entry else "?")))
