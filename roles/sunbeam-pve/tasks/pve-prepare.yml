@@ -160,6 +160,42 @@
   when: sunbeam_osd_udev_rule.changed
   changed_when: true
 
+- name: Apply the new OSD alias rule to the block devices that already exist
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_udevadm_bin }}", trigger, --subsystem-match=block, --settle]
+  when: sunbeam_osd_udev_rule.changed
+  changed_when: true
+
+- name: Read the device links udev maintains for each OSD thin LV
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_udevadm_bin }}"
+      - info
+      - --query=property
+      - --name={{ item.item.osd_pve_lv }}
+      - --property=DEVLINKS
+  loop: "{{ sunbeam_pve_osd_lv_check.results }}"
+  when: item.rc == 0
+  register: sunbeam_osd_devlinks
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.item.osd_pve_lv | basename }}"
+
+- name: Assert the OSD by-id alias is provided by udev, not by a leftover symlink
+  ansible.builtin.assert:
+    that:
+      - item.stdout | default('') is search(item.item.item.osd_by_id | regex_escape)
+    fail_msg: >-
+      udev does not maintain {{ item.item.item.osd_by_id }} for
+      {{ item.item.item.osd_pve_lv }} (DEVLINKS: {{ item.stdout | default('') | trim | default('(none)', true) }}).
+      Any alias you can see right now was created by hand and will vanish on the next
+      host reboot, after which {{ item.item.item.fqdn }} fails to start. Check
+      {{ sunbeam_osd_udev_rules_path }} against this device.
+  loop: "{{ sunbeam_osd_devlinks.results }}"
+  loop_control:
+    label: "{{ item.item.item.osd_by_id }}"
+
 - name: Stat the OSD by-id aliases
   ansible.builtin.stat:
     path: "{{ item.osd_by_id }}"
@@ -248,6 +284,19 @@
               | map(attribute='item.vmid') | map('string')
               | zip(sunbeam_pve_conf.results | selectattr('content', 'defined')
                     | map(attribute='content') | map('b64decode'))) }}
+
+- name: Assert every Sunbeam CT is a privileged container
+  ansible.builtin.assert:
+    that:
+      - sunbeam_pve_conf_map[item.vmid | string] is not search('(?m)^unprivileged:\s*1\s*$')
+    fail_msg: >-
+      CT {{ item.vmid }} ({{ item.fqdn }}) is an **unprivileged** container. Sunbeam needs a
+      privileged one for /dev/kvm, /dev/net/tun and OSD block device passthrough, and an
+      existing unprivileged container cannot be converted in place. Recreate it with
+      --unprivileged 0 (this stage passes it explicitly for newly created containers).
+  loop: "{{ sunbeam_nodes }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
 
 - name: Find managed keys that would land in the wrong CT config section
   ansible.builtin.set_fact:
