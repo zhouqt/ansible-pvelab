@@ -18,4 +18,13 @@ echo "###OSD_SETUP"; if [ -x {{ sunbeam_osd_setup_script }} ]; then echo present
 echo "###SUDO"; grep -h NOPASSWD /etc/sudoers.d/* 2>/dev/null | head -5
 echo "###MANIFEST_PATH"; if [ -f {{ sunbeam_manifest_path }} ]; then echo present; else echo absent; fi
 echo "###OPENRC_PATH"; if [ -f {{ sunbeam_admin_openrc_path }} ]; then echo present; else echo absent; fi
+echo "###CEPH_FSID"; {{ sunbeam_microceph_ceph_bin }} fsid 2>&1
+echo "###PROXY_APT"; if [ -f {{ sunbeam_apt_proxy_file }} ]; then echo present; else echo absent; fi
+echo "###PROXY_SNAPD"; snap get system proxy 2>&1 | head -4 | tr '\n' ' '; echo
+echo "###KVM_TUN"; for d in /dev/kvm /dev/net/tun; do
+    if [ -c "$d" ]; then echo "$d=char";
+    elif [ -e "$d" ]; then echo "$d=present-not-char";
+    else echo "$d=absent"; fi
+  done
+echo "###ROOTFS"; df -P / 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}' || echo unknown
 echo "###END"

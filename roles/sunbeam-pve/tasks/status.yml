@@ -28,7 +28,7 @@
 
 - name: Read thin pool capacity
   ansible.builtin.command:
-    argv: ["{{ sunbeam_lvs_bin }}", --noheadings, -o, lv_name,vg_name,lv_size,data_percent, "{{ sunbeam_pve_storage }}"]
+    argv: ["{{ sunbeam_lvs_bin }}", --noheadings, -o, "lv_name,vg_name,lv_size,data_percent", "{{ sunbeam_pve_storage }}/{{ sunbeam_pve_storage }}"]
   register: sunbeam_status_thinpool
   changed_when: false
   failed_when: false
@@ -130,3 +130,17 @@
   loop: "{{ sunbeam_status_ct_inspect.results }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
+
+- name: Run the read-only operational sweep
+  ansible.builtin.include_tasks: _status_sweep.yml
+
+- name: Report the operational sweep
+  ansible.builtin.debug:
+    msg: "{{ item.level }}: {{ item.msg }}"
+  loop: "{{ sunbeam_status_findings }}"
+- name: Report the risk count
+  ansible.builtin.debug:
+    msg: >-
+      RISKS: {{ sunbeam_status_findings | selectattr('level', 'eq', 'RISK') | list | length }}
+      (of {{ sunbeam_status_findings | length }} checks;
+      {{ sunbeam_status_findings | selectattr('level', 'eq', 'OK') | list | length }} OK)

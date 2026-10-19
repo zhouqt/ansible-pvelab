@@ -1,0 +1,338 @@
+---
+
+- name: Start with an empty findings list
+  ansible.builtin.set_fact:
+    sunbeam_status_findings: []
+
+- name: Index the primary inspection output
+  ansible.builtin.set_fact:
+    sunbeam_status_primary_inspect: >-
+      {{ (sunbeam_status_ct_inspect.results | selectattr('item.primary') | map(attribute='stdout') | first)
+         | default('') }}
+
+- name: Read the raw CT configuration files
+  ansible.builtin.slurp:
+    src: "/etc/pve/lxc/{{ item.vmid }}.conf"
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_status_ct_conf
+  failed_when: false
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Decode the raw CT configuration files
+  ansible.builtin.set_fact:
+    sunbeam_status_ct_conf_text: >-
+      {{ dict(sunbeam_nodes | map(attribute='vmid')
+               | zip(sunbeam_status_ct_conf.results | map(attribute='content') | map('b64decode'))) }}
+
+- name: Probe the proxy from inside every CT
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", "--", bash, "-s"]
+    stdin: "{{ lookup('template', 'check-proxy-reachability.sh.j2') }}"
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_status_proxy_probe
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Index the proxy probe results by vmid
+  ansible.builtin.set_fact:
+    sunbeam_status_proxy_by_vmid: >-
+      {{ (sunbeam_status_proxy_by_vmid | default({}))
+         | combine({ (item.item.vmid | string): item }) }}
+  loop: "{{ sunbeam_status_proxy_probe.results }}"
+  loop_control:
+    label: "{{ item.item.vmid }}"
+
+- name: Index the in-CT inspection text by vmid
+  ansible.builtin.set_fact:
+    sunbeam_status_inspect_by_vmid: >-
+      {{ (sunbeam_status_inspect_by_vmid | default({}))
+         | combine({ (item.item.vmid | string): (item.stdout | default('')) }) }}
+  loop: "{{ sunbeam_status_ct_inspect.results }}"
+  loop_control:
+    label: "{{ item.item.vmid }}"
+
+- name: Evaluate the proxy state
+  ansible.builtin.set_fact:
+    sunbeam_status_findings: "{{ sunbeam_status_findings + [ entry ] }}"
+  loop: "{{ sunbeam_nodes }}"
+  vars:
+    probe: "{{ sunbeam_status_proxy_by_vmid[item.vmid | string] | default({}) }}"
+    inspect: "{{ sunbeam_status_inspect_by_vmid[item.vmid | string] | default('') }}"
+    env_proxy: "{{ (inspect | regex_findall('(?ms)^###ENV_PROXY\n(.*?)###') | first | default('') | trim) }}"
+    apt_proxy: "{{ (inspect | regex_findall('(?ms)^###PROXY_APT\n(.*?)###') | first | default('') | trim) }}"
+    snapd_proxy: "{{ (inspect | regex_findall('(?ms)^###PROXY_SNAPD\n(.*?)###') | first | default('') | trim) }}"
+    reachable: "{{ 'reachable=yes' in (probe.stdout | default('')) }}"
+    proxy_on: "{{ sunbeam_proxy_enabled | bool }}"
+    entry:
+      level: "{{ 'OK' if (probe.rc | default(-1) | int == 0 and (reachable or not (proxy_on | bool))) else 'RISK' }}"
+      msg: >-
+        proxy {{ item.fqdn }}: enabled={{ proxy_on }} probe={{ (probe.stdout | default('(no output)') | trim) }}
+        env={{ env_proxy | default('none') | replace('\n', ' ') }}
+        apt95={{ apt_proxy }} snapd={{ snapd_proxy | default('none') }}
+
+- name: Read the hold state inside every CT
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", "--", bash, "-s"]
+    stdin: "{{ lookup('template', 'check-snap-holds.sh.j2') }}"
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_status_holds
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Evaluate the hold state
+  ansible.builtin.set_fact:
+    sunbeam_status_findings: "{{ sunbeam_status_findings + [ entry ] }}"
+  loop: "{{ sunbeam_status_holds.results }}"
+  vars:
+    out: "{{ item.stdout | default('') }}"
+    global_hold: "{{ (out | regex_findall('(?m)^GLOBAL_HOLD=(.*)$') | first | default('-')) }}"
+    held: "{{ out | regex_findall('(?m)^SNAP (\\S+) installed=\\S+ hold=(?!-$)\\S+$') | flatten }}"
+    installed: "{{ out | regex_findall('(?m)^SNAP (\\S+) installed=yes(?=\\s|$)') | flatten }}"
+    unheld_pinned: "{{ sunbeam_held_snaps | select('in', installed) | reject('in', held) | list }}"
+    entry:
+      level: >-
+        {{ 'OK' if ('READABLE=yes' in out
+                    and (global_hold != '-' or not (sunbeam_snap_hold_forever | bool))
+                    and (('APT_SNAPPD_HOLD=held' in out) or not (sunbeam_hold_snapd_deb | bool))
+                    and (unheld_pinned | length == 0)) else 'RISK' }}
+      msg: >-
+        holds {{ item.item.fqdn }}: global={{ global_hold }} snapd-deb={{
+        ('APT_SNAPPD_HOLD=held' in out) | ternary('held', 'NOT held') }}
+        pinned-snaps-held={{ held | intersect(sunbeam_held_snaps) | join(',') | default('none', true) }}
+        pinned-snaps-unheld={{ unheld_pinned | join(',') | default('none', true) }}
+
+- name: Evaluate the thin pool fill level against the gate
+  ansible.builtin.set_fact:
+    sunbeam_status_findings: "{{ sunbeam_status_findings + [ entry ] }}"
+  vars:
+    fields: "{{ sunbeam_status_thinpool.stdout | default('') | trim | split() }}"
+    percent: "{{ fields[3] | float }}"
+    over_gate: "{{ (percent | float) >= (sunbeam_thinpool_max_data_percent | float) }}"
+    entry:
+      level: "{{ 'OK' if (sunbeam_status_thinpool.rc | default(-1) | int == 0 and not (over_gate | bool)) else 'RISK' }}"
+      msg: >-
+        thin pool {{ sunbeam_pve_storage }}:
+        {{ 'could not be read, fill level unknown'
+           if (sunbeam_status_thinpool.rc | default(-1) | int != 0)
+           else 'data_percent=' ~ percent ~ ' (gate ' ~ sunbeam_thinpool_max_data_percent ~ ')'
+                ~ (' AT OR OVER GATE' if (over_gate | bool) else ' below gate') }}
+
+- name: Check the external network for address conflicts
+  ansible.builtin.include_tasks: _external_ip_conflict_check.yml
+  vars:
+    sunbeam_external_check_report_only: true
+
+- name: Record the external network check
+  ansible.builtin.set_fact:
+    sunbeam_status_findings: "{{ sunbeam_status_findings + [ entry ] }}"
+  loop: "{{ sunbeam_external_ip_check.stdout_lines | default([]) }}"
+  loop_control:
+    label: "{{ 'RISK' if item is search('^RISK ') else 'OK' }}"
+  vars:
+    entry:
+      level: "{{ 'RISK' if item is search('^RISK ') else 'OK' }}"
+      msg: "{{ item }}"
+
+- name: Read the OSD alias udev rule
+  ansible.builtin.stat:
+    path: "{{ sunbeam_osd_udev_rules_path }}"
+  register: sunbeam_status_udev_rule
+
+- name: Record the udev rule presence
+  ansible.builtin.set_fact:
+    sunbeam_status_findings: "{{ sunbeam_status_findings + [ entry ] }}"
+  vars:
+    entry:
+      level: "{{ 'OK' if sunbeam_status_udev_rule.stat.exists else 'RISK' }}"
+      msg: >-
+        {{ sunbeam_osd_udev_rules_path }}:
+        {{ 'present (by-id aliases survive a host reboot)' if sunbeam_status_udev_rule.stat.exists
+           else 'MISSING - any /dev/disk/by-id/pve-ceph-osd-* link you see now was made by hand and
+                 disappears on the next host reboot, taking the CT devN reference with it' }}
+
+- name: Read the device links udev maintains for each OSD thin LV
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_udevadm_bin }}", info, --query=property, "--name={{ item.osd_pve_lv }}", --property=DEVLINKS]
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_status_devlinks
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.osd_by_id }}"
+
+- name: Record the per-OSD alias ownership
+  ansible.builtin.set_fact:
+    sunbeam_status_findings: "{{ sunbeam_status_findings + [ entry ] }}"
+  loop: "{{ sunbeam_status_devlinks.results }}"
+  loop_control:
+    label: "{{ item.item.osd_by_id }}"
+  vars:
+    entry:
+      level: "{{ 'OK' if (item.stdout | default('') is search(item.item.osd_by_id | regex_escape)) else 'RISK' }}"
+      msg: >-
+        {{ item.item.osd_by_id }}: {{ 'maintained by udev' if (item.stdout | default('') is search(item.item.osd_by_id | regex_escape))
+           else 'NOT in DEVLINKS of ' ~ item.item.osd_pve_lv ~ ' (' ~ (item.stdout | default('') | trim | default('(none)', true)) ~ ')' }}
+
+- name: Read the per-OSD backing store from the primary
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ sunbeam_primary_node.vmid }}", "--", "{{ sunbeam_microceph_ceph_bin }}", osd, metadata, --format, json]
+  register: sunbeam_status_osd_metadata
+  changed_when: false
+  failed_when: false
+
+- name: Record the OSD backing store
+  ansible.builtin.set_fact:
+    sunbeam_status_findings: "{{ sunbeam_status_findings + [ entry ] }}"
+  loop: "{{ (sunbeam_status_osd_metadata.stdout | default('[]') | from_json) if (sunbeam_status_osd_metadata.rc | default(-1) | int == 0) else [] }}"
+  loop_control:
+    label: "osd.{{ item.id }}"
+  vars:
+    entry:
+      level: "{{ 'OK' if (item.bluestore_bdev_access_mode | default('?') == 'blk'
+                        and item.bluestore_bdev_support_discard | default('?') == '1') else 'RISK' }}"
+      msg: >-
+        osd.{{ item.id }}: access_mode={{ item.bluestore_bdev_access_mode | default('?') }}
+        support_discard={{ item.bluestore_bdev_support_discard | default('?') }}
+        device_class={{ item.default_device_class | default('?') }}{{
+        '  <- file-backed OSD: no discard/TRIM pass-through'
+        if item.bluestore_bdev_access_mode | default('') in ['file', 'filestore'] else
+        ('' if item.bluestore_bdev_support_discard | default('') == '1'
+         else '  <- TRIM pass-through is off') }}
+
+- name: Evaluate the Ceph health and the baseline fingerprint
+  ansible.builtin.set_fact:
+    sunbeam_status_findings: "{{ sunbeam_status_findings + [ entry ] }}"
+  when: sunbeam_status_primary_inspect | default('') | length > 0
+  vars:
+    ceph_out: "{{ sunbeam_status_primary_inspect | regex_findall('(?ms)^###CEPH\n(.*?)###CEPH_FSID') | first | default('') }}"
+    warnings: "{{ (ceph_out | regex_findall('(?m)health: HEALTH_WARN\\n((?:^[ \\t]{5,}\\S.*$\\n?)+)')
+                   | join('')).split('\\n') | map('trim') | select | list }}"
+    untolerated: "{{ (warnings | reject('search', sunbeam_ceph_tolerated_warnings | join('|')) | list)
+                     if (sunbeam_ceph_tolerated_warnings | length > 0) else warnings }}"
+    health: "{{ ceph_out | regex_findall('health: (HEALTH_[A-Z]+)') | join('') or 'UNKNOWN' }}"
+    fsid: "{{ sunbeam_status_primary_inspect | regex_findall('(?ms)^###CEPH_FSID\n(.*?)###') | first | default('') | trim }}"
+    entry:
+      level: >-
+        {{ 'OK' if (health in ['HEALTH_OK', 'HEALTH_WARN'] and untolerated | length == 0
+                    and (sunbeam_baseline_match | default(true) | bool)) else 'RISK' }}
+      msg: >-
+        ceph: health={{ health }} untolerated_warnings={{ untolerated | join('; ') | default('none', true) }}
+        fsid={{ fsid | default('(unknown)', true) }}
+        baseline={{ sunbeam_baseline_fingerprint | default('(unset)', true) }}
+        {{ 'MATCH' if (fsid | default('') == sunbeam_baseline_fingerprint) else 'MISMATCH' }}
+
+- name: Index the per-CT readings
+  ansible.builtin.set_fact:
+    sunbeam_status_node_readings: >-
+      {{ (sunbeam_status_node_readings | default([])) + [ reading ] }}
+  loop: "{{ sunbeam_status_ct_inspect.results }}"
+  loop_control:
+    label: "{{ item.item.fqdn }}"
+  vars:
+    reading:
+      fqdn: "{{ item.item.fqdn }}"
+      rc: "{{ item.rc | default(-1) }}"
+      cluster: "{{ (item.stdout | default('') | regex_findall('(?ms)^###CLUSTER_LIST\\n(.*?)###JUJU_CONTROLLERS') | first | default('') | trim) }}"
+      kvm_tun: "{{ (item.stdout | default('') | regex_findall('(?ms)^###KVM_TUN\\n(.*?)###ROOTFS') | first | default('') | trim) | split('\\n') }}"
+      rootfs: "{{ (item.stdout | default('') | regex_findall('(?ms)^###ROOTFS\\n(.*?)###END') | first | default('') | trim) }}"
+      conf: "{{ sunbeam_status_ct_conf_text[item.item.vmid] | default('') }}"
+
+- name: Report whether the cluster list is readable on each node
+  ansible.builtin.set_fact:
+    sunbeam_status_findings: "{{ sunbeam_status_findings + [ entry ] }}"
+  loop: "{{ sunbeam_status_node_readings }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
+  vars:
+    cluster: "{{ item.cluster }}"
+    readable: "{{ cluster | length > 0 and 'Failed to login' not in cluster
+                  and 'Traceback' not in cluster and 'Error:' not in cluster }}"
+    entry:
+      level: "{{ 'OK' if (item.rc | int == 0 and (readable | bool)) else 'RISK' }}"
+      msg: >-
+        cluster list {{ item.fqdn }}:
+        {{ 'readable' if (item.rc | int == 0 and (readable | bool))
+           else 'UNREADABLE (' ~ (cluster | default('(no output)', true) | replace('\n', ' '))
+                 ~ (', the CT itself could not be entered (rc=' ~ item.rc ~ ')' if item.rc | int != 0 else '') ~ ')' }}
+
+- name: Report the passthrough device state on each node
+  ansible.builtin.set_fact:
+    sunbeam_status_findings: "{{ sunbeam_status_findings + [ entry ] }}"
+  loop: "{{ sunbeam_status_node_readings }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
+  when: item.kvm_tun | length > 0
+  vars:
+    bad: "{{ item.kvm_tun | reject('search', '=(char|absent)$') | list }}"
+    entry:
+      level: "{{ 'OK' if (bad | length == 0) else 'RISK' }}"
+      msg: "passthrough devices {{ item.fqdn }}: {{ item.kvm_tun | join(' ') }}"
+
+- name: Report the root filesystem fill level on each node
+  ansible.builtin.set_fact:
+    sunbeam_status_findings: "{{ sunbeam_status_findings + [ entry ] }}"
+  loop: "{{ sunbeam_status_node_readings }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
+  when: item.rootfs | default('') | length > 0
+  vars:
+    over: "{{ (item.rootfs | int) >= (sunbeam_ct_rootfs_warn_percent | int) }}"
+    entry:
+      level: "{{ 'RISK' if (over | bool) else 'OK' }}"
+      msg: >-
+        rootfs {{ item.fqdn }}: {{ item.rootfs | default('unknown', true) }}% used{{
+        ' (warn at ' ~ sunbeam_ct_rootfs_warn_percent ~ '%)' if (over | bool) else '' }}
+
+- name: Report whether managed keys landed inside a [section] of the CT configuration
+  ansible.builtin.set_fact:
+    sunbeam_status_findings: "{{ sunbeam_status_findings + [ entry ] }}"
+  loop: "{{ sunbeam_status_node_readings }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
+  when: item.conf | default('') | length > 0
+  vars:
+    lines: "{{ item.conf.split('\n') }}"
+    out: []
+    misplaced: >-
+      {%- set headers = lines | select('match', '^\\[') | list -%}
+      {%- if headers -%}
+      {%-   set boundary = lines.index(headers[0]) -%}
+      {%-   for idx in range(boundary + 1, lines | length) -%}
+      {%-     if lines[idx] | regex_search('^(dev[0-9]+|features|lxc\\.cap\\.drop|lxc\\.mount\\.entry|net[0-9]+|hostname|memory|swap|cores|rootfs|ostype|unprivileged|onboot|startup|tags):') -%}
+      {%-       set _ = out.append(lines[idx]) -%}
+      {%-     endif -%}
+      {%-   endfor -%}
+      {%- endif -%}
+      {{ out }}
+    entry:
+      level: "{{ 'RISK' if (misplaced | length > 0) else 'OK' }}"
+      msg: >-
+        ct conf {{ item.fqdn }}: {{ 'managed keys are inside an INI section, where PVE ignores
+           them: ' ~ (misplaced | join(', ')) if (misplaced | length > 0)
+           else 'no managed key inside a [section]' }}
+
+- name: Check the openrc state on the primary
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ sunbeam_primary_node.vmid }}", "--", bash, "-s"]
+    stdin: "{{ lookup('template', 'check-deployment-configured.sh.j2') }}"
+  register: sunbeam_status_openrc
+  changed_when: false
+  failed_when: false
+
+- name: Record the openrc state
+  ansible.builtin.set_fact:
+    sunbeam_status_findings: "{{ sunbeam_status_findings + [ entry ] }}"
+  vars:
+    out: "{{ sunbeam_status_openrc.stdout | default('') }}"
+    state: "{{ (out | regex_findall('(?m)^configured=(\\S+)') | first | default('unknown')) }}"
+    missing: "{{ (out | regex_findall('(?m)^configured=partial missing=(.*)$') | first | default('')) }}"
+    entry:
+      level: "{{ 'OK' if state in ['yes', 'no'] else 'RISK' }}"
+      msg: >-
+        openrc {{ sunbeam_admin_openrc_path }}: {{ state }}{{ ' (missing ' ~ missing ~ ')'
+           if state == 'partial' else '' }}

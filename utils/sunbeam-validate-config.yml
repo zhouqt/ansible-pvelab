@@ -110,6 +110,85 @@
       loop_control:
         label: "{{ item.fqdn }}"
       when: item.role is search('compute')
+
+    - name: Assert the proxy URL is well-formed when a proxy is configured
+      ansible.builtin.assert:
+        that:
+          - >-
+            sunbeam_proxy_url is regex('^https?://[^/\\s]+(?:/.*)?$')
+        fail_msg: >-
+          sunbeam_proxy_enabled=true but sunbeam_proxy_url
+          ('{{ sunbeam_proxy_url }}') is not a usable proxy URL: it must have a
+          scheme (http:// or https://) and a host[:port], because node-prepare,
+          apt and snapd will point at it.
+      when: sunbeam_proxy_enabled | bool
+
+    - name: Assert a proxy-disabled environment still carries a well-formed URL
+      ansible.builtin.assert:
+        that:
+          - >-
+            sunbeam_proxy_url == '' or sunbeam_proxy_url is string
+            or sunbeam_proxy_url is regex('^[A-Za-z0-9._:\\-/]+$')
+        fail_msg: >-
+          sunbeam_proxy_enabled=false, so sunbeam_proxy_url is unused; remove or
+          neutralise it if you intend to leave it empty.
+      when: not (sunbeam_proxy_enabled | bool)
+
+    - name: Index the octets of every node's published addresses
+      ansible.builtin.set_fact:
+        sunbeam_validated_node_octets: >-
+          {{ (sunbeam_validated_node_octets | default([])) + [ entry ] }}
+      loop: "{{ sunbeam_nodes }}"
+      loop_control:
+        label: "{{ item.fqdn }}"
+      vars:
+        fp: "{{ sunbeam_external_network.floating_range.split('-')[0].split('.') }}"
+        fe: "{{ sunbeam_external_network.floating_range.split('-')[1].split('.') }}"
+        entry:
+          fqdn: "{{ item.fqdn }}"
+          pub: "{{ item.pub_ip.split('.') }}"
+          int: "{{ item.internal_ip.split('.') }}"
+          pub_conflict: >-
+            {{ item.pub_ip.split('.')[0:3] == fp[0:3]
+               and item.pub_ip.split('.')[3] | int >= fp[3] | int
+               and item.pub_ip.split('.')[3] | int <= fe[3] | int }}
+          int_conflict: >-
+            {{ item.internal_ip.split('.')[0:3] == fp[0:3]
+               and item.internal_ip.split('.')[3] | int >= fp[3] | int
+               and item.internal_ip.split('.')[3] | int <= fe[3] | int }}
+
+    - name: Collect the floating-range collisions
+      ansible.builtin.set_fact:
+        sunbeam_floating_conflicts: >-
+          {{ sunbeam_validated_node_octets
+             | selectattr('pub_conflict')
+             | map(attribute='fqdn') | list
+             + (sunbeam_validated_node_octets
+                | selectattr('int_conflict')
+                | map(attribute='fqdn') | list) }}
+
+    - name: Assert no node address falls inside the floating IP range
+      ansible.builtin.assert:
+        that:
+          - sunbeam_floating_conflicts | unique | length == 0
+        fail_msg: >-
+          These nodes publish an address inside the floating IP range
+          {{ sunbeam_external_network.floating_range }}:
+          {{ sunbeam_floating_conflicts | unique | join(', ') }}.
+          A floating IP would collide with a live node interface on the same L2.
+
+    - name: Assert the baseline fingerprint is empty or a Ceph fsid
+      ansible.builtin.assert:
+        that:
+          - >-
+            sunbeam_baseline_fingerprint == ''
+            or sunbeam_baseline_fingerprint is regex('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+        fail_msg: >-
+          sunbeam_baseline_fingerprint ('{{ sunbeam_baseline_fingerprint }}')
+          must be empty (baseline checks off) or a Ceph fsid - the value is the
+          immutable `ceph fsid` of the environment the branch was tested against,
+          and a typo here quietly disables baseline enforcement forever.
+
     - name: Derived node inventory
       ansible.builtin.debug:
         msg:
