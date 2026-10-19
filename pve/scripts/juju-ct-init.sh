@@ -16,5 +16,7 @@ done
 chown -R ubuntu:ubuntu /home/ubuntu/.ssh
 systemctl enable --now ssh >/dev/null 2>&1 || true
 systemctl enable --now snapd snapd.socket >/dev/null 2>&1 || true
-for i in $(seq 1 30); do snap list >/dev/null 2>&1 && break; sleep 2; done
+if command -v snap >/dev/null 2>&1; then
+  for i in $(seq 1 30); do snap list >/dev/null 2>&1 && break; sleep 2; done
+fi
 echo "INIT-OK $(hostname) $(hostname -I) snapd=$(snap version 2>/dev/null | grep -w snap | head -1 | awk "{print \$2}")"
