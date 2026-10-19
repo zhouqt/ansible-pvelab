@@ -10,6 +10,62 @@
   loop_control:
     label: "{{ item.fqdn }}"
 
+- name: Extract the Ceph fsid
+  ansible.builtin.set_fact:
+    sunbeam_verify_ceph_fsid: >-
+      {{ sunbeam_verify['CEPH_FSID'] | default('') | trim }}
+
+- name: Decide whether the cluster matches the configured baseline
+  ansible.builtin.set_fact:
+    sunbeam_baseline_configured: "{{ sunbeam_baseline_fingerprint | default('') | length > 0 }}"
+    sunbeam_baseline_match: >-
+      {{ sunbeam_baseline_fingerprint | default('') | length == 0
+         or sunbeam_verify_ceph_fsid == sunbeam_baseline_fingerprint }}
+
+- name: Scope the measured exemptions to the baseline environment
+  ansible.builtin.set_fact:
+    sunbeam_ceph_tolerated_warnings_effective: >-
+      {{ sunbeam_ceph_tolerated_warnings if sunbeam_baseline_match | bool else [] }}
+    sunbeam_known_blocked_applications_effective: >-
+      {{ sunbeam_known_blocked_applications if sunbeam_baseline_match | bool else [] }}
+
+- name: Assert the cluster matches the configured baseline
+  ansible.builtin.assert:
+    that:
+      - sunbeam_baseline_match | bool
+    fail_msg: >-
+      Ceph fsid is {{ sunbeam_verify_ceph_fsid | default('(unknown)') }}, but
+      group_vars declares sunbeam_baseline_fingerprint={{ sunbeam_baseline_fingerprint }}.
+      Every other check in this stage describes a *healthy* cluster, and this one is what
+      says it is *the expected* cluster: a different fsid means the Ceph cluster was
+      re-created (or this stage is pointed at another environment), and its OSDs, pools and
+      volumes are not the ones the rest of the playbook reasons about.
+      To verify a freshly built environment and record it as the new baseline, run with
+      -e sunbeam_baseline_enforced=false, check the output, then update the fingerprint in
+      group_vars/sunbeam_pve.yml.
+  when:
+    - sunbeam_baseline_enforced | bool
+    - sunbeam_baseline_configured | bool
+
+- name: Warn when the cluster is not the baseline and enforcement is off
+  ansible.builtin.debug:
+    msg: >-
+      BASELINE MISMATCH: fsid {{ sunbeam_verify_ceph_fsid | default('(unknown)') }} !=
+      {{ sunbeam_baseline_fingerprint }}. Enforcement is off
+      (sunbeam_baseline_enforced=false), so the assertions below still run, but the
+      measured exemptions (sunbeam_ceph_tolerated_warnings and the known blocked
+      applications) are switched off: they describe another environment.
+  when:
+    - not (sunbeam_baseline_match | bool)
+    - not (sunbeam_baseline_enforced | bool)
+
+- name: Report the baseline fingerprint
+  ansible.builtin.debug:
+    msg: >-
+      Baseline fingerprint: fsid={{ sunbeam_verify_ceph_fsid | default('(unknown)') }}
+      expected={{ sunbeam_baseline_fingerprint | default('(unset)') }}
+      match={{ sunbeam_baseline_match | bool }} enforced={{ sunbeam_baseline_enforced | bool }}
+
 - name: Extract the Ceph health state
   ansible.builtin.set_fact:
     sunbeam_verify_ceph_health: >-
@@ -34,8 +90,10 @@
 - name: Compute the Ceph health warnings that are not tolerated
   ansible.builtin.set_fact:
     sunbeam_verify_ceph_warnings_bad: >-
-      {{ sunbeam_verify_ceph_warnings
-         | reject('search', sunbeam_ceph_tolerated_warnings | join('|')) | list }}
+      {{ (sunbeam_verify_ceph_warnings
+          | reject('search', sunbeam_ceph_tolerated_warnings_effective | join('|')) | list)
+         if (sunbeam_ceph_tolerated_warnings_effective | length > 0)
+         else sunbeam_verify_ceph_warnings }}
 
 - name: Assert every Ceph warning is on the tolerated list
   ansible.builtin.assert:
@@ -43,14 +101,16 @@
       - sunbeam_verify_ceph_warnings_bad | length == 0
     fail_msg: >-
       Ceph reported non-exempt warnings: {{ sunbeam_verify_ceph_warnings_bad }}.
-      Exempted: {{ sunbeam_ceph_tolerated_warnings }} (to accept new environmental warnings,
-      add them to sunbeam_ceph_tolerated_warnings in group_vars).
+      Exempted: {{ sunbeam_ceph_tolerated_warnings_effective }} (to accept new environmental
+      warnings, add them to sunbeam_ceph_tolerated_warnings in group_vars{% if not (sunbeam_baseline_match | bool) %}
+      -- but note this cluster is not the baseline environment, where the exemption list
+      was measured, so the exemptions are disabled here and every warning is reported{% endif %}).
 
 - name: Report the Ceph health
   ansible.builtin.debug:
     msg: >-
       Ceph health: {{ sunbeam_verify_ceph_health }}{% if sunbeam_verify_ceph_warnings | length > 0 %}
-      (exempted: {{ sunbeam_verify_ceph_warnings }}){% endif %}
+      (exempted: {{ sunbeam_ceph_tolerated_warnings_effective }}){% endif %}
 
 - name: Parse the Ceph OSD counters
   ansible.builtin.set_fact:
@@ -108,7 +168,7 @@
   ansible.builtin.set_fact:
     sunbeam_verify_machines_bad: >-
       {{ (sunbeam_verify['JUJU_MACHINES'] | from_json).applications | dict2items
-         | rejectattr('key', 'in', sunbeam_known_blocked_applications)
+         | rejectattr('key', 'in', sunbeam_known_blocked_applications_effective)
          | selectattr('value.application-status.current', 'ne', 'active')
          | map(attribute='key') | list }}
 
@@ -118,7 +178,8 @@
       - sunbeam_verify_machines_bad | length == 0
     fail_msg: >-
       Non-active applications in the openstack-machines model: {{ sunbeam_verify_machines_bad }}.
-      Known exemptions: {{ sunbeam_known_blocked_applications }}.
+      Known exemptions: {{ sunbeam_known_blocked_applications_effective }}{% if not (sunbeam_baseline_match | bool) %}
+      (disabled: this cluster is not the baseline environment these were measured on){% endif %}.
 
 - name: Build the machines-model application status map
   ansible.builtin.set_fact:

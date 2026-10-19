@@ -11,6 +11,9 @@ su - "$user" -c 'sunbeam cluster list --format yaml' 2>/dev/null
 echo "### CEPH"
 "$ceph" -s
 
+echo "### CEPH_FSID"
+"$ceph" fsid 2>&1
+
 echo "### CEPH_OSD_TREE"
 "$ceph" osd tree
 
