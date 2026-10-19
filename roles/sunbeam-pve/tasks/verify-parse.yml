@@ -169,7 +169,10 @@
 - name: Assert the metadata data path bypasses the HTTP proxy on every node
   ansible.builtin.assert:
     that:
-      - item.stdout is search('METADATA host=\S+ env=agent bypass=True code=(400|404) ')
+      - item.stdout is search('env=agent code=(400|404) ')
+      - >-
+        not (sunbeam_proxy_enabled | bool)
+        or item.stdout is search('METADATA host=\S+ env=agent proxy=enabled bypass=True code=(400|404) ')
     fail_msg: >-
       {{ item.item.fqdn }}: the neutron-ovn-metadata-agent cannot reach its own
       nova-api-metadata directly -- probe said

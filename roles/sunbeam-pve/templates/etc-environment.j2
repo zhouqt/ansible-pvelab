@@ -1,5 +1,7 @@
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"
+{% if sunbeam_proxy_enabled | bool -%}
 HTTP_PROXY={{ sunbeam_proxy_url }}
 HTTPS_PROXY={{ sunbeam_proxy_url }}
+{% endif -%}
 NO_PROXY={{ sunbeam_proxy_no_proxy_effective }}
 no_proxy={{ sunbeam_proxy_no_proxy_effective }}

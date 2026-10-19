@@ -18,11 +18,13 @@ core:
 {% for node in sunbeam_nodes %}
           {{ node.fqdn }}: {{ sunbeam_manifest_external_nic }}
 {% endfor %}
+{% if sunbeam_proxy_enabled | bool %}
     proxy:
       proxy_required: true
       http_proxy: "{{ sunbeam_proxy_url }}"
       https_proxy: "{{ sunbeam_proxy_url }}"
       no_proxy: "{{ sunbeam_proxy_no_proxy_effective }}"
+{% endif %}
     user:
       run_demo_setup: true
       username: "{{ sunbeam_demo_username }}"

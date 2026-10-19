@@ -66,15 +66,12 @@
   ansible.builtin.set_fact:
     sunbeam_etc_environment_content: "{{ lookup('template', 'etc-environment.j2') | trim }}"
 
-- name: Read the current /etc/environment inside every CT
-  ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, cat, "{{ sunbeam_etc_environment }}"]
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_environment
-  changed_when: false
-  failed_when: false
-  loop_control:
-    label: "{{ item.fqdn }}"
+- name: Render the managed apt proxy configuration
+  ansible.builtin.set_fact:
+    sunbeam_apt_proxy_content: "{{ lookup('template', 'apt-proxy.j2') | trim }}"
+
+- name: Probe the proxy endpoint before writing any proxy configuration
+  ansible.builtin.include_tasks: _proxy_preflight.yml
 
 - name: Stage the managed /etc/environment on the PVE host
   ansible.builtin.copy:
@@ -104,20 +101,6 @@
   loop_control:
     label: "{{ item.item.fqdn }}"
 
-- name: Render the managed apt proxy configuration
-  ansible.builtin.set_fact:
-    sunbeam_apt_proxy_content: "{{ lookup('template', 'apt-proxy.j2') | trim }}"
-
-- name: Read the current apt proxy configuration inside every CT
-  ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, cat, "{{ sunbeam_apt_proxy_file }}"]
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_apt_proxy
-  changed_when: false
-  failed_when: false
-  loop_control:
-    label: "{{ item.fqdn }}"
-
 - name: Stage the apt proxy configuration on the PVE host
   ansible.builtin.copy:
     content: "{{ sunbeam_apt_proxy_content }}\n"
@@ -138,19 +121,21 @@
       - --perms
       - "0644"
   loop: "{{ sunbeam_node_apt_proxy.results }}"
-  when: (item.stdout | default('') | trim) != sunbeam_apt_proxy_content
+  when:
+    - sunbeam_proxy_enabled | bool
+    - (item.stdout | default('') | trim) != sunbeam_apt_proxy_content
   loop_control:
     label: "{{ item.item.fqdn }}"
 
-- name: Read the snap daemon proxy configuration
+- name: Remove the apt proxy drop-in where it exists and the proxy is disabled
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, snap, get, system, proxy]
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_snap_proxy
-  changed_when: false
-  failed_when: false
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.item.vmid }}", --, rm, "-f", "{{ sunbeam_apt_proxy_file }}"]
+  loop: "{{ sunbeam_node_apt_proxy.results }}"
+  when:
+    - not (sunbeam_proxy_enabled | bool)
+    - (item.stdout | default('') | trim | length > 0)
   loop_control:
-    label: "{{ item.fqdn }}"
+    label: "{{ item.item.fqdn }}"
 
 - name: Configure the snap daemon proxy where it is missing
   ansible.builtin.command:
@@ -165,7 +150,21 @@
       - "proxy.http={{ sunbeam_proxy_url }}"
       - "proxy.https={{ sunbeam_proxy_url }}"
   loop: "{{ sunbeam_node_snap_proxy.results }}"
-  when: sunbeam_proxy_url not in (item.stdout | default(''))
+  when:
+    - sunbeam_proxy_enabled | bool
+    - sunbeam_proxy_url not in (item.stdout | default(''))
+    - item.item.reachable | bool
+  loop_control:
+    label: "{{ item.item.fqdn }}"
+
+- name: Remove the snap daemon proxy where it is set and the proxy is disabled
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.item.vmid }}", --, snap, unset, system, proxy.http, proxy.https]
+  loop: "{{ sunbeam_node_snap_proxy.results }}"
+  when:
+    - not (sunbeam_proxy_enabled | bool)
+    - (item.stdout | default('') | trim | length > 0)
+  changed_when: false
   loop_control:
     label: "{{ item.item.fqdn }}"
 

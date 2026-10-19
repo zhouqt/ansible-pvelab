@@ -1,0 +1,27 @@
+#!/bin/bash
+set -u
+
+{% if sunbeam_proxy_enabled | bool %}
+out=$(python3 -c 'import socket, sys
+from urllib.parse import urlparse
+parsed = urlparse(sys.argv[1])
+if not parsed.hostname:
+    print("proxy reachable=no url is missing a host (%s)" % sys.argv[1])
+    raise SystemExit(0)
+host = parsed.hostname
+port = parsed.port or (443 if parsed.scheme == "https" else 80)
+try:
+    socket.create_connection((host, port), 3).close()
+except OSError as exc:
+    print("proxy reachable=no %s:%s (%s)" % (host, port, exc))
+else:
+    print("proxy reachable=yes %s:%s" % (host, port))' "{{ sunbeam_proxy_url }}" 2>&1)
+rc=$?
+if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
+  echo "proxy probe failed rc=$rc out='$out'"
+else
+  echo "$out"
+fi
+{% else %}
+echo "proxy reachable=n/a (sunbeam_proxy_enabled=false, nothing to probe)"
+{% endif %}
