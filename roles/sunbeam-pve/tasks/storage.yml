@@ -138,3 +138,7 @@
       - "LV OSD devices managed by this playbook: {{ sunbeam_ceph_managed_osd_devices }}"
       - "Existing OSDs not managed by this playbook: {{ sunbeam_ceph_unmanaged_osds }}"
       - "OSDs added this run: {{ sunbeam_osd_add.results | default([]) | selectattr('rc', 'defined') | map(attribute='item.fqdn') | list | join(', ') or 'none' }}"
+
+- name: Remove the bootstrap file OSD when explicitly requested
+  ansible.builtin.include_tasks: _ceph_remove_bootstrap_osd.yml
+  when: sunbeam_ceph_remove_bootstrap_osd | bool

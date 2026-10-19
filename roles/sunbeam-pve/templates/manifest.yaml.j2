@@ -34,3 +34,8 @@ core:
       security_group_rules: true
       remote_access_location: remote
       physnet: "{{ sunbeam_external_network.name }}"
+microceph_config:
+{% for n in sunbeam_nodes %}
+  {{ n.fqdn }}:
+    osd_devices: {{ [n.osd_microceph_device] | to_json }}
+{% endfor %}

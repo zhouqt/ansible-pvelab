@@ -1,0 +1,216 @@
+---
+
+- name: Refuse to run outside of an explicit opt-in
+  ansible.builtin.assert:
+    that:
+      - sunbeam_ceph_remove_bootstrap_osd | bool
+    fail_msg: >-
+      _ceph_remove_bootstrap_osd.yml was included without
+      sunbeam_ceph_remove_bootstrap_osd=true: re-run with the switch on,
+      or without the file included.
+
+- name: Read the Ceph status from the primary node
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - "{{ sunbeam_microceph_ceph_bin }}"
+      - -s
+  register: sunbeam_ceph_osd_removal_status
+  changed_when: false
+  failed_when: false
+
+- name: Refuse to remove the bootstrap OSD from an unhealthy cluster
+  ansible.builtin.assert:
+    that:
+      - sunbeam_ceph_osd_removal_status.rc | default(1) | int == 0
+      - >-
+        (sunbeam_ceph_osd_removal_status.stdout | default('')) | length > 0
+      - >-
+        (sunbeam_ceph_osd_removal_status.stdout | default('')
+         | regex_findall('health: (HEALTH_[A-Z_]+)') | first
+         | default('HEALTH_UNKNOWN')) != 'HEALTH_ERR'
+    fail_msg: >-
+      Refusing to remove the bootstrap OSD: `ceph -s` on the primary shows
+      health '{{ (sunbeam_ceph_osd_removal_status.stdout | default(''))
+        | regex_findall('health: (HEALTH_[A-Z_]+)') | first | default('HEALTH_UNKNOWN') }}'
+      (rc={{ sunbeam_ceph_osd_removal_status.rc | default(1) }}).
+      The cluster must not be in HEALTH_ERR before a data-bearing OSD is removed.
+
+- name: Parse the placement-group and OSD counters
+  ansible.builtin.set_fact:
+    sunbeam_ceph_osd_removal_pg_header: >-
+      {{ sunbeam_ceph_osd_removal_status.stdout | default('')
+         | regex_findall('(?m)^\s*pgs:\s*(\d+)\s+([a-z_+\[\]%]+)\s*$') }}
+    sunbeam_ceph_osd_removal_pg_split: >-
+      {{ sunbeam_ceph_osd_removal_status.stdout | default('')
+         | regex_findall('(?m)^\s+\d+\s+([a-z_+\[\]%]+)\s*$') }}
+    sunbeam_ceph_osd_removal_pg_recovery_lines: >-
+      {{ sunbeam_ceph_osd_removal_status.stdout | default('')
+         | regex_findall('(?m)^\s*(?:recovery|recovering|backfill)[: ]') }}
+    sunbeam_ceph_osd_removal_osd_total: >-
+      {{ (sunbeam_ceph_osd_removal_status.stdout | default('')
+          | regex_findall('osd: (\d+) osds') | first | default(['0']))[0] | int }}
+    sunbeam_ceph_osd_removal_osd_up: >-
+      {{ (sunbeam_ceph_osd_removal_status.stdout | default('')
+          | regex_findall('osd: (\d+) osds: (\d+) up') | first | default(['0', '0']))[1] | int }}
+    sunbeam_ceph_osd_removal_osd_in: >-
+      {{ (sunbeam_ceph_osd_removal_status.stdout | default('')
+          | regex_findall('(\d+) in \(') | first | default(['0']))[0] | int }}
+
+- name: Refuse to remove the bootstrap OSD while not every PG is clean
+  ansible.builtin.assert:
+    that:
+      - sunbeam_ceph_osd_removal_pg_header | length >= 1
+      - >-
+        (sunbeam_ceph_osd_removal_pg_header | first | default(['0', 'active+clean']))[1]
+        == 'active+clean'
+      - sunbeam_ceph_osd_removal_pg_split | reject('equalto', 'active+clean') | list | length == 0
+      - sunbeam_ceph_osd_removal_pg_recovery_lines | length == 0
+    fail_msg: >-
+      Refusing to remove the bootstrap OSD: not every PG is active+clean
+      (pgs header: {{ sunbeam_ceph_osd_removal_pg_header | default([]) }}
+      split states: {{ sunbeam_ceph_osd_removal_pg_split | join(', ') or '(none)' }})
+      or a recovery/backfill is in flight
+      ({{ sunbeam_ceph_osd_removal_pg_recovery_lines | join(' | ') or 'none' }}).
+      A healthy cluster owns all PG copies; removing an OSD mid-migration would
+      leave it degraded at best.
+
+- name: Refuse to remove the bootstrap OSD while not every OSD is up and in
+  ansible.builtin.assert:
+    that:
+      - sunbeam_ceph_osd_removal_osd_total > 0
+      - sunbeam_ceph_osd_removal_osd_up == sunbeam_ceph_osd_removal_osd_total
+      - sunbeam_ceph_osd_removal_osd_in == sunbeam_ceph_osd_removal_osd_total
+    fail_msg: >-
+      Refusing to remove the bootstrap OSD: not every OSD is up+in
+      (total={{ sunbeam_ceph_osd_removal_osd_total }}
+      up={{ sunbeam_ceph_osd_removal_osd_up }} in={{ sunbeam_ceph_osd_removal_osd_in }}).
+      The {{ sunbeam_ceph_managed_osd_devices }} thin-LV OSDs this playbook manages
+      must all be up+in first, otherwise the removal would drop the failed copies.
+
+- name: Index the bootstrap OSD targets with their owning node
+  ansible.builtin.set_fact:
+    sunbeam_ceph_bootstrap_targets: >-
+      {%- set out = [] -%}
+      {%- for o in sunbeam_ceph_unmanaged_osds -%}
+      {%-   set owner = sunbeam_nodes | selectattr('hostname', 'equalto', o.location) | first -%}
+      {%-   set _ = out.append(o | combine({'owner_vmid': owner.vmid, 'owner_fqdn': owner.fqdn})) -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Refuse targets whose path is not the file-backed bootstrap layout
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.path is regex('^/var/snap/microceph/common/data/osd/ceph-'
+                           ~ item.osd | string ~ '/osd-backing\\.img$')
+    fail_msg: >-
+      Refusing to remove OSD {{ item.osd }}: its configured path
+      ('{{ item.path }}', location {{ item.location }}) is not the file-backed
+      bootstrap layout /var/snap/microceph/common/data/osd/ceph-{{ item.osd }}/osd-backing.img.
+      Only entries whose path proves they are the 4 GiB file OSD (never a thin-LV OSD)
+      may be removed; fix sunbeam_ceph_unmanaged_osds or drop this target.
+  loop: "{{ sunbeam_ceph_unmanaged_osds }}"
+  loop_control:
+    label: "osd.{{ item.osd }}"
+
+- name: Read the current MicroCeph disk inventory (to skip already-removed targets)
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ item.owner_vmid }}"
+      - --
+      - "{{ sunbeam_microceph_bin }}"
+      - disk
+      - list
+      - --json
+  loop: "{{ sunbeam_ceph_bootstrap_targets }}"
+  register: sunbeam_ceph_osd_removal_disklist
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.owner_fqdn }}"
+
+- name: Decide which targets still exist
+  ansible.builtin.set_fact:
+    sunbeam_ceph_osd_remove_now: >-
+      {%- set out = [] -%}
+      {%- set present = (sunbeam_ceph_osd_removal_disklist.results | map(attribute='stdout') | join(' ')) -%}
+      {%- for t in sunbeam_ceph_bootstrap_targets -%}
+      {%-   if present is regex('"osd":' ~ t.osd ~ '[^0-9]') -%}
+      {%-     set _ = out.append(t) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Show which targets will be removed this run
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.owner_fqdn }}: bootstrap OSD {{ item.osd }} at {{ item.path }}
+      -> {{ 'will be removed' if (item.osd in (sunbeam_ceph_osd_remove_now | map(attribute='osd') | list)) else 'already absent, skipped' }}
+  loop: "{{ sunbeam_ceph_bootstrap_targets }}"
+  loop_control:
+    label: "osd.{{ item.osd }}"
+
+- name: Remove each bootstrap file OSD present in the cluster
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ item.owner_vmid }}"
+      - --
+      - "{{ sunbeam_microceph_bin }}"
+      - disk
+      - remove
+      - "{{ item.osd }}"
+      - --timeout
+      - "1800"
+  loop: "{{ sunbeam_ceph_osd_remove_now }}"
+  register: sunbeam_ceph_osd_remove_result
+  loop_control:
+    label: "osd.{{ item.osd }} @ {{ item.owner_fqdn }}"
+
+- name: Re-read the MicroCeph disk inventory after the removal
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ item.owner_vmid }}"
+      - --
+      - "{{ sunbeam_microceph_bin }}"
+      - disk
+      - list
+      - --json
+  loop: "{{ sunbeam_ceph_bootstrap_targets }}"
+  register: sunbeam_ceph_osd_removal_after
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.owner_fqdn }}"
+
+- name: Assert the bootstrap OSDs no longer appear in the disk inventory
+  ansible.builtin.assert:
+    that:
+      - >-
+        not ((sunbeam_ceph_osd_removal_after.results | map(attribute='stdout') | join(' '))
+             is regex('"osd":' ~ item.item.osd ~ '[^0-9]'))
+    fail_msg: >-
+      OSD {{ item.item.osd }} still appears in `microceph disk list` after the removal
+      on {{ item.item.owner_fqdn }}. Check the removal output and the MicroCeph logs.
+  loop: "{{ sunbeam_ceph_bootstrap_targets }}"
+  loop_control:
+    label: "osd.{{ item.item.osd }}"
+
+- name: Report the result of the bootstrap OSD removal
+  ansible.builtin.debug:
+    msg: >-
+      {{ (item.osd in (sunbeam_ceph_osd_remove_now | map(attribute='osd') | list))
+         | ternary('REMOVED', 'SKIP') }} bootstrap OSD {{ item.osd }}
+      ({{ item.path }}, owned by {{ item.owner_fqdn }})
+  loop: "{{ sunbeam_ceph_bootstrap_targets }}"
+  loop_control:
+    label: "osd.{{ item.osd }}"
