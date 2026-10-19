@@ -4,7 +4,24 @@ set -u
 user={{ sunbeam_node_user }}
 hostname={{ sunbeam_primary_node.hostname }}
 
-if su - "$user" -c 'sunbeam cluster list --format yaml' 2>/dev/null | grep -q "$hostname"; then
+out=$(su - "$user" -c 'sunbeam cluster list --format yaml' 2>&1)
+rc=$?
+
+if [ "$rc" -ne 0 ]; then
+    case "$out" in
+        *"Failed to login to Juju Controller"*|*"No cluster"*|*"not bootstrapped"*|*"does not exist"*|*"not found"*)
+            echo "bootstrapped=no"
+            ;;
+        *)
+            echo "cluster-state=error rc=$rc (unrecognized error; NOT treated as 'not bootstrapped')"
+            printf '%s\n' "$out" | tail -n 5
+            exit 3
+            ;;
+    esac
+elif [ -z "$out" ]; then
+    echo "cluster-state=error empty output (rc=0); NOT treated as 'not bootstrapped'"
+    exit 3
+elif printf '%s' "$out" | grep -qw "$hostname"; then
     echo "bootstrapped=yes"
 else
     echo "bootstrapped=no"

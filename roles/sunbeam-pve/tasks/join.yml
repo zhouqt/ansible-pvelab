@@ -25,6 +25,17 @@
   register: sunbeam_cluster_members
   changed_when: false
 
+- name: Require a readable cluster membership snapshot
+  ansible.builtin.assert:
+    that:
+      - sunbeam_cluster_members.rc == 0
+      - "'membership=ok' in sunbeam_cluster_members.stdout"
+    fail_msg: >-
+      `sunbeam cluster list` on {{ sunbeam_primary_node.fqdn }} could not be read, so the
+      membership of every node is unknown. Proceeding would mint a join token for nodes
+      that are already members and try to re-join them:
+      {{ sunbeam_cluster_members.stdout | default('') | trim }}
+
 - name: Report which nodes still need to join
   ansible.builtin.debug:
     msg: "{{ sunbeam_cluster_members.stdout_lines }}"
@@ -77,8 +88,13 @@
       - --
       - rm
       - -f
-      - "{{ sunbeam_join_token_path }}"
+      - "{{ sunbeam_join_token_primary_path }}"
+  loop: "{{ sunbeam_worker_nodes }}"
+  vars:
+    vmid: "{{ item.vmid }}"
   changed_when: false
+  loop_control:
+    label: "{{ item.fqdn }}"
 
 - name: Generate a join token on the primary for every pending node
   ansible.builtin.command:
@@ -91,8 +107,10 @@
       - -
       - "{{ sunbeam_node_user }}"
       - -c
-      - "sunbeam cluster add {{ item.fqdn }} --output {{ sunbeam_join_token_path }}"
+      - "sunbeam cluster add {{ item.fqdn }} --output {{ sunbeam_join_token_primary_path }}"
   loop: "{{ sunbeam_worker_nodes }}"
+  vars:
+    vmid: "{{ item.vmid }}"
   when: "'member ' ~ item.fqdn ~ '=yes' not in sunbeam_cluster_members.stdout"
   register: sunbeam_join_token_add
   loop_control:
@@ -104,9 +122,11 @@
       - "{{ sunbeam_pct_bin }}"
       - pull
       - "{{ sunbeam_primary_node.vmid }}"
-      - "{{ sunbeam_join_token_path }}"
+      - "{{ sunbeam_join_token_primary_path }}"
       - "{{ sunbeam_staging_dir }}/{{ item.item.vmid }}-join-token.asc"
   loop: "{{ sunbeam_join_token_add.results }}"
+  vars:
+    vmid: "{{ item.item.vmid }}"
   when: item.rc is defined and item.rc == 0
   changed_when: false
   loop_control:
@@ -132,9 +152,38 @@
       - --
       - rm
       - -f
-      - "{{ sunbeam_join_token_path }}"
-  when: sunbeam_join_token_add.results | default([]) | selectattr('rc', 'defined') | list | length > 0
+      - "{{ sunbeam_join_token_primary_path }}"
+  loop: "{{ sunbeam_join_token_add.results }}"
+  vars:
+    vmid: "{{ item.item.vmid }}"
+  when: item.rc is defined and item.rc == 0
   changed_when: false
+  loop_control:
+    label: "{{ item.item.fqdn }}"
+
+- name: Assert every pending node has a staged join token before joining any of them
+  ansible.builtin.stat:
+    path: "{{ sunbeam_staging_dir }}/{{ item.item.vmid }}-join-token.asc"
+  loop: "{{ sunbeam_join_token_add.results }}"
+  when: item.rc is defined and item.rc == 0
+  register: sunbeam_join_token_staged
+  loop_control:
+    label: "{{ item.item.fqdn }}"
+
+- name: Refuse to join with an incomplete set of tokens
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.size | default(0) > 0
+    fail_msg: >-
+      The join token for {{ item.item.fqdn }} could not be pulled from
+      {{ sunbeam_primary_node.fqdn }} ({{ sunbeam_staging_dir }}/{{ item.item.vmid }}-join-token.asc
+      is {{ 'missing' if not item.stat.exists else 'empty' }}). Stopping before any node is
+      joined rather than half-joining the cluster; the staged tokens are left in place so
+      the run can simply be repeated.
+  loop: "{{ sunbeam_join_token_staged.results }}"
+  loop_control:
+    label: "{{ item.item.fqdn }}"
 
 - name: Push each join token into its worker CT
   ansible.builtin.command:
@@ -190,13 +239,13 @@
   loop_control:
     label: "{{ item.item.item.fqdn }}"
 
-- name: Remove the pulled join tokens from the PVE staging area
+- name: Remove the pulled join tokens of the nodes that joined successfully
   ansible.builtin.file:
-    path: "{{ sunbeam_staging_dir }}/{{ item.item.vmid }}-join-token.asc"
+    path: "{{ sunbeam_staging_dir }}/{{ item.item.item.vmid }}-join-token.asc"
     state: absent
-  loop: "{{ sunbeam_join_token_add.results | default([]) | selectattr('rc', 'defined') | list }}"
+  loop: "{{ sunbeam_join_run.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list }}"
   loop_control:
-    label: "{{ item.item.fqdn }}"
+    label: "{{ item.item.item.fqdn }}"
   changed_when: false
 
 - name: Re-read the cluster membership from the primary
@@ -211,6 +260,17 @@
     stdin: "{{ lookup('template', 'check-cluster-members.sh.j2') }}"
   register: sunbeam_cluster_members_after
   changed_when: false
+  failed_when: false
+
+- name: Require a readable membership snapshot after joining
+  ansible.builtin.assert:
+    that:
+      - sunbeam_cluster_members_after.rc == 0
+      - "'membership=ok' in sunbeam_cluster_members_after.stdout"
+    fail_msg: >-
+      The membership could not be re-read from {{ sunbeam_primary_node.fqdn }} after the
+      join, so the result is unknown:
+      {{ sunbeam_cluster_members_after.stdout | default('') | trim }}
 
 - name: Assert every planned node is now a cluster member
   ansible.builtin.assert:

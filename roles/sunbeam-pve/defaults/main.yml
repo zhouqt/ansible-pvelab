@@ -14,6 +14,8 @@ sunbeam_valid_stages:
   - vm-volume-test
 sunbeam_stage: status
 
+sunbeam_readonly_stages: [status, verify]
+
 sunbeam_staging_dir: /root/.ansible/sunbeam-staging
 
 sunbeam_confirm_pve_create: false
@@ -22,6 +24,22 @@ sunbeam_confirm_cluster_join: false
 sunbeam_confirm_external_changes: false
 sunbeam_confirm_ceph_osd: false
 sunbeam_confirm_tls: false
+
+sunbeam_allow_unreadable_cluster_state: false
+sunbeam_repair_openrc: false
+sunbeam_ceph_remove_bootstrap_osd: false
+sunbeam_pve_preflight_only: false
+
+sunbeam_proxy_enabled: false
+sunbeam_proxy_allow_unreachable: false
+
+sunbeam_thinpool_max_data_percent: 90
+sunbeam_ct_rootfs_warn_percent: 85
+
+sunbeam_snap_hold_forever: true
+sunbeam_hold_snapd_deb: true
+
+sunbeam_baseline_enforced: true
 
 sunbeam_vm_volume_test: false
 sunbeam_vm_test_keep: false

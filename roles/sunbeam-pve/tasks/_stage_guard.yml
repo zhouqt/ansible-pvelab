@@ -28,6 +28,9 @@
     owner: root
     group: root
     mode: "0700"
+  when: >-
+    sunbeam_stage not in sunbeam_readonly_stages
+    and not (sunbeam_pve_preflight_only | bool)
 
 - name: Derive per-node helper facts
   ansible.builtin.set_fact:

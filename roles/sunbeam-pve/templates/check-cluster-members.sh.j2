@@ -2,10 +2,22 @@
 set -u
 
 user={{ sunbeam_node_user }}
-out=$(su - "$user" -c 'sunbeam cluster list --format yaml' 2>/dev/null) || out=""
+out=$(su - "$user" -c 'sunbeam cluster list --format yaml' 2>&1)
+rc=$?
+
+if [ "$rc" -ne 0 ]; then
+    echo "membership=error rc=$rc (cluster list failed; membership is UNKNOWN)"
+    printf '%s\n' "$out" | tail -n 5
+    exit 3
+fi
+if [ -z "$out" ]; then
+    echo "membership=error empty output; membership is UNKNOWN"
+    exit 3
+fi
+echo "membership=ok"
 
 {% for node in sunbeam_nodes %}
-if printf '%s' "$out" | grep -q '{{ node.hostname }}'; then
+if printf '%s' "$out" | grep -qw '{{ node.hostname }}'; then
     echo "member {{ node.fqdn }}=yes"
 else
     echo "member {{ node.fqdn }}=no"

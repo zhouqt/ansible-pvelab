@@ -26,19 +26,39 @@
   changed_when: false
   failed_when: false
 
+- name: Derive the bootstrap decision from the cluster state probe
+  ansible.builtin.set_fact:
+    sunbeam_cluster_is_bootstrapped: >-
+      {{ sunbeam_cluster_state.stdout | default('') is search('bootstrapped=yes') }}
+
+- name: Refuse to continue when the cluster state could not be determined
+  ansible.builtin.assert:
+    that:
+      - sunbeam_cluster_state.rc == 0
+      - sunbeam_cluster_state.stdout | default('') is search('(?m)^bootstrapped=(yes|no)$')
+    fail_msg: >-
+      `sunbeam cluster list` on {{ sunbeam_primary_node.fqdn }} did not return a usable
+      answer, so this run cannot tell an un-bootstrapped control plane from an
+      unreachable one:
+      {{ sunbeam_cluster_state.stdout | default('') | trim }}
+      Re-run once the node answers `su - {{ sunbeam_node_user }} -c 'sunbeam cluster list'`
+      by hand. If you are certain this is a cold cluster whose error message is not on
+      the probe's whitelist, pass -e sunbeam_allow_unreadable_cluster_state=true.
+    ignore_errors: "{{ sunbeam_allow_unreadable_cluster_state | bool }}"
+
 - name: Note that bootstrap will be skipped
   ansible.builtin.debug:
     msg: >-
       The control plane already exists ({{ sunbeam_cluster_state.stdout | trim }}); this run only
       validates the manifest and juju controller and will not bootstrap again.
-  when: "'bootstrapped=yes' in sunbeam_cluster_state.stdout"
+  when: sunbeam_cluster_is_bootstrapped | bool
 
 - name: Render the Sunbeam deployment manifest
   ansible.builtin.template:
     src: manifest.yaml.j2
     dest: "{{ sunbeam_staging_dir }}/manifest.yaml"
     mode: "0600"
-  when: "'bootstrapped=no' in sunbeam_cluster_state.stdout"
+  when: "not (sunbeam_cluster_is_bootstrapped | bool)"
 
 - name: Read the manifest currently stored in the primary CT
   ansible.builtin.command:
@@ -68,7 +88,7 @@
       - --perms
       - "0600"
   when:
-    - "'bootstrapped=no' in sunbeam_cluster_state.stdout"
+    - "not (sunbeam_cluster_is_bootstrapped | bool)"
     - >-
       (sunbeam_manifest_current.stdout | default('') | trim)
       != (lookup('template', 'manifest.yaml.j2') | trim)
@@ -83,7 +103,7 @@
       - bash
       - -s
     stdin: "{{ lookup('template', 'run-cluster-bootstrap.sh.j2') }}"
-  when: "'bootstrapped=no' in sunbeam_cluster_state.stdout"
+  when: "not (sunbeam_cluster_is_bootstrapped | bool)"
   register: sunbeam_cluster_bootstrap_run
   async: "{{ sunbeam_bootstrap_timeout }}"
   poll: "{{ sunbeam_poll_interval }}"
@@ -100,13 +120,16 @@
     stdin: "{{ lookup('template', 'check-cluster-state.sh.j2') }}"
   register: sunbeam_cluster_state_after
   changed_when: false
+  failed_when: false
 
 - name: Assert the control plane is bootstrapped
   ansible.builtin.assert:
     that:
+      - sunbeam_cluster_state_after.rc == 0
       - "'bootstrapped=yes' in sunbeam_cluster_state_after.stdout"
     fail_msg: >-
-      The control plane was not initialized successfully. Check
+      The control plane was not initialized successfully (probe said
+      '{{ sunbeam_cluster_state_after.stdout | default('') | trim }}'). Check
       {{ sunbeam_node_log_dir }}/cluster-bootstrap.log inside {{ sunbeam_primary_node.fqdn }}.
 
 - name: Read the Juju controllers known to the primary CT
@@ -145,12 +168,13 @@
       - "sunbeam cluster list --format yaml"
   register: sunbeam_cluster_list
   changed_when: false
+  failed_when: false
 
 - name: Report bootstrap result
   ansible.builtin.debug:
     msg:
       - "control plane: {{ sunbeam_controller_name }} @ {{ sunbeam_primary_node.fqdn }}"
       - "manifest: {{ sunbeam_manifest_path }}"
-      - "bootstrap executed this run: {{ 'no (already exists)' if 'bootstrapped=yes' in sunbeam_cluster_state.stdout else 'yes' }}"
+      - "bootstrap executed this run: {{ 'no (already exists)' if (sunbeam_cluster_is_bootstrapped | bool) else 'yes' }}"
       - "cluster list:"
       - "{{ sunbeam_cluster_list.stdout_lines }}"

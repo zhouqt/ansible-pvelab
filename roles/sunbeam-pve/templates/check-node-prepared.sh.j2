@@ -10,13 +10,25 @@ ok=yes
 id "$user" >/dev/null 2>&1 || ok=no
 [ -f "$home/.ssh/id_ed25519" ] || ok=no
 id -nG "$user" 2>/dev/null | grep -qw snap_daemon || ok=no
-if [ "$require_controller" = yes ]; then
-    su - "$user" -c 'juju controllers --format json' 2>/dev/null \
-        | python3 -c 'import json, sys
+
+if [ "$ok" = yes ] && [ "$require_controller" = yes ]; then
+    juju_out=$(su - "$user" -c 'juju controllers --format json' 2>&1)
+    juju_rc=$?
+    verdict=$(printf '%s' "$juju_out" | python3 -c 'import json, sys
 try:
-    sys.exit(0 if json.load(sys.stdin).get("controllers") else 1)
+    controllers = json.load(sys.stdin).get("controllers")
 except Exception:
-    sys.exit(1)' || ok=no
+    sys.exit(2)
+sys.exit(0 if controllers else 1)' 2>/dev/null) || verdict=$?
+    case "$verdict" in
+        0) ;;
+        1) ok=no ;;
+        *)
+            echo "prepared=error (juju controllers unreadable: rc=$juju_rc)"
+            printf '%s\n' "$juju_out" | tail -n 3
+            exit 2
+            ;;
+    esac
 fi
 
 echo "prepared=$ok"

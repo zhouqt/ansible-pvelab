@@ -38,6 +38,8 @@ sunbeam_nodes_input:
     char_devices:
       - { index: 0, path: "/dev/kmsg", mode: "0644", extra: "deny-write=1" }
       - { index: 1, path: "/dev/loop-control", mode: "0660" }
+      - { index: 33, path: "/dev/net/tun", mode: "0666" }
+      - { index: 34, path: "/dev/kvm", mode: "0660" }
     mounts:
       - "/proc/sys/vm/overcommit_memory proc/sys/vm/overcommit_memory none bind,create=file 0 0"
       - "/proc/sys/kernel/panic proc/sys/kernel/panic none bind,create=file 0 0"
@@ -83,11 +85,17 @@ sunbeam_external_network:
   floating_range: 192.168.12.200-192.168.12.229
   network_type: flat
   segmentation_id: 0
+  allow_shared_l2: true
+sunbeam_external_reserved_ips:
+  - 192.168.12.1
+sunbeam_external_reserved_ranges: []
 sunbeam_k8s_loadbalancer_range: 172.16.1.201-172.16.1.240
 sunbeam_tenant_cidr: 192.168.0.0/24
 sunbeam_tenant_network_name: demo-network
 sunbeam_dns_nameservers: 8.8.8.8
 
+sunbeam_proxy_enabled: true
+sunbeam_proxy_allow_unreachable: false
 sunbeam_proxy_url: http://192.168.11.2:12345
 sunbeam_proxy_no_proxy_tail:
   - 10.1.0.0/16
@@ -121,7 +129,9 @@ sunbeam_node_user: sunbeam
 sunbeam_node_home: /home/sunbeam
 sunbeam_manifest_path: /home/sunbeam/sunbeam-deploy-manifest.yaml
 sunbeam_admin_openrc_path: /home/sunbeam/sunbeam-admin-openrc
-sunbeam_join_token_path: /home/sunbeam/join-token.asc
+sunbeam_join_token_dir: /home/sunbeam
+sunbeam_join_token_path: "{{ sunbeam_join_token_dir }}/join-token.asc"
+sunbeam_join_token_primary_path: "{{ sunbeam_join_token_dir }}/join-token-{{ vmid }}.asc"
 sunbeam_join_wrapper_path: /usr/local/sbin/sunbeam-join-node.sh
 sunbeam_osd_setup_script: /usr/local/sbin/microceph-osd-device-setup
 sunbeam_osd_service_dropin: /etc/systemd/system/snap.microceph.osd.service.d/10-osd-device.conf
@@ -140,6 +150,11 @@ sunbeam_confirm_cluster_join: false
 sunbeam_confirm_external_changes: false
 sunbeam_confirm_ceph_osd: false
 sunbeam_confirm_tls: false
+
+sunbeam_allow_unreadable_cluster_state: false
+sunbeam_repair_openrc: false
+sunbeam_ceph_remove_bootstrap_osd: false
+sunbeam_pve_preflight_only: false
 
 sunbeam_nodes: >-
   {%- set ns = namespace(out=[]) -%}
@@ -175,6 +190,11 @@ sunbeam_nodes: >-
 sunbeam_primary_node: "{{ sunbeam_nodes | selectattr('primary') | list | first }}"
 sunbeam_worker_nodes: "{{ sunbeam_nodes | rejectattr('primary') | list }}"
 sunbeam_ceph_managed_osd_devices: "{{ sunbeam_nodes | length }}"
+sunbeam_ceph_osd_devices: "{{ sunbeam_nodes | map(attribute='osd_microceph_device') | list }}"
+
+sunbeam_compute_nodes: "{{ sunbeam_nodes | selectattr('role', 'search', 'compute') | list }}"
+
+sunbeam_loop_nodes: "{{ sunbeam_nodes | selectattr('loop_devices') | list }}"
 
 sunbeam_host_expected_bridges: "{{ sunbeam_pve_bridges.values() | list }}"
 sunbeam_host_expected_vnets: "{{ sunbeam_pve_bridges.values() | list }}"
@@ -182,6 +202,8 @@ sunbeam_host_expected_subnets:
   - "{{ sunbeam_management_cidr }}"
   - "{{ sunbeam_internal_cidr }}"
   - "{{ sunbeam_external_network.cidr }}"
+sunbeam_host_expected_subnet_ids: >-
+  {{ sunbeam_host_expected_subnets | map('regex_replace', '/', '-') | list }}
 sunbeam_manifest_external_nic: "{{ sunbeam_interface_names.external }}"
 sunbeam_vm_test_network: "{{ sunbeam_tenant_network_name }}"
 
@@ -201,7 +223,9 @@ sunbeam_tls_endpoint_apps:
 
 sunbeam_ceph_unmanaged_osds:
   - { osd: 1, location: sunbeam-01, path: /var/snap/microceph/common/data/osd/ceph-1/osd-backing.img }
-sunbeam_ceph_expected_osds: "{{ (sunbeam_ceph_managed_osd_devices | int) + (sunbeam_ceph_unmanaged_osds | length) }}"
+sunbeam_ceph_expected_osds: >-
+  {{ (sunbeam_ceph_managed_osd_devices | int)
+     + (0 if (sunbeam_ceph_remove_bootstrap_osd | bool) else (sunbeam_ceph_unmanaged_osds | length)) }}
 sunbeam_ceph_expected_pgs: 193
 sunbeam_ceph_expected_pools: 7
 sunbeam_ceph_pool_size: 3
@@ -210,7 +234,24 @@ sunbeam_health_require_all_active: false
 sunbeam_known_blocked_applications: [sunbeam-machine]
 sunbeam_ceph_tolerated_warnings:
   - "is low on available space"
+  - "experiencing slow operations in BlueStore"
 sunbeam_pve_module_release: 7.0.2-6-pve
+
+sunbeam_baseline_fingerprint: "84753f2d-7b95-4e9b-8047-e1fd516e1c62"
+sunbeam_baseline_enforced: true
+
+sunbeam_thinpool_max_data_percent: 90
+sunbeam_ct_rootfs_warn_percent: 85
+sunbeam_snap_hold_forever: true
+sunbeam_hold_snapd_deb: true
+sunbeam_held_snaps:
+  - openstack
+  - microceph
+  - k8s
+  - openstack-hypervisor
+  - cinder-volume
+  - epa-orchestrator
+  - snapd
 
 sunbeam_vm_volume_test: false
 sunbeam_vm_test_name: sunbeam-ansible-smoke
