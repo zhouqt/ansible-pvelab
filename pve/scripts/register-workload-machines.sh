@@ -107,7 +107,7 @@ add_machine() {
 install_known_host() {
   local ip=$1 key=$2
   printf '%s\n' "$key" | "${CLIENT[@]}" \
-    "install -d -m 0700 ~/.ssh; touch ~/.ssh/known_hosts; if ssh-keygen -F \"[$ip]:22\" -f ~/.ssh/known_hosts >/dev/null || ssh-keygen -F \"$ip\" -f ~/.ssh/known_hosts >/dev/null; then cat >/dev/null; else cat >> ~/.ssh/known_hosts; fi"
+    "install -d -m 0700 ~/.ssh; touch ~/.ssh/known_hosts; ssh-keygen -R \"$ip\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; ssh-keygen -R \"[$ip]:22\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; cat >> ~/.ssh/known_hosts"
 }
 
 assert_openstack_inventory_safe() {

@@ -341,19 +341,17 @@
       - "'controllers' in (pve_juju_controller_list.stdout | from_json)"
     fail_msg: "cannot read the Juju controller JSON list; refusing to bootstrap while the state is unknown."
 
-- name: Add controller IP to Juju client's known_hosts
+- name: Seed the controller IP in the Juju client's known_hosts
   ansible.builtin.shell: |
     set -euo pipefail
     ip={{ pve_juju_controller_ip }}
-    if pct exec {{ pve_juju_client_vmid }} -- su - {{ pve_juju_client_user }} -c \
-      "install -d -m 0700 ~/.ssh; touch ~/.ssh/known_hosts; \
-       ssh-keygen -F \"[$ip]:22\" -f ~/.ssh/known_hosts >/dev/null || \
-         ssh-keygen -F \"$ip\" -f ~/.ssh/known_hosts >/dev/null"; then
-      exit 0
-    fi
     keyscan=$(ssh-keyscan -H "$ip" 2>/dev/null)
     [[ -n "$keyscan" ]] || { echo "SSH did not become available on Juju controller $ip" >&2; exit 1; }
-    printf '%s\n' "$keyscan" | pct exec {{ pve_juju_client_vmid }} -- su - {{ pve_juju_client_user }} -c 'cat >> ~/.ssh/known_hosts'
+    printf '%s\n' "$keyscan" | pct exec {{ pve_juju_client_vmid }} -- su - {{ pve_juju_client_user }} -c \
+      "install -d -m 0700 ~/.ssh; touch ~/.ssh/known_hosts; \
+       ssh-keygen -R \"$ip\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; \
+       ssh-keygen -R \"[$ip]:22\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; \
+       cat >> ~/.ssh/known_hosts"
   args:
     executable: /bin/bash
   changed_when: false
