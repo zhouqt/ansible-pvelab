@@ -97,6 +97,19 @@
       vars:
         sunbeam_node_vmid: "{{ sunbeam_nodes[0].vmid }}"
 
+    - name: Assert compute nodes declare the character devices the hypervisor
+        requires
+      ansible.builtin.assert:
+        that:
+          - item.char_devices | default([]) | map(attribute='path') | select('==', '/dev/kvm') | list | length >= 1
+          - item.char_devices | default([]) | map(attribute='path') | select('==', '/dev/net/tun') | list | length >= 1
+        fail_msg: >-
+          {{ item.fqdn }} has the compute role but does not declare both
+          /dev/kvm and /dev/net/tun in char_devices; nested virt will not work.
+      loop: "{{ sunbeam_nodes }}"
+      loop_control:
+        label: "{{ item.fqdn }}"
+      when: item.role is search('compute')
     - name: Derived node inventory
       ansible.builtin.debug:
         msg:

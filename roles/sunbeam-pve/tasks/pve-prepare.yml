@@ -10,6 +10,8 @@
     fail_msg: >-
       This stage creates CTs / thin LVs on the PVE host and reconciles CT config.
       To confirm, pass -e sunbeam_confirm_pve_create=true -e sunbeam_confirm_external_changes=true.
+      To only run the read-only preflight, pass -e sunbeam_pve_preflight_only=true instead.
+  when: not (sunbeam_pve_preflight_only | bool)
 
 - name: Require the expected PVE SDN bridges
   ansible.builtin.command:
@@ -33,13 +35,15 @@
       - sunbeam_host_expected_vnets
         | select('in', sunbeam_pve_sdn.results[0].content | b64decode)
         | list | length == sunbeam_host_expected_vnets | length
-      - sunbeam_host_expected_subnets
+      - sunbeam_host_expected_subnet_ids
         | select('in', sunbeam_pve_sdn.results[1].content | b64decode)
-        | list | length == sunbeam_host_expected_subnets | length
+        | list | length == sunbeam_host_expected_subnet_ids | length
     fail_msg: >-
       PVE SDN does not match the Sunbeam plan. This playbook only validates PVE
       networking, it never rewrites it; first create pub21 / int23 / pub12 and their
-      subnets on PVE per the approved plan.
+      subnets on PVE per the approved plan. Expected subnet ids
+      {{ sunbeam_host_expected_subnet_ids }}, found:
+      {{ sunbeam_pve_sdn.results[1].content | b64decode | regex_replace('\n', ' | ') }}
 
 - name: Require the container template to be available
   ansible.builtin.stat:
@@ -51,6 +55,9 @@
     that:
       - sunbeam_pve_template_stat.stat.exists
     fail_msg: "Missing container template {{ sunbeam_template }}."
+
+- name: Check the external bridge for address conflicts
+  ansible.builtin.include_tasks: _external_ip_conflict_check.yml
 
 - name: Check which OSD thin LVs already exist
   ansible.builtin.command:
@@ -66,6 +73,51 @@
   failed_when: false
   loop_control:
     label: "{{ item.osd_pve_lv | basename }}"
+
+- name: Read the thin pool fill level
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_lvs_bin }}"
+      - --noheadings
+      - --units
+      - g
+      - --nosuffix
+      - -o
+      - data_percent,lv_size
+      - "{{ sunbeam_pve_storage }}/{{ sunbeam_pve_thinpool_lv }}"
+  register: sunbeam_thinpool_state
+  changed_when: false
+
+- name: Compute the worst-case thin pool fill after this run
+  ansible.builtin.set_fact:
+    sunbeam_thinpool_pending_lvs: >-
+      {{ sunbeam_pve_osd_lv_check.results | selectattr('rc', 'ne', 0) | list | length }}
+    sunbeam_thinpool_data_percent: >-
+      {{ (sunbeam_thinpool_state.stdout.split()[0] | float) }}
+    sunbeam_thinpool_size_gb: >-
+      {{ (sunbeam_thinpool_state.stdout.split()[1] | float) }}
+
+- name: Refuse to add thin LVs that would overrun the shared pool
+  ansible.builtin.assert:
+    that:
+      - sunbeam_thinpool_data_percent | float < sunbeam_thinpool_max_data_percent | float
+      - >-
+        (sunbeam_thinpool_data_percent | float
+         + (sunbeam_thinpool_pending_lvs | int * sunbeam_osd_size_gb | int)
+           / sunbeam_thinpool_size_gb | float * 100)
+        < sunbeam_thinpool_max_data_percent | float
+    fail_msg: >-
+      Thin pool {{ sunbeam_pve_storage }} is {{ sunbeam_thinpool_data_percent | round(2) }}%
+      full ({{ sunbeam_thinpool_size_gb | round(1) }} GB) and this run would add
+      {{ sunbeam_thinpool_pending_lvs | int }} x {{ sunbeam_osd_size_gb }} GB, reaching
+      {{ (sunbeam_thinpool_data_percent | float + (sunbeam_thinpool_pending_lvs | int * sunbeam_osd_size_gb | int)
+          / sunbeam_thinpool_size_gb | float * 100) | round(2) }}%, past the
+      {{ sunbeam_thinpool_max_data_percent }}% gate. The pool is shared with the other
+      environments on this host; free space or raise the gate deliberately.
+
+- name: Stop before any PVE-side write when only the preflight was requested
+  ansible.builtin.meta: end_host
+  when: sunbeam_pve_preflight_only | bool
 
 - name: Create the missing OSD thin LVs
   ansible.builtin.command:
@@ -167,6 +219,8 @@
       - "{{ sunbeam_ct_nameserver }}"
       - --tags
       - "{{ sunbeam_ct_tags }}"
+      - --unprivileged
+      - "0"
       - --net0
       - "name={{ item.item.interfaces.generic }},bridge={{ item.item.pve_bridges[item.item.interfaces.generic] }},ip={{ item.item.pub_ip }}/24,gw={{ sunbeam_management_gateway }},type=veth"
       - --net1
@@ -195,6 +249,57 @@
               | zip(sunbeam_pve_conf.results | selectattr('content', 'defined')
                     | map(attribute='content') | map('b64decode'))) }}
 
+- name: Find managed keys that would land in the wrong CT config section
+  ansible.builtin.set_fact:
+    sunbeam_pve_conf_misplaced: >-
+      {%- set out = [] -%}
+      {%- for n in sunbeam_nodes -%}
+      {%-   set conf = sunbeam_pve_conf_map[n.vmid | string] | default('') -%}
+      {%-   set lines = conf.split('\n') -%}
+      {%-   set headers = lines | select('match', '^\\[') | list -%}
+      {%-   if headers -%}
+      {%-     set boundary = lines.index(headers[0]) -%}
+      {%-     for idx in range(boundary + 1, lines | length) -%}
+      {%-       if lines[idx] | regex_search('^(dev[0-9]+|features|lxc\\.cap\\.drop|lxc\\.mount\\.entry):') -%}
+      {%-         set _ = out.append(n.fqdn ~ ' :: ' ~ lines[idx] ~ ' (after ' ~ headers[0] ~ ')') -%}
+      {%-       endif -%}
+      {%-     endfor -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Refuse to rewrite a CT config whose managed keys sit inside a section
+  ansible.builtin.assert:
+    that:
+      - sunbeam_pve_conf_misplaced | length == 0
+    fail_msg: >-
+      These managed keys are inside an INI section of the CT config, where PVE would
+      ignore them, and a blind rewrite would hide that:
+      {{ sunbeam_pve_conf_misplaced }}
+      Inspect the file and either drop the section or move the keys back to the top
+      level by hand.
+
+- name: Collect every devN slot this stage writes, per CT
+  ansible.builtin.set_fact:
+    sunbeam_pve_slots: >-
+      {%- set out = {} -%}
+      {%- for n in sunbeam_nodes -%}
+      {%-   set entries = [] -%}
+      {%-   for d in n.pve_devices -%}
+      {%-     set _ = entries.append({'index': d.index | int, 'path': d.path}) -%}
+      {%-   endfor -%}
+      {%-   for d in (n.char_devices | default([])) -%}
+      {%-     set _ = entries.append({'index': d.index | int, 'path': d.path}) -%}
+      {%-   endfor -%}
+      {%-   if n.loop_devices | bool -%}
+      {%-     for i in range(sunbeam_loop_device_first, sunbeam_loop_device_last + 1) -%}
+      {%-       set _ = entries.append({'index': i | int, 'path': '/dev/loop' ~ i}) -%}
+      {%-     endfor -%}
+      {%-   endif -%}
+      {%-   set _ = out.update({n.vmid | string: entries}) -%}
+      {%- endfor -%}
+      {{ out }}
+
 - name: Refuse to overwrite a conflicting passthrough device slot
   ansible.builtin.assert:
     that:
@@ -204,17 +309,30 @@
     fail_msg: >-
       dev{{ item.1.index }} of CT {{ item.0.vmid }} is already occupied by another device
       (expected {{ item.1.path }}); refusing to overwrite the existing passthrough config.
-      Adjust sunbeam_nodes[].pve_devices after manual review.
-  loop: "{{ sunbeam_nodes | subelements('pve_devices') }}"
+      Adjust sunbeam_nodes[].pve_devices / char_devices / osd_slots after manual review.
+  loop: "{{ sunbeam_pve_slots | dict2items | subelements('value') }}"
   loop_control:
-    label: "{{ item.0.fqdn }} dev{{ item.1.index }}"
+    label: "{{ item.0.key }} dev{{ item.1.index }}"
+
+- name: Assert every compute node declares kvm and tun passthrough
+  ansible.builtin.assert:
+    that:
+      - item.char_devices | default([]) | selectattr('path', 'equalto', '/dev/kvm') | list | length == 1
+      - item.char_devices | default([]) | selectattr('path', 'equalto', '/dev/net/tun') | list | length == 1
+    fail_msg: >-
+      {{ item.fqdn }} carries the `compute` role but does not declare /dev/kvm and
+      /dev/net/tun in its char_devices. Without them nova cannot boot an instance:
+      kvm for the VM itself, tun for the metadata/security-group path.
+  loop: "{{ sunbeam_compute_nodes }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
 
 - name: Ensure OSD/rootfs block device passthrough entries
   ansible.builtin.lineinfile:
     path: "/etc/pve/lxc/{{ item.0.vmid }}.conf"
     line: "dev{{ item.1.index }}: {{ item.1.path }},mode=0660"
     regexp: "^dev{{ item.1.index }}:"
-    insertafter: EOF
+    insertbefore: '^\['
   loop: "{{ sunbeam_nodes | subelements('pve_devices') }}"
   loop_control:
     label: "{{ item.0.fqdn }} dev{{ item.1.index }}"
@@ -225,7 +343,7 @@
     line: >-
       dev{{ item.1.index }}: {{ item.1.path }},mode={{ item.1.mode }}{{ ',' + item.1.extra if item.1.extra is defined else '' }}
     regexp: "^dev{{ item.1.index }}:"
-    insertafter: EOF
+    insertbefore: '^\['
   loop: "{{ sunbeam_nodes | subelements('char_devices') }}"
   loop_control:
     label: "{{ item.0.fqdn }} dev{{ item.1.index }}"
@@ -235,7 +353,7 @@
     path: "/etc/pve/lxc/{{ sunbeam_primary_node.vmid }}.conf"
     line: "dev{{ item }}: /dev/loop{{ item }},mode=0660"
     regexp: "^dev{{ item }}:"
-    insertafter: EOF
+    insertbefore: '^\['
   loop: "{{ range(sunbeam_loop_device_first, sunbeam_loop_device_last + 1) | list }}"
   when: sunbeam_primary_node.loop_devices | bool
   loop_control:
@@ -246,7 +364,7 @@
     path: "/etc/pve/lxc/{{ item.vmid }}.conf"
     line: "features: {{ sunbeam_ct_features }}"
     regexp: "^features:"
-    insertafter: EOF
+    insertbefore: '^\['
   loop: "{{ sunbeam_nodes }}"
   loop_control:
     label: "{{ item.fqdn }}"
@@ -256,7 +374,7 @@
     path: "/etc/pve/lxc/{{ item.vmid }}.conf"
     line: "lxc.cap.drop:"
     regexp: "^lxc\\.cap\\.drop:"
-    insertafter: EOF
+    insertbefore: '^\['
   loop: "{{ sunbeam_nodes }}"
   loop_control:
     label: "{{ item.fqdn }}"
@@ -266,7 +384,7 @@
     path: "/etc/pve/lxc/{{ item.0.vmid }}.conf"
     line: "lxc.mount.entry: {{ item.1 }}"
     regexp: "^lxc\\.mount\\.entry: {{ item.1.split(' ')[0] | regex_escape }} "
-    insertafter: EOF
+    insertbefore: '^\['
   loop: "{{ sunbeam_nodes | subelements('mounts') }}"
   loop_control:
     label: "{{ item.0.fqdn }} {{ item.1.split(' ')[0] }}"
@@ -293,6 +411,35 @@
   until: sunbeam_pve_ct_ready.rc == 0
   loop_control:
     label: "{{ item.fqdn }}"
+
+- name: Check that every passthrough device exists inside its CT
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ item.0.key }}"
+      - --
+      - test
+      - -e
+      - "{{ item.1.path }}"
+  loop: "{{ sunbeam_pve_slots | dict2items | subelements('value') }}"
+  changed_when: false
+  register: sunbeam_pve_device_inside
+  loop_control:
+    label: "{{ item.0.key }} {{ item.1.path }}"
+
+- name: Assert every passthrough device is visible inside its CT
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+    fail_msg: >-
+      {{ item.item.1.path }} is not present inside CT {{ item.item.0.key }} (dev{{ item.item.1.index }}).
+      The CT config declares it, but the container does not see it -- usually an
+      unprivileged container, a slot already taken by another device, or a host
+      device that no longer exists.
+  loop: "{{ sunbeam_pve_device_inside.results }}"
+  loop_control:
+    label: "{{ item.item.0.key }} {{ item.item.1.path }}"
 
 - name: Ensure Sunbeam FQDN entries resolve inside every CT
   ansible.builtin.command:

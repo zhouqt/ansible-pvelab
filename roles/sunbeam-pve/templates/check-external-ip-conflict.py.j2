@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+import ipaddress
+import os
+import re
+import subprocess
+import sys
+
+BRIDGE = {{ sunbeam_pve_bridges.external | to_json }}
+CIDR = {{ sunbeam_external_network.cidr | to_json }}
+FLOATING_RANGE = {{ sunbeam_external_network.floating_range | to_json }}
+RESERVED_IPS = {{ sunbeam_external_reserved_ips | default([]) | to_json }}
+RESERVED_RANGES = {{ sunbeam_external_reserved_ranges | default([]) | to_json }}
+OWN_VMIDS = {{ sunbeam_nodes | map(attribute='vmid') | map('string') | list | to_json }}
+IP_BIN = {{ sunbeam_ip_bin | default('/usr/sbin/ip') | to_json }}
+
+try:
+    net = ipaddress.ip_network(CIDR, strict=False)
+except ValueError as exc:
+    print("RISK external-ip: sunbeam_external_network.cidr %s is not a valid network (%s)" % (CIDR, exc))
+    print("CONFLICTS=1")
+    sys.exit(0)
+
+floating_first, _, floating_last = FLOATING_RANGE.partition("-")
+try:
+    floating = (ipaddress.ip_address(floating_first.strip()),
+                ipaddress.ip_address(floating_last.strip()))
+except ValueError as exc:
+    print("RISK external-ip: sunbeam_external_network.floating_range %s is malformed (%s)"
+          % (FLOATING_RANGE, exc))
+    print("CONFLICTS=1")
+    sys.exit(0)
+
+if not (net[0] <= floating[0] and floating[1] <= net[-1]):
+    print("RISK external-ip: floating range %s is not contained in %s" % (FLOATING_RANGE, CIDR))
+
+def overlaps(interval, other):
+    return interval[0] <= other[1] and other[0] <= interval[1]
+
+conflicts = 0
+
+def risk(message):
+    global conflicts
+    conflicts += 1
+    print("RISK external-ip: %s" % message)
+
+GUEST_CONF_DIRS = [("/etc/pve/lxc", "CT"), ("/etc/pve/qemu-server", "VM")]
+guest_ips = []
+shared = []
+
+for conf_dir, kind in GUEST_CONF_DIRS:
+    try:
+        names = sorted(os.listdir(conf_dir))
+    except OSError:
+        continue
+    for name in names:
+        if not name.endswith(".conf"):
+            continue
+        vmid = name[:-len(".conf")]
+        try:
+            with open(os.path.join(conf_dir, name), encoding="utf-8", errors="replace") as handle:
+                lines = handle.read().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if not re.match(r"^net\d+:", line):
+                continue
+            value = line.split(":", 1)[1]
+            fields = dict(
+                (part.split("=", 1)[0], part.split("=", 1)[1].strip('"'))
+                for part in value.split(",") if "=" in part
+            )
+            if fields.get("bridge") != BRIDGE:
+                continue
+            if vmid in OWN_VMIDS:
+                continue
+            shared.append("%s/%s" % (kind, vmid))
+            address = fields.get("ip", "")
+            if not address or address in ("manual", "dhcp"):
+                continue
+            try:
+                ip = ipaddress.ip_address(address.split("/", 1)[0])
+            except ValueError:
+                continue
+            guest_ips.append((kind, vmid, ip))
+            if floating[0] <= ip <= floating[1]:
+                risk("guest %s/%s holds %s, which is inside the floating range %s"
+                     % (kind, vmid, ip, FLOATING_RANGE))
+
+print("SHARED guests on bridge %s: %s"
+      % (BRIDGE, ", ".join(sorted(set(shared))) if shared else "none"))
+
+for entry in RESERVED_IPS:
+    try:
+        ip = ipaddress.ip_address(entry.strip())
+    except ValueError:
+        risk("sunbeam_external_reserved_ips entry %s is not an IP address" % entry)
+        continue
+    if net[0] <= ip <= net[-1] and floating[0] <= ip <= floating[1]:
+        risk("reserved address %s is inside the floating range %s" % (ip, FLOATING_RANGE))
+
+for entry in RESERVED_RANGES:
+    first, _, last = entry.partition("-")
+    try:
+        interval = (ipaddress.ip_address(first.strip()), ipaddress.ip_address(last.strip()))
+    except ValueError:
+        risk("sunbeam_external_reserved_ranges entry %s is malformed" % entry)
+        continue
+    if net[0] <= interval[0] and interval[1] <= net[-1] and overlaps(interval, floating):
+        risk("reserved range %s overlaps the floating range %s" % (entry, FLOATING_RANGE))
+
+try:
+    with open("/etc/pve/sdn/subnets.cfg", encoding="utf-8", errors="replace") as handle:
+        subnet_lines = handle.read().splitlines()
+except OSError as exc:
+    print("OK sdn: /etc/pve/sdn/subnets.cfg unreadable (%s), DHCP range not checked" % exc)
+    subnet_lines = []
+
+for line in subnet_lines:
+    for match in re.finditer(r"dhcp-range\s*=\s*([^,\s]+)", line):
+        spec = match.group(1).strip('"')
+        first, _, last = spec.partition("-")
+        try:
+            interval = (ipaddress.ip_address(first), ipaddress.ip_address(last or first))
+        except ValueError:
+            continue
+        if net[0] <= interval[0] and interval[1] <= net[-1] and overlaps(interval, floating):
+            risk("SDN dhcp-range %s overlaps the floating range %s" % (spec, FLOATING_RANGE))
+        else:
+            print("OK sdn: dhcp-range %s is disjoint from the floating range" % spec)
+
+for argv, kind in (([IP_BIN, "-4", "-o", "addr", "show"], "host address"),
+                   ([IP_BIN, "-4", "-o", "neigh", "show"], "neighbour")):
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        print("OK external-ip: could not read %s (%s)" % (kind, exc))
+        continue
+    for line in out.splitlines():
+        match = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", line) or re.search(r"\b(\d+\.\d+\.\d+\.\d+)\b", line)
+        if not match:
+            continue
+        try:
+            ip = ipaddress.ip_address(match.group(1))
+        except ValueError:
+            continue
+        if not (net[0] <= ip <= net[-1]):
+            continue
+        if floating[0] <= ip <= floating[1]:
+            risk("%s %s falls inside the floating range %s" % (kind, ip, FLOATING_RANGE))
+        else:
+            print("OK external-ip: %s %s is inside %s but outside the floating range"
+                  % (kind, ip, CIDR))
+
+if conflicts == 0:
+    print("OK external-ip: floating range %s is free on bridge %s" % (FLOATING_RANGE, BRIDGE))
+print("CONFLICTS=%d" % conflicts)

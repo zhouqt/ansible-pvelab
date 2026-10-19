@@ -1,0 +1,48 @@
+---
+- name: Scan the external bridge for addresses that would collide with the floating range
+  ansible.builtin.command:
+    argv: ["{{ ansible_python_interpreter | default('/usr/bin/python3') }}", -]
+    stdin: "{{ lookup('template', 'check-external-ip-conflict.py.j2') }}"
+  register: sunbeam_external_ip_check
+  changed_when: false
+  failed_when: false
+
+- name: Parse the external address precheck result
+  ansible.builtin.set_fact:
+    sunbeam_external_ip_conflicts: >-
+      {{ (sunbeam_external_ip_check.stdout | default('')
+          | regex_findall('(?m)^CONFLICTS=(\d+)$') | first | default('1')) | int }}
+    sunbeam_external_shared_guests: >-
+      {{ (sunbeam_external_ip_check.stdout | default('')
+          | regex_findall('SHARED guests on bridge [^\\n]*') | first | default(''))
+         | regex_replace('^SHARED guests on bridge [^:]*: ', '') | trim }}
+
+- name: Report the external address precheck
+  ansible.builtin.debug:
+    msg: "{{ sunbeam_external_ip_check.stdout_lines | default(['<no output>']) }}"
+
+- name: Refuse to continue on an external address conflict
+  ansible.builtin.assert:
+    that:
+      - sunbeam_external_ip_conflicts == 0
+    fail_msg: >-
+      The external bridge {{ sunbeam_pve_bridges.external }} has
+      {{ sunbeam_external_ip_conflicts }} conflict(s) with the floating range
+      {{ sunbeam_external_network.floating_range }}:
+      {{ sunbeam_external_ip_check.stdout | default('') | trim }}
+      Adjust sunbeam_external_network.floating_range / sunbeam_external_reserved_*,
+      or move the overlapping guest.
+  when: not (sunbeam_external_check_report_only | default(false) | bool)
+
+- name: Refuse to share the external bridge with guests when sharing is not acknowledged
+  ansible.builtin.assert:
+    that:
+      - sunbeam_external_shared_guests in ['', 'none']
+    fail_msg: >-
+      Other guests share the external bridge {{ sunbeam_pve_bridges.external }}:
+      {{ sunbeam_external_shared_guests }}. Set
+      sunbeam_external_network.allow_shared_l2=true in group_vars to acknowledge that
+      the bridge is intentionally shared.
+  when:
+    - not (sunbeam_external_network.allow_shared_l2 | bool)
+    - not (sunbeam_external_check_report_only | default(false) | bool)
