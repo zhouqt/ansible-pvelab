@@ -22,8 +22,8 @@ sunbeam_osd_microceph_device_prefix: pve-ceph-osd-device-
 sunbeam_osd_slots_default: { lv: 40, by_id: 41 }
 sunbeam_char_devices_default:
   - { index: 0, path: "/dev/kmsg", mode: "0644", extra: "deny-write=1" }
-  - { index: 1, path: "/dev/kvm", mode: "0660" }
-  - { index: 2, path: "/dev/net/tun", mode: "0666" }
+  - { index: 33, path: "/dev/kvm", mode: "0660" }
+  - { index: 34, path: "/dev/net/tun", mode: "0666" }
 sunbeam_loop_device_first: 2
 sunbeam_loop_device_last: 31
 
