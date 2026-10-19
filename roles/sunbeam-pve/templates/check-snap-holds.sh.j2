@@ -1,0 +1,72 @@
+#!/bin/bash
+set -u
+
+python3 - {{ sunbeam_held_snaps | map('to_json') | join(' ') }} <<'PY'
+import json
+import subprocess
+import sys
+
+STATE = "/var/lib/snapd/state.json"
+WANTED = sys.argv[1:]
+
+found = []
+
+def walk(node, path):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            here = path + [str(key)]
+            if "hold" in str(key).lower():
+                found.append((".".join(here), value))
+            walk(value, here)
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            walk(value, path + [str(index)])
+
+try:
+    with open(STATE, encoding="utf-8") as handle:
+        state = json.load(handle)
+except (OSError, ValueError) as exc:
+    print("READABLE=no (%s)" % exc)
+    raise SystemExit(0)
+
+walk(state, [])
+print("READABLE=yes")
+
+global_hold = "-"
+per_snap = {}
+for path, value in found:
+    if path == "data.config.core.refresh.hold":
+        global_hold = str(value)
+        continue
+    parts = path.split(".")
+    if parts[:2] == ["data", "snaps-hold"] and len(parts) > 2:
+        per_snap[parts[2]] = "%s=%s" % (".".join(parts[3:]), value)
+
+print("GLOBAL_HOLD=%s" % global_hold)
+for name in sorted(per_snap):
+    print("HOLD key=%s value=%s" % (name, per_snap[name]))
+
+try:
+    out = subprocess.run(["snap", "list"], capture_output=True, text=True, timeout=60).stdout
+except (OSError, subprocess.SubprocessError) as exc:
+    print("SNAPLIST=failed (%s)" % exc)
+    raise SystemExit(0)
+
+installed = set()
+for line in out.splitlines()[1:]:
+    fields = line.split()
+    if fields:
+        installed.add(fields[0])
+print("SNAPLIST=ok")
+for name in sorted(set(WANTED) | installed):
+    print("SNAP %s installed=%s hold=%s"
+          % (name, "yes" if name in installed else "no", per_snap.get(name, "-")))
+
+try:
+    held = subprocess.run(["apt-mark", "showhold"], capture_output=True, text=True,
+                          timeout=60).stdout.split()
+except (OSError, subprocess.SubprocessError):
+    held = []
+state = "held" if "snapd" in held else "not-held"
+print("APT_SNAPPD_HOLD=%s" % state)
+PY

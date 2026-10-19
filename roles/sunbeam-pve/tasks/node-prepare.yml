@@ -73,6 +73,9 @@
 - name: Probe the proxy endpoint before writing any proxy configuration
   ansible.builtin.include_tasks: _proxy_preflight.yml
 
+- name: Establish the snap and apt refresh holds
+  ansible.builtin.include_tasks: _snap_holds.yml
+
 - name: Stage the managed /etc/environment on the PVE host
   ansible.builtin.copy:
     content: "{{ sunbeam_etc_environment_content }}\n"
