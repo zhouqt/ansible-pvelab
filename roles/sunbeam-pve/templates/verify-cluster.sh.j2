@@ -23,10 +23,10 @@ for osd in $("$ceph" osd ls 2>/dev/null); do
 done
 
 echo "### JUJU_OPENSTACK"
-su - "$user" -c 'juju status -m openstack --format json 2>/dev/null'
+su - "$user" -c 'juju status -m {{ sunbeam_juju_openstack_model }} --format json 2>/dev/null'
 
 echo "### JUJU_MACHINES"
-su - "$user" -c 'juju status -m openstack-machines --format json 2>/dev/null'
+su - "$user" -c 'juju status -m {{ sunbeam_juju_machines_model }} --format json 2>/dev/null'
 
 echo "### VOLUME_SERVICES"
 su - "$user" -c ". $rc_path && openstack volume service list" 2>/dev/null

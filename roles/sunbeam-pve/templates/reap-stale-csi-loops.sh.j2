@@ -1,0 +1,23 @@
+#!/bin/bash
+set -u
+
+reclaimed=0
+busy=0
+
+for dev in $(losetup -a | awk '{print $1}'); do
+    backing=$(losetup -a "$dev" 2>/dev/null | sed 's/.*(\(.*\))$/\1/')
+    case "$backing" in
+        /pvc-*/disk.img | /data/pvc-*/disk.img) ;;
+        *) continue ;;
+    esac
+
+    if losetup -d "$dev" 2>/dev/null; then
+        echo "DETACHED $dev ($backing)"
+        reclaimed=$((reclaimed + 1))
+    else
+        echo "BUSY $dev ($backing) -- still in use, left attached"
+        busy=$((busy + 1))
+    fi
+done
+
+echo "RECLAIMED=$reclaimed BUSY=$busy"

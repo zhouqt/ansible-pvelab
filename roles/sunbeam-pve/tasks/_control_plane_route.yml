@@ -1,0 +1,91 @@
+---
+
+- name: Resolve the Juju controller endpoint used by the workers
+  ansible.builtin.set_fact:
+    sunbeam_control_plane_api_host: "{{ sunbeam_k8s_loadbalancer_range.split('-')[0] }}"
+    sunbeam_control_plane_api_port: 17070
+
+- name: Assert the loadbalancer range really sits inside the configured control-plane CIDR
+  ansible.builtin.assert:
+    that:
+      - sunbeam_k8s_loadbalancer_cidr | length > 0
+      - >-
+        (sunbeam_k8s_loadbalancer_range.split('-')[0].split('.')[0:3] | join('.'))
+        == (sunbeam_k8s_loadbalancer_cidr.split('/')[0].split('.')[0:3] | join('.'))
+      - >-
+        (sunbeam_k8s_loadbalancer_range.split('-')[1].split('.')[0:3] | join('.'))
+        == (sunbeam_k8s_loadbalancer_cidr.split('/')[0].split('.')[0:3] | join('.'))
+    fail_msg: >-
+      sunbeam_k8s_loadbalancer_cidr is '{{ sunbeam_k8s_loadbalancer_cidr }}' but
+      sunbeam_k8s_loadbalancer_range is '{{ sunbeam_k8s_loadbalancer_range }}'.
+      The CIDR is what gets routed on the workers, so it has to contain the whole
+      range -- otherwise the controller endpoint falls outside the route and
+      `sunbeam cluster join` keeps failing with "Unreachable API endpoints".
+  when: sunbeam_k8s_loadbalancer_cidr | length > 0
+
+- name: Install the route to the control-plane API on every worker
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ item.vmid }}"
+      - --
+      - bash
+      - -s
+      - --
+      - "{{ item.interfaces.generic }}"
+      - "{{ sunbeam_primary_node.pub_ip }}"
+    stdin: "{{ lookup('template', 'ensure-control-plane-route.sh.j2') }}"
+  loop: "{{ sunbeam_worker_nodes }}"
+  register: sunbeam_control_plane_route_apply
+  changed_when: >-
+    'DROPIN=written' in (item.stdout | default(''))
+  loop_control:
+    label: "{{ item.fqdn }}"
+  when: sunbeam_k8s_loadbalancer_cidr | length > 0
+
+- name: Re-read the control-plane route from every worker
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ item.vmid }}"
+      - --
+      - bash
+      - -s
+      - --
+      - "{{ item.interfaces.generic }}"
+      - "{{ sunbeam_primary_node.pub_ip }}"
+    stdin: "{{ lookup('template', 'check-control-plane-route.sh.j2') }}"
+  loop: "{{ sunbeam_worker_nodes }}"
+  register: sunbeam_control_plane_route
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.fqdn }}"
+  when: sunbeam_k8s_loadbalancer_cidr | length > 0
+
+- name: Assert every worker can reach the control-plane API endpoint
+  ansible.builtin.assert:
+    that:
+      - "'ROUTE=ok' in (item.stdout | default(''))"
+    fail_msg: >-
+      A worker has no route to the Juju controller endpoint
+      {{ sunbeam_control_plane_api_host }}:{{ sunbeam_control_plane_api_port }} via
+      {{ sunbeam_primary_node.pub_ip }}. `sunbeam cluster join` on that node will fail
+      with "Juju Controller is not reachable ... Unreachable API endpoints". The route
+      is installed as a systemd-networkd drop-in of the .network file PVE generates for
+      the generic NIC, and PVE regenerates those files on every CT start -- check
+      `networkctl status <nic>` inside the CT.
+  loop: "{{ sunbeam_control_plane_route.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.fqdn | default('unknown') }}"
+  when: sunbeam_k8s_loadbalancer_cidr | length > 0
+
+- name: Report the control-plane route state of every worker
+  ansible.builtin.debug:
+    msg: "{{ item.stdout_lines }}"
+  loop: "{{ sunbeam_control_plane_route.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.fqdn | default('unknown') }}"
+  when: sunbeam_k8s_loadbalancer_cidr | length > 0

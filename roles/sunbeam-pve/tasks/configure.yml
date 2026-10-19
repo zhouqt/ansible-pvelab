@@ -151,6 +151,7 @@
   register: sunbeam_configure_run
   async: "{{ sunbeam_configure_timeout }}"
   poll: "{{ sunbeam_poll_interval }}"
+  failed_when: false
 
 - name: Re-check the deployment configuration state
   ansible.builtin.command:
@@ -164,15 +165,50 @@
     stdin: "{{ lookup('template', 'check-deployment-configured.sh.j2') }}"
   register: sunbeam_deployment_state_after
   changed_when: false
+  failed_when: false
+
+- name: Restore the admin openrc that the configure CLI overwrote
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'run-refresh-openrc.sh.j2') }}"
+  register: sunbeam_openrc_restore
+  when:
+    - sunbeam_configure_needed | bool
+    - "'configured=yes' not in (sunbeam_deployment_state_after.stdout | default(''))"
+
+- name: Re-check the openrc after the restore
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'check-deployment-configured.sh.j2') }}"
+  register: sunbeam_deployment_state_final
+  changed_when: false
+  failed_when: false
+  when:
+    - sunbeam_configure_needed | bool
+    - "'configured=yes' not in (sunbeam_deployment_state_after.stdout | default(''))"
 
 - name: Assert the openrc file is in place
   ansible.builtin.assert:
     that:
-      - "'configured=yes' in sunbeam_deployment_state_after.stdout"
+      - "'configured=yes' in (sunbeam_deployment_state_final.stdout | default(sunbeam_deployment_state_after.stdout | default('')))"
     fail_msg: >-
       {{ sunbeam_admin_openrc_path }} does not exist or is empty, which means configure
       deployment did not complete. Check {{ sunbeam_node_log_dir }}/configure-deployment.log
-      inside {{ sunbeam_primary_node.fqdn }}.
+      and {{ sunbeam_node_log_dir }}/refresh-openrc.log inside {{ sunbeam_primary_node.fqdn }}.
+      State after the run:
+      {{ (sunbeam_deployment_state_final.stdout | default(sunbeam_deployment_state_after.stdout | default(''))) | trim }}.
 
 - name: Read the deployed OpenStack resource inventory
   ansible.builtin.command:
@@ -214,6 +250,9 @@
          + [
            'configure deployment executed this run: '
            ~ ('yes' if sunbeam_configure_needed | bool else 'no (already configured)'),
+           'configure CLI rc: ' ~ (sunbeam_configure_run.rc | default('n/a (skipped)')),
+           'admin openrc restored after configure: '
+           ~ (sunbeam_openrc_restore.stdout_lines | default(['n/a (skipped)']) | join('; ')),
            'resource inventory:',
          ]
          + sunbeam_deployment_inventory.stdout_lines }}

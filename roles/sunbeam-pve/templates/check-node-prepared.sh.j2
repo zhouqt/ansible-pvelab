@@ -12,14 +12,21 @@ id "$user" >/dev/null 2>&1 || ok=no
 id -nG "$user" 2>/dev/null | grep -qw snap_daemon || ok=no
 
 if [ "$ok" = yes ] && [ "$require_controller" = yes ]; then
-    juju_out=$(su - "$user" -c 'juju controllers --format json' 2>&1)
+    juju_out=$(su - "$user" -c 'juju controllers --format json' 2>/dev/null)
     juju_rc=$?
     verdict=$(printf '%s' "$juju_out" | python3 -c 'import json, sys
-try:
-    controllers = json.load(sys.stdin).get("controllers")
-except Exception:
-    sys.exit(2)
-sys.exit(0 if controllers else 1)' 2>/dev/null) || verdict=$?
+raw = sys.stdin.read()
+start = raw.find("{")
+if start < 0:
+    print("2")
+else:
+    try:
+        controllers = json.loads(raw[start:]).get("controllers")
+    except Exception:
+        print("2")
+    else:
+        print("0" if controllers else "1")' 2>/dev/null) || verdict=2
+    [ -n "$verdict" ] || verdict=2
     case "$verdict" in
         0) ;;
         1) ok=no ;;

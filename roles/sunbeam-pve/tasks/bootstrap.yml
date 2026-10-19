@@ -30,12 +30,16 @@
   ansible.builtin.set_fact:
     sunbeam_cluster_is_bootstrapped: >-
       {{ sunbeam_cluster_state.stdout | default('') is search('bootstrapped=yes') }}
+    sunbeam_bootstrap_needed: >-
+      {{ (not (sunbeam_cluster_state.stdout | default('') is search('bootstrapped=yes')))
+         or (sunbeam_bootstrap_repair_incomplete | bool
+             and sunbeam_cluster_state.stdout | default('') is search('bootstrap_complete=no')) }}
 
 - name: Refuse to continue when the cluster state could not be determined
   ansible.builtin.assert:
     that:
       - sunbeam_cluster_state.rc == 0
-      - sunbeam_cluster_state.stdout | default('') is search('(?m)^bootstrapped=(yes|no)$')
+      - sunbeam_cluster_state.stdout | default('') is search('(?m)^bootstrapped=(yes|no)( |$)')
     fail_msg: >-
       `sunbeam cluster list` on {{ sunbeam_primary_node.fqdn }} did not return a usable
       answer, so this run cannot tell an un-bootstrapped control plane from an
@@ -44,21 +48,38 @@
       Re-run once the node answers `su - {{ sunbeam_node_user }} -c 'sunbeam cluster list'`
       by hand. If you are certain this is a cold cluster whose error message is not on
       the probe's whitelist, pass -e sunbeam_allow_unreadable_cluster_state=true.
-    ignore_errors: "{{ sunbeam_allow_unreadable_cluster_state | bool }}"
+  ignore_errors: "{{ sunbeam_allow_unreadable_cluster_state | bool }}"
 
 - name: Note that bootstrap will be skipped
   ansible.builtin.debug:
     msg: >-
-      The control plane already exists ({{ sunbeam_cluster_state.stdout | trim }}); this run only
-      validates the manifest and juju controller and will not bootstrap again.
-  when: sunbeam_cluster_is_bootstrapped | bool
+      The control plane already exists and its bootstrap run finished
+      ({{ sunbeam_cluster_state.stdout | trim }}); this run only validates the
+      manifest and juju controller and will not bootstrap again.
+  when: not (sunbeam_bootstrap_needed | bool)
+
+- name: Warn that the existing control plane never finished bootstrapping
+  ansible.builtin.debug:
+    msg: >-
+      The cluster exists ({{ sunbeam_cluster_state.stdout | trim }}) but the
+      local-provider bootstrap never reached its last plan step
+      (`sunbeam_bootstrapped` is unset), so the deployment is
+      incomplete. Re-running `sunbeam cluster bootstrap`: completed plans are
+      no-ops and the CLI resumes at the first unfinished step.
+  when:
+    - sunbeam_cluster_is_bootstrapped | bool
+    - sunbeam_bootstrap_needed | bool
+
+- name: Resolve the Sunbeam node identities
+  ansible.builtin.include_tasks: _node_identity.yml
+  when: sunbeam_bootstrap_needed | bool
 
 - name: Render the Sunbeam deployment manifest
   ansible.builtin.template:
     src: manifest.yaml.j2
     dest: "{{ sunbeam_staging_dir }}/manifest.yaml"
     mode: "0600"
-  when: "not (sunbeam_cluster_is_bootstrapped | bool)"
+  when: sunbeam_bootstrap_needed | bool
 
 - name: Read the manifest currently stored in the primary CT
   ansible.builtin.command:
@@ -88,10 +109,18 @@
       - --perms
       - "0600"
   when:
-    - "not (sunbeam_cluster_is_bootstrapped | bool)"
+    - sunbeam_bootstrap_needed | bool
     - >-
       (sunbeam_manifest_current.stdout | default('') | trim)
       != (lookup('template', 'manifest.yaml.j2') | trim)
+
+- name: Ensure the inner LXD masquerades the traffic of its own containers
+  ansible.builtin.include_tasks: _inner_lxd_nat.yml
+  when: sunbeam_bootstrap_needed | bool
+
+- name: Ensure the next free loop device exists inside the primary CT
+  ansible.builtin.include_tasks: _loop_devices.yml
+  when: sunbeam_bootstrap_needed | bool
 
 - name: Bootstrap the Sunbeam control plane
   ansible.builtin.command:
@@ -103,10 +132,11 @@
       - bash
       - -s
     stdin: "{{ lookup('template', 'run-cluster-bootstrap.sh.j2') }}"
-  when: "not (sunbeam_cluster_is_bootstrapped | bool)"
+  when: sunbeam_bootstrap_needed | bool
   register: sunbeam_cluster_bootstrap_run
   async: "{{ sunbeam_bootstrap_timeout }}"
   poll: "{{ sunbeam_poll_interval }}"
+  failed_when: false
 
 - name: Re-check the control plane state
   ansible.builtin.command:
@@ -127,6 +157,8 @@
     that:
       - sunbeam_cluster_state_after.rc == 0
       - "'bootstrapped=yes' in sunbeam_cluster_state_after.stdout"
+      - not (sunbeam_bootstrap_needed | bool)
+        or 'bootstrap_complete=yes' in sunbeam_cluster_state_after.stdout
     fail_msg: >-
       The control plane was not initialized successfully (probe said
       '{{ sunbeam_cluster_state_after.stdout | default('') | trim }}'). Check
@@ -140,7 +172,7 @@
       - "{{ sunbeam_primary_node.vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ sunbeam_node_user }}"
       - -c
       - "juju controllers --format json"
@@ -162,7 +194,7 @@
       - "{{ sunbeam_primary_node.vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ sunbeam_node_user }}"
       - -c
       - "sunbeam cluster list --format yaml"
@@ -175,6 +207,8 @@
     msg:
       - "control plane: {{ sunbeam_controller_name }} @ {{ sunbeam_primary_node.fqdn }}"
       - "manifest: {{ sunbeam_manifest_path }}"
-      - "bootstrap executed this run: {{ 'no (already exists)' if (sunbeam_cluster_is_bootstrapped | bool) else 'yes' }}"
+      - "bootstrap executed this run: {{ 'yes' if (sunbeam_bootstrap_needed | bool) else 'no (already exists and complete)' }}"
+      - "bootstrap CLI rc: {{ sunbeam_cluster_bootstrap_run.rc | default('n/a (skipped)') }}"
+      - "after state: {{ sunbeam_cluster_state_after.stdout | default('') | trim }}"
       - "cluster list:"
       - "{{ sunbeam_cluster_list.stdout_lines }}"

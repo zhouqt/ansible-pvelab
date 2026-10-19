@@ -9,7 +9,7 @@ rc=$?
 
 if [ "$rc" -ne 0 ]; then
     case "$out" in
-        *"Failed to login to Juju Controller"*|*"No cluster"*|*"not bootstrapped"*|*"does not exist"*|*"not found"*)
+        *"Failed to login to Juju Controller"*|*"No cluster"*|*"not bootstrapped"*|*"does not exist"*|*"not found"*|*"Controller cannot be None"*)
             echo "bootstrapped=no"
             ;;
         *)
@@ -22,7 +22,29 @@ elif [ -z "$out" ]; then
     echo "cluster-state=error empty output (rc=0); NOT treated as 'not bootstrapped'"
     exit 3
 elif printf '%s' "$out" | grep -qw "$hostname"; then
-    echo "bootstrapped=yes"
+    marker=$(curl -s --unix-socket /var/snap/openstack/common/state/control.socket \
+        http://localhost/1.0/config/sunbeam_bootstrapped 2>/dev/null) || marker=""
+    if [ -z "$marker" ]; then
+        echo "bootstrapped=yes bootstrap_complete=unknown (control socket unreadable)"
+        exit 3
+    fi
+    complete=$(printf '%s' "$marker" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("unknown")
+    raise SystemExit(0)
+if "not found" in str(data.get("error", "")).lower():
+    print("no")
+    raise SystemExit(0)
+value = data.get("metadata")
+print("yes" if str(value).strip().strip(chr(34)).lower() == "true" else "no")
+' 2>/dev/null) || complete=unknown
+    case "$complete" in
+        yes|no) echo "bootstrapped=yes bootstrap_complete=$complete" ;;
+        *) echo "bootstrapped=yes bootstrap_complete=unknown ($marker)"; exit 3 ;;
+    esac
 else
     echo "bootstrapped=no"
 fi

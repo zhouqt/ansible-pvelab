@@ -13,7 +13,7 @@ sunbeam_ct_nameserver: 8.8.8.8
 sunbeam_ct_onboot: 1
 sunbeam_ct_startup_order: 5
 sunbeam_ct_tags: sunbeam
-sunbeam_rootfs_size_gb: 50
+sunbeam_rootfs_size_gb: 80
 sunbeam_osd_size_gb: 50
 
 sunbeam_domain: sunbeam.test
@@ -26,6 +26,10 @@ sunbeam_char_devices_default:
   - { index: 34, path: "/dev/net/tun", mode: "0666" }
 sunbeam_loop_device_first: 2
 sunbeam_loop_device_last: 31
+sunbeam_loop_device_low_slots:
+  - { slot: 36, loop: 0 }
+  - { slot: 37, loop: 1 }
+sunbeam_loop_reap_stale_csi_devices: false
 
 sunbeam_nodes_input:
   - vmid: 1281
@@ -90,6 +94,7 @@ sunbeam_external_reserved_ips:
   - 192.168.12.1
 sunbeam_external_reserved_ranges: []
 sunbeam_k8s_loadbalancer_range: 172.16.1.201-172.16.1.240
+sunbeam_k8s_loadbalancer_cidr: 172.16.1.0/24
 sunbeam_tenant_cidr: 192.168.0.0/24
 sunbeam_tenant_network_name: demo-network
 sunbeam_dns_nameservers: 8.8.8.8
@@ -113,7 +118,8 @@ sunbeam_juju_version: "3.6.29"
 sunbeam_microceph_channel: squid/stable
 sunbeam_microceph_revision: "1895"
 sunbeam_microceph_version: "19.2.3"
-sunbeam_snapd_deb_version: "2.76.3"
+sunbeam_snapd_deb_version: "2.77.1"
+sunbeam_kernel_modules_stub: true
 sunbeam_expected_ubuntu_release: "24.04"
 sunbeam_expected_ubuntu_codename: noble
 
@@ -139,6 +145,7 @@ sunbeam_node_log_dir: /var/log/sunbeam
 sunbeam_etc_environment: /etc/environment
 sunbeam_apt_proxy_file: /etc/apt/apt.conf.d/95proxy
 sunbeam_demo_openrc_path: /home/sunbeam/sunbeam-demo-openrc
+sunbeam_inner_lxd_raw_lxc: "lxc.apparmor.profile=unchanged"
 
 sunbeam_tls_provider: self-signed
 sunbeam_tls_endpoints:
@@ -152,6 +159,7 @@ sunbeam_confirm_ceph_osd: false
 sunbeam_confirm_tls: false
 
 sunbeam_allow_unreadable_cluster_state: false
+sunbeam_bootstrap_repair_incomplete: true
 sunbeam_repair_openrc: false
 sunbeam_ceph_remove_bootstrap_osd: false
 sunbeam_pve_preflight_only: false

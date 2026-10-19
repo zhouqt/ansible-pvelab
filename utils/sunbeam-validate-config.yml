@@ -63,7 +63,8 @@
           {%-   set idx = n.pve_devices | map(attribute='index') | list
                        + (n.char_devices | default([]) | map(attribute='index') | list) -%}
           {%-   if n.loop_devices | bool -%}
-          {%-     set idx = idx + range(sunbeam_loop_device_first, sunbeam_loop_device_last + 1) | list -%}
+          {%-     set idx = idx + range(sunbeam_loop_device_first, sunbeam_loop_device_last + 1) | list
+                       + (sunbeam_loop_device_low_slots | map(attribute='slot') | list) -%}
           {%-   endif -%}
           {%-   if idx | length != idx | unique | length -%}
           {%-     set _ = out.append(n.fqdn) -%}
@@ -96,6 +97,8 @@
         label: "{{ item.path | basename }}"
       vars:
         sunbeam_node_vmid: "{{ sunbeam_nodes[0].vmid }}"
+        sunbeam_control_plane_api_host: "{{ sunbeam_k8s_loadbalancer_range.split('-')[0] }}"
+        sunbeam_control_plane_api_port: 17070
 
     - name: Assert compute nodes declare the character devices the hypervisor
         requires

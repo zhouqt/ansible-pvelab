@@ -26,9 +26,13 @@ sunbeam_confirm_ceph_osd: false
 sunbeam_confirm_tls: false
 
 sunbeam_allow_unreadable_cluster_state: false
+sunbeam_join_remove_half_joined_nodes: false
 sunbeam_repair_openrc: false
 sunbeam_ceph_remove_bootstrap_osd: false
 sunbeam_pve_preflight_only: false
+sunbeam_loop_reap_stale_csi_devices: false
+
+sunbeam_k8s_loadbalancer_cidr: ""
 
 sunbeam_proxy_enabled: false
 sunbeam_proxy_allow_unreachable: false
@@ -59,6 +63,10 @@ sunbeam_poll_interval: 30
 
 sunbeam_microceph_bin: /snap/bin/microceph
 sunbeam_microceph_ceph_bin: /snap/bin/microceph.ceph
+sunbeam_snap_python: /snap/openstack/current/bin/python3
+
+sunbeam_juju_openstack_model: openstack
+sunbeam_juju_machines_model: admin/openstack-machines
 
 sunbeam_pct_bin: /usr/sbin/pct
 sunbeam_ip_bin: /usr/sbin/ip

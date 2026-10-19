@@ -129,11 +129,17 @@
       - "{{ sunbeam_pve_storage }}/{{ sunbeam_pve_thinpool_lv }}"
       - -n
       - "{{ item.item.osd_pve_lv | basename }}"
-      - "{{ sunbeam_pve_storage }}"
   loop: "{{ sunbeam_pve_osd_lv_check.results }}"
   when: item.rc != 0
+  register: sunbeam_osd_lv_created
   loop_control:
     label: "{{ item.item.osd_pve_lv | basename }}"
+
+- name: Note whether this run created any OSD thin LV
+  ansible.builtin.set_fact:
+    sunbeam_osd_lv_created_any: >-
+      {{ sunbeam_osd_lv_created.results | default([])
+         | rejectattr('skipped', 'defined') | list | length > 0 }}
 
 - name: Ensure the OSD by-id symlink points at the OSD thin LV
   ansible.builtin.file:
@@ -163,7 +169,7 @@
 - name: Apply the new OSD alias rule to the block devices that already exist
   ansible.builtin.command:
     argv: ["{{ sunbeam_udevadm_bin }}", trigger, --subsystem-match=block, --settle]
-  when: sunbeam_osd_udev_rule.changed
+  when: sunbeam_osd_udev_rule.changed or sunbeam_osd_lv_created_any | bool
   changed_when: true
 
 - name: Read the device links udev maintains for each OSD thin LV
@@ -172,33 +178,33 @@
       - "{{ sunbeam_udevadm_bin }}"
       - info
       - --query=property
-      - --name={{ item.item.osd_pve_lv }}
+      - --name={{ item.osd_pve_lv }}
       - --property=DEVLINKS
-  loop: "{{ sunbeam_pve_osd_lv_check.results }}"
-  when: item.rc == 0
+  loop: "{{ sunbeam_nodes }}"
   register: sunbeam_osd_devlinks
   changed_when: false
   failed_when: false
   loop_control:
-    label: "{{ item.item.osd_pve_lv | basename }}"
+    label: "{{ item.osd_pve_lv | basename }}"
 
 - name: Assert the OSD by-id alias is provided by udev, not by a leftover symlink
   ansible.builtin.assert:
     that:
-      - item.stdout | default('') is search(item.item.item.osd_by_id | regex_escape)
+      - item.stdout | default('') is search(item.item.osd_by_id | regex_escape)
     fail_msg: >-
-      udev does not maintain {{ item.item.item.osd_by_id }} for
-      {{ item.item.item.osd_pve_lv }} (DEVLINKS: {{ item.stdout | default('') | trim | default('(none)', true) }}).
+      udev does not maintain {{ item.item.osd_by_id }} for
+      {{ item.item.osd_pve_lv }} (DEVLINKS: {{ item.stdout | default('') | trim | default('(none)', true) }}).
       Any alias you can see right now was created by hand and will vanish on the next
-      host reboot, after which {{ item.item.item.fqdn }} fails to start. Check
+      host reboot, after which {{ item.item.fqdn }} fails to start. Check
       {{ sunbeam_osd_udev_rules_path }} against this device.
   loop: "{{ sunbeam_osd_devlinks.results }}"
   loop_control:
-    label: "{{ item.item.item.osd_by_id }}"
+    label: "{{ item.item.osd_by_id }}"
 
 - name: Stat the OSD by-id aliases
   ansible.builtin.stat:
     path: "{{ item.osd_by_id }}"
+    follow: true
   loop: "{{ sunbeam_nodes }}"
   register: sunbeam_osd_by_id_stat
   loop_control:
@@ -212,9 +218,9 @@
     fail_msg: >-
       {{ item.item.osd_by_id }} does not exist or is not a block device; the devN entry in
       the CT config will fail at pct start.
-    loop: "{{ sunbeam_osd_by_id_stat.results }}"
-    loop_control:
-      label: "{{ item.item.osd_by_id }}"
+  loop: "{{ sunbeam_osd_by_id_stat.results }}"
+  loop_control:
+    label: "{{ item.item.osd_by_id }}"
 
 - name: Check whether each Sunbeam CT exists
   ansible.builtin.command:
@@ -344,6 +350,9 @@
       {%-     for i in range(sunbeam_loop_device_first, sunbeam_loop_device_last + 1) -%}
       {%-       set _ = entries.append({'index': i | int, 'path': '/dev/loop' ~ i}) -%}
       {%-     endfor -%}
+      {%-     for d in sunbeam_loop_device_low_slots -%}
+      {%-       set _ = entries.append({'index': d.slot | int, 'path': '/dev/loop' ~ d.loop}) -%}
+      {%-     endfor -%}
       {%-   endif -%}
       {%-   set _ = out.update({n.vmid | string: entries}) -%}
       {%- endfor -%}
@@ -353,10 +362,10 @@
   ansible.builtin.assert:
     that:
       - >-
-        sunbeam_pve_conf_map[item.0.vmid | string]
+        sunbeam_pve_conf_map[item.0.key | string] | default('')
         is not search('(?m)^dev' ~ item.1.index ~ ': (?!' ~ (item.1.path | regex_escape) ~ ')')
     fail_msg: >-
-      dev{{ item.1.index }} of CT {{ item.0.vmid }} is already occupied by another device
+      dev{{ item.1.index }} of CT {{ item.0.key }} is already occupied by another device
       (expected {{ item.1.path }}); refusing to overwrite the existing passthrough config.
       Adjust sunbeam_nodes[].pve_devices / char_devices / osd_slots after manual review.
   loop: "{{ sunbeam_pve_slots | dict2items | subelements('value') }}"
@@ -408,6 +417,17 @@
   loop_control:
     label: "dev{{ item }} /dev/loop{{ item }}"
 
+- name: Ensure device nodes for the low loop numbers rawfile CSI may pick
+  ansible.builtin.lineinfile:
+    path: "/etc/pve/lxc/{{ sunbeam_primary_node.vmid }}.conf"
+    line: "dev{{ item.slot }}: /dev/loop{{ item.loop }},mode=0660"
+    regexp: "^dev{{ item.slot }}:"
+    insertbefore: '^\['
+  loop: "{{ sunbeam_loop_device_low_slots }}"
+  when: sunbeam_primary_node.loop_devices | bool
+  loop_control:
+    label: "dev{{ item.slot }} /dev/loop{{ item.loop }}"
+
 - name: Ensure the CT feature set
   ansible.builtin.lineinfile:
     path: "/etc/pve/lxc/{{ item.vmid }}.conf"
@@ -437,6 +457,27 @@
   loop: "{{ sunbeam_nodes | subelements('mounts') }}"
   loop_control:
     label: "{{ item.0.fqdn }} {{ item.1.split(' ')[0] }}"
+
+- name: Read the current rootfs size of every Sunbeam CT
+  ansible.builtin.set_fact:
+    sunbeam_pve_rootfs_gb: >-
+      {%- set out = {} -%}
+      {%- for n in sunbeam_nodes -%}
+      {%-   set conf = sunbeam_pve_conf_map[n.vmid | string] | default('') -%}
+      {%-   set m = conf | regex_search('(?m)^rootfs:.*size=([0-9]+)G', '\\1') -%}
+      {%-   set _ = out.update({n.vmid | string: (m[0] | int) if m else 0}) -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Grow the rootfs of any Sunbeam CT below the configured size
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", resize, "{{ item.vmid }}", rootfs, "{{ sunbeam_rootfs_size_gb }}G"]
+  loop: "{{ sunbeam_nodes }}"
+  when: (sunbeam_pve_rootfs_gb[item.vmid | string] | int) < (sunbeam_rootfs_size_gb | int)
+  loop_control:
+    label: >-
+      {{ item.fqdn }} {{ sunbeam_pve_rootfs_gb[item.vmid | string] }}G ->
+      {{ sunbeam_rootfs_size_gb }}G
 
 - name: Ensure every Sunbeam CT is running
   ansible.builtin.command:

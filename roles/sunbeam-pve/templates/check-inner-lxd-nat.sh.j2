@@ -1,0 +1,28 @@
+#!/bin/bash
+set -u
+
+if command -v nft >/dev/null 2>&1; then
+    if nft list ruleset 2>/dev/null | awk '
+        /chain pstrt\./ { inblk = 1; next }
+        inblk && /}/     { inblk = 0; next }
+        inblk && /masquerade/ { found = 1 }
+        END { exit(found ? 0 : 1) }
+    '; then
+        echo "NAT=ok"
+    else
+        echo "NAT=missing"
+    fi
+    exit 0
+fi
+
+if command -v iptables >/dev/null 2>&1; then
+    if iptables -t nat -S 2>/dev/null | grep -q 'MASQUERADE'; then
+        echo "NAT=ok"
+    else
+        echo "NAT=missing"
+    fi
+    exit 0
+fi
+
+echo "NAT=unknown"
+exit 0

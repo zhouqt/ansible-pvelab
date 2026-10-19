@@ -1,0 +1,13 @@
+#!/bin/bash
+set -u
+
+free=$(losetup -f 2>/dev/null || true)
+echo "FREE=${free}"
+
+if [ -n "$free" ] && [ -e "$free" ]; then
+    echo "PRESENT=yes"
+else
+    echo "PRESENT=no"
+fi
+
+echo "ATTACHED=$(losetup -a 2>/dev/null | wc -l)"

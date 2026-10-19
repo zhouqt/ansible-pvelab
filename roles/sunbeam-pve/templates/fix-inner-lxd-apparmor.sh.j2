@@ -1,0 +1,27 @@
+#!/bin/bash
+set -uo pipefail
+
+user={{ sunbeam_node_user }}
+required={{ sunbeam_inner_lxd_raw_lxc }}
+
+lxc_bin=/snap/bin/lxc
+if [ ! -x "$lxc_bin" ]; then
+    lxc_bin=$(command -v lxc 2>/dev/null || true)
+fi
+if [ -z "$lxc_bin" ]; then
+    echo "LXD_PROFILE=absent"
+    exit 0
+fi
+
+current=$(sudo --user "$user" "$lxc_bin" profile get default raw.lxc 2>/dev/null) || {
+    echo "LXD_PROFILE=absent"
+    exit 0
+}
+
+if [ "$current" = "$required" ]; then
+    echo "LXD_PROFILE=ok"
+    exit 0
+fi
+
+sudo --user "$user" "$lxc_bin" profile set default raw.lxc "$required"
+echo "LXD_PROFILE=fixed"

@@ -46,6 +46,26 @@
   loop: "{{ sunbeam_nodes }}"
   register: sunbeam_node_snapd_version
   changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Install the pinned snapd deb on the nodes the template shipped without one
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.item.vmid }}", "--", bash, "-s"]
+    stdin: "{{ lookup('template', 'install-snapd.sh.j2') }}"
+  loop: "{{ sunbeam_node_snapd_version.results }}"
+  loop_control:
+    label: "{{ item.item.fqdn }}"
+  when: item.rc | int != 0 or (item.stdout | trim | length) == 0
+
+- name: Re-read the installed snapd deb version
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, dpkg-query, -W, -f, "${Version}", snapd]
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_node_snapd_version_after
+  changed_when: false
+  failed_when: false
   loop_control:
     label: "{{ item.fqdn }}"
 
@@ -54,11 +74,12 @@
     that:
       - sunbeam_snapd_deb_version in item.stdout
     fail_msg: >-
-      snapd on {{ item.item.fqdn }} is {{ item.stdout | trim }}, expected {{ sunbeam_snapd_deb_version }}.
-      In the live environment snapd is held at {{ sunbeam_snapd_deb_version }} (2.77.1's snapfuse
-      makes the snap CLI segfault); this playbook does not manage snapd, so verify manually
-      before continuing.
-  loop: "{{ sunbeam_node_snapd_version.results }}"
+      snapd on {{ item.item.fqdn }} is {{ item.stdout | trim | default('(not installed)', true) }},
+      expected {{ sunbeam_snapd_deb_version }}. The container template may not carry the
+      pinned version and the Ubuntu archive only offers what it currently publishes, so
+      check `apt-cache policy snapd` inside the CT, then set sunbeam_snapd_deb_version to
+      a version that both installs and passes `snap version` inside the container.
+  loop: "{{ sunbeam_node_snapd_version_after.results }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
 
@@ -214,6 +235,9 @@
   loop_control:
     label: "{{ item.item.fqdn }}"
 
+- name: Re-establish the snap and apt refresh holds after the snap installs
+  ansible.builtin.include_tasks: _snap_holds.yml
+
 - name: Check whether the sunbeam user exists
   ansible.builtin.command:
     argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, id, "{{ sunbeam_node_user }}"]
@@ -287,6 +311,17 @@
   loop_control:
     label: "{{ item.item.fqdn }}"
 
+- name: Make sure the charmed kernel-modules package name resolves inside every CT
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", "--", bash, "-s"]
+    stdin: "{{ lookup('template', 'ensure-kernel-modules-stub.sh.j2') }}"
+  loop: "{{ sunbeam_nodes }}"
+  when: sunbeam_kernel_modules_stub | bool
+  register: sunbeam_kernel_modules_stub_run
+  changed_when: false
+  loop_control:
+    label: "{{ item.fqdn }}"
+
 - name: Check the node preparation state
   ansible.builtin.command:
     argv: "{{ [sunbeam_pct_bin, 'exec', item.vmid | string, '--', 'bash', '-s']
@@ -298,6 +333,14 @@
   loop_control:
     label: "{{ item.fqdn }}"
 
+- name: Make sure the inner LXD default profile does not nest its own AppArmor profile
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ sunbeam_primary_node.vmid }}", "--", bash, "-s"]
+    stdin: "{{ lookup('template', 'fix-inner-lxd-apparmor.sh.j2') }}"
+  register: sunbeam_inner_lxd_apparmor
+  changed_when: "'LXD_PROFILE=fixed' in (sunbeam_inner_lxd_apparmor.stdout | default(''))"
+  failed_when: false
+
 - name: Apply the Sunbeam node preparation script where it is missing
   ansible.builtin.command:
     argv: "{{ [sunbeam_pct_bin, 'exec', item.item.vmid | string, '--', 'bash', '-s']
@@ -308,8 +351,91 @@
   register: sunbeam_node_prepare_run
   async: "{{ sunbeam_bootstrap_timeout }}"
   poll: "{{ sunbeam_poll_interval }}"
+  failed_when: false
   loop_control:
     label: "{{ item.item.fqdn }}"
+
+- name: Collect the nodes whose prepare run failed
+  ansible.builtin.set_fact:
+    sunbeam_node_prepare_failed: >-
+      {{ (sunbeam_node_prepare_failed | default([]))
+         + [ item.item.item.vmid | int ] }}
+  loop: "{{ sunbeam_node_prepare_run.results | default([]) }}"
+  when: (item.rc | default(0)) | int != 0
+  loop_control:
+    label: "{{ item.item.item.fqdn }}"
+
+- name: Record the prepare run result per node
+  ansible.builtin.set_fact:
+    sunbeam_node_prepare_rc: >-
+      {{ (sunbeam_node_prepare_rc | default({}))
+         | combine({ (item.item.item.vmid | string): (item.rc | default(0) | int) }) }}
+  loop: "{{ sunbeam_node_prepare_run.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.item.fqdn }}"
+
+- name: Fix the inner LXD AppArmor profile after a failed prepare run
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ sunbeam_primary_node.vmid }}", "--", bash, "-s"]
+    stdin: "{{ lookup('template', 'fix-inner-lxd-apparmor.sh.j2') }}"
+  register: sunbeam_inner_lxd_apparmor_retry
+  changed_when: "'LXD_PROFILE=fixed' in (sunbeam_inner_lxd_apparmor_retry.stdout | default(''))"
+  failed_when: false
+  when: sunbeam_primary_node.vmid | int in (sunbeam_node_prepare_failed | default([]))
+
+- name: Re-run the Sunbeam node preparation script on the primary
+  ansible.builtin.command:
+    argv: "{{ [sunbeam_pct_bin, 'exec', sunbeam_primary_node.vmid | string, '--', 'bash', '-s',
+              '--', '--bootstrap'] }}"
+    stdin: "{{ lookup('template', 'run-prepare-node.sh.j2') }}"
+  register: sunbeam_node_prepare_retry
+  async: "{{ sunbeam_bootstrap_timeout }}"
+  poll: "{{ sunbeam_poll_interval }}"
+  failed_when: false
+  when:
+    - sunbeam_primary_node.vmid | int in (sunbeam_node_prepare_failed | default([]))
+    - "'LXD_PROFILE=fixed' in (sunbeam_inner_lxd_apparmor_retry.stdout | default(''))"
+  loop_control:
+    label: "{{ sunbeam_primary_node.fqdn }}"
+
+- name: Record the retried prepare run result
+  ansible.builtin.set_fact:
+    sunbeam_node_prepare_rc: >-
+      {{ sunbeam_node_prepare_rc
+         | combine({ (sunbeam_primary_node.vmid | string): (sunbeam_node_prepare_retry.rc | default(0) | int) }) }}
+  when: sunbeam_node_prepare_retry is not skipped
+
+- name: Collect the nodes whose prepare run failed and was not fixed by the retry
+  ansible.builtin.set_fact:
+    sunbeam_node_prepare_unfixed: >-
+      {{ (sunbeam_node_prepare_failed | default([]))
+         | difference([ sunbeam_primary_node.vmid | int ]
+                      if (sunbeam_node_prepare_retry is not skipped
+                          and (sunbeam_node_prepare_retry.rc | default(1) | int) == 0)
+                      else []) }}
+
+- name: Assert every node preparation run succeeded
+  ansible.builtin.assert:
+    that:
+      - item.vmid | int not in (sunbeam_node_prepare_unfixed | default([]))
+    fail_msg: >-
+      `sunbeam prepare-node-script` failed on {{ item.fqdn }}
+      (rc={{ sunbeam_node_prepare_rc[item.vmid | string] | default('?') }}).
+      The log of the last attempt is {{ sunbeam_node_log_dir }}/node-prepare.log inside the CT.
+      {{ 'The juju bootstrap on the primary needs the inner LXD default profile to carry '
+         ~ sunbeam_inner_lxd_raw_lxc ~ ' (see the retry above).' if item.primary else '' }}
+  loop: "{{ sunbeam_nodes }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Ensure the inner LXD masquerades the traffic of its own containers
+  ansible.builtin.include_tasks: _inner_lxd_nat.yml
+
+- name: Ensure the next free loop device exists inside the primary CT
+  ansible.builtin.include_tasks: _loop_devices.yml
+
+- name: Ensure the workers can reach the control-plane API endpoint
+  ansible.builtin.include_tasks: _control_plane_route.yml
 
 - name: Read the current MicroCeph OSD device setup script
   ansible.builtin.command:
@@ -402,14 +528,15 @@
 
 - name: Reload systemd inside the CTs whose drop-in changed
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.item.vmid }}", --, systemctl, daemon-reload]
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.item.item.vmid }}", --, systemctl, daemon-reload]
   loop: "{{ sunbeam_node_osd_dropin_push.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list }}"
   loop_control:
-    label: "{{ item.item.fqdn }}"
+    label: "{{ item.item.item.fqdn }}"
 
 - name: Report node preparation result
   ansible.builtin.debug:
     msg:
       - "Prepared nodes: {{ sunbeam_node_prepared.results | map(attribute='item.fqdn') | list | join(', ') }}"
       - "prepare-node-script run this time: {{ sunbeam_node_prepare_run.results | default([]) | selectattr('rc', 'defined') | map(attribute='item.item.fqdn') | list | join(', ') or 'none (all already prepared)' }}"
+      - "kernel-modules stub: {{ (sunbeam_kernel_modules_stub_run.results | default([]) | map(attribute='stdout') | map('trim') | list | join('; ')) if (sunbeam_kernel_modules_stub | bool) else 'disabled' }}"
       - "openstack snap: {{ sunbeam_snap_name }} {{ sunbeam_snap_channel }} rev {{ sunbeam_snap_revision }}"

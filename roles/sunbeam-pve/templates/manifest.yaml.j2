@@ -16,7 +16,8 @@ core:
         segmentation_id: {{ sunbeam_external_network.segmentation_id }}
         nics:
 {% for node in sunbeam_nodes %}
-          {{ node.fqdn }}: {{ sunbeam_manifest_external_nic }}
+{% set node_name = (sunbeam_node_names | default({})).get(node.vmid | string, node.hostname) %}
+          {{ node_name }}: {{ sunbeam_manifest_external_nic }}
 {% endfor %}
 {% if sunbeam_proxy_enabled | bool %}
     proxy:
@@ -34,8 +35,9 @@ core:
       security_group_rules: true
       remote_access_location: remote
       physnet: "{{ sunbeam_external_network.name }}"
-microceph_config:
+    microceph_config:
 {% for n in sunbeam_nodes %}
-  {{ n.fqdn }}:
-    osd_devices: {{ [n.osd_microceph_device] | to_json }}
+{% set node_name = (sunbeam_node_names | default({})).get(n.vmid | string, n.hostname) %}
+      {{ node_name }}:
+        osd_devices: {{ [n.osd_microceph_device] | to_json }}
 {% endfor %}

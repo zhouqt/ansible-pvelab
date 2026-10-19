@@ -8,7 +8,6 @@ su - {{ sunbeam_node_user }} -c 'sunbeam cluster bootstrap \
     --accept-defaults \
     --role {{ sunbeam_primary_node.role }} \
     --topology multi \
-    --controller {{ sunbeam_controller_name }} \
     --manifest {{ sunbeam_manifest_path }}' >"$log" 2>&1
 rc=$?
 

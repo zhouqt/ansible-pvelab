@@ -1,0 +1,51 @@
+#!/bin/bash
+set -u
+
+nic=${1:?usage: <nic> <gateway>}
+gateway=${2:?usage: <nic> <gateway>}
+api_host={{ sunbeam_control_plane_api_host }}
+api_port={{ sunbeam_control_plane_api_port }}
+dropin_name=50-sunbeam-control-plane.conf
+
+netfile=""
+for f in /etc/systemd/network/*.network; do
+    [ -e "$f" ] || continue
+    if awk -v want="$nic" '
+            /^\[Match\]/ { inmatch = 1; next }
+            /^\[/        { inmatch = 0 }
+            inmatch && tolower($1) == "name" {
+                if ($3 == want) { found = 1 }
+                exit
+            }
+            END { exit(found ? 0 : 1) }
+        ' "$f"; then
+        netfile="$f"
+        break
+    fi
+done
+
+if [ -z "$netfile" ]; then
+    echo "NETFILE=-"
+    echo "ROUTE=missing"
+    echo "DROPIN=missing"
+    exit 0
+fi
+echo "NETFILE=$netfile"
+
+if [ -f "${netfile}.d/${dropin_name}" ]; then
+    echo "DROPIN=present"
+else
+    echo "DROPIN=missing"
+fi
+
+if ip route get "$api_host" 2>/dev/null | grep -q "via ${gateway}"; then
+    echo "ROUTE=ok"
+else
+    echo "ROUTE=missing"
+    echo "ROUTE_LINE=$(ip route get "$api_host" 2>&1 | head -1)"
+    exit 0
+fi
+
+api=$(curl -sk -m 10 -o /dev/null -w '%{http_code}' "https://${api_host}:${api_port}/" 2>/dev/null || true)
+echo "API=${api:-none}"
+exit 0

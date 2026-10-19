@@ -1,0 +1,49 @@
+---
+
+- name: Reclaim rawfile CSI loop devices left behind by stopped containers
+  ansible.builtin.command:
+    argv: ["/bin/bash", "-s"]
+    stdin: "{{ lookup('template', 'reap-stale-csi-loops.sh.j2') }}"
+  register: sunbeam_loop_reap
+  changed_when: "'RECLAIMED=0 ' not in (sunbeam_loop_reap.stdout | default(''))"
+  when:
+    - sunbeam_primary_node.loop_devices | bool
+    - sunbeam_loop_reap_stale_csi_devices | bool
+
+- name: Report the reclaimed loop devices
+  ansible.builtin.debug:
+    msg: "{{ sunbeam_loop_reap.stdout_lines }}"
+  when:
+    - sunbeam_primary_node.loop_devices | bool
+    - sunbeam_loop_reap_stale_csi_devices | bool
+    - not (sunbeam_loop_reap.skipped | default(false) | bool)
+
+- name: Read the loop device the kernel would hand out next inside the primary CT
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ sunbeam_primary_node.vmid }}", "--", bash, "-s"]
+    stdin: "{{ lookup('template', 'check-loop-headroom.sh.j2') }}"
+  register: sunbeam_loop_headroom
+  changed_when: false
+  failed_when: false
+  when: sunbeam_primary_node.loop_devices | bool
+
+- name: Assert the next free loop device exists inside the primary CT
+  ansible.builtin.assert:
+    that:
+      - "'PRESENT=yes' in (sunbeam_loop_headroom.stdout | default(''))"
+    fail_msg: >-
+      The kernel would hand out a loop device that does not exist inside
+      {{ sunbeam_primary_node.fqdn }} (probe rc={{ sunbeam_loop_headroom.rc | default('n/a') }},
+      output: {{ sunbeam_loop_headroom.stdout | default('(none)') | trim | replace('\n', ' ') | truncate(200, true) }}).
+      rawfile CSI mounts every PVC through `losetup -f`, so the control-plane
+      deploy would hang with pods stuck at Init:0/1
+      (`losetup: failed to set up loop device: No such file or directory`).
+      This CT only passes loop{{ sunbeam_loop_device_first }}..loop{{ sunbeam_loop_device_last }}
+      plus sunbeam_loop_device_low_slots; the loop devices in between are still
+      attached on the host, usually to the `/pvc-*/disk.img` images of a
+      destroyed or stopped cluster -- a destroyed CT does not detach them.
+      Either free them (re-run this stage with
+      -e sunbeam_loop_reap_stale_csi_devices=true) or widen the range passed into
+      the CT (sunbeam_loop_device_first / sunbeam_loop_device_last /
+      sunbeam_loop_device_low_slots) so the number the kernel picks is covered.
+  when: sunbeam_primary_node.loop_devices | bool

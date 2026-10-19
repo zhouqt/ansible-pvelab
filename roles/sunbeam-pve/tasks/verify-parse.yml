@@ -151,6 +151,28 @@
       - "OSD tree:"
       - "{{ sunbeam_verify['CEPH_OSD_TREE'].split('\n') }}"
 
+- name: Assert the openstack model status carries an application map
+  ansible.builtin.assert:
+    that:
+      - "'applications' in (sunbeam_verify['JUJU_OPENSTACK'] | from_json)"
+    fail_msg: >-
+      `juju status -m {{ sunbeam_juju_openstack_model }} --format json` returned no
+      applications, so the model did not resolve or is empty. Check that name on the
+      primary ({{ sunbeam_primary_node.fqdn }}); the templates run juju as
+      {{ sunbeam_node_user }}, so a model owned by another juju user has to be spelled
+      <user>/<model>.
+
+- name: Assert the machines model status carries an application map
+  ansible.builtin.assert:
+    that:
+      - "'applications' in (sunbeam_verify['JUJU_MACHINES'] | from_json)"
+    fail_msg: >-
+      `juju status -m {{ sunbeam_juju_machines_model }} --format json` returned no
+      applications, so the model did not resolve or is empty. Check that name on the
+      primary ({{ sunbeam_primary_node.fqdn }}); Sunbeam creates the IAAS model under
+      the controller's `admin` user, which is why the default is
+      `admin/openstack-machines` and not the bare name.
+
 - name: Compute the non-active applications in the openstack model
   ansible.builtin.set_fact:
     sunbeam_verify_openstack_bad: >-
@@ -230,7 +252,8 @@
 - name: Assert the metadata data path bypasses the HTTP proxy on every node
   ansible.builtin.assert:
     that:
-      - item.stdout is search('env=agent code=(400|404) ')
+      - "'env=agent' in (item.stdout | default(''))"
+      - item.stdout is search('code=(400|404) ')
       - >-
         not (sunbeam_proxy_enabled | bool)
         or item.stdout is search('METADATA host=\S+ env=agent proxy=enabled bypass=True code=(400|404) ')

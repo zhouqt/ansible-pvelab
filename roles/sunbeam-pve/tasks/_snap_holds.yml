@@ -86,11 +86,10 @@
 
 - name: Hold the pinned snaps on the nodes that have no hold on them
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, snap, refresh, "--hold=forever", "{{ item.item }}"]
-  loop: "{{ sunbeam_hold_plan }}"
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.0.vmid }}", --, snap, refresh, "--hold=forever", "{{ item.1 }}"]
+  loop: "{{ sunbeam_hold_plan | subelements('need_snaps') }}"
   loop_control:
-    label: "{{ item.fqdn }} {{ item.item }}"
-  when: item.item in (item.need_snaps | list)
+    label: "{{ item.0.fqdn }} {{ item.1 }}"
 
 - name: Hold the snapd deb on the nodes where apt has not held it
   ansible.builtin.command:
@@ -120,7 +119,7 @@
         or (item.stdout | regex_findall('(?m)^GLOBAL_HOLD=(.*)$') | first | default('-')) != '-'
       - >-
         not (sunbeam_hold_snapd_deb | bool)
-        or "'APT_SNAPPD_HOLD=held' in (item.stdout | default(''))"
+        or 'APT_SNAPPD_HOLD=held' in (item.stdout | default(''))
     fail_msg: >-
       The holds requested on {{ item.item.fqdn }} are not in place after applying them --
       probe said '{{ item.stdout | default('') | trim }}'.

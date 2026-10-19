@@ -12,6 +12,30 @@
       ({{ sunbeam_controller_name }}).
       To confirm, pass -e sunbeam_confirm_cluster_join=true -e sunbeam_confirm_external_changes=true.
 
+- name: Resolve the Sunbeam node identities
+  ansible.builtin.include_tasks: _node_identity.yml
+
+- name: Ensure the workers can reach the control-plane API endpoint
+  ansible.builtin.include_tasks: _control_plane_route.yml
+
+- name: Require every worker to get an answer from the control-plane API endpoint
+  ansible.builtin.assert:
+    that:
+      - "'API=none' not in (item.stdout | default(''))"
+      - "'API=000' not in (item.stdout | default(''))"
+    fail_msg: >-
+      A worker can route to {{ sunbeam_control_plane_api_host }} but nothing answers
+      there, so `sunbeam cluster join` would fail on it with "Juju Controller is not
+      reachable". The endpoint is served by the loadbalancer inside
+      {{ sunbeam_primary_node.fqdn }}: check that the controller is running there
+      (`juju controllers`, `kubectl -n controller-sunbeam-controller get svc`) and
+      that sunbeam_k8s_loadbalancer_range ({{ sunbeam_k8s_loadbalancer_range }}) still
+      covers it. The per-node probe output is in the
+      "Report the control-plane route state of every worker" task above.
+  loop: "{{ sunbeam_control_plane_route.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.fqdn | default('unknown') }}"
+
 - name: Read the current cluster membership from the primary
   ansible.builtin.command:
     argv:
@@ -39,6 +63,61 @@
 - name: Report which nodes still need to join
   ansible.builtin.debug:
     msg: "{{ sunbeam_cluster_members.stdout_lines }}"
+
+- name: Refuse to join while a node is half-joined
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (('microcluster ' ~ item.fqdn ~ '=yes') in sunbeam_cluster_members.stdout
+             and ('member ' ~ item.fqdn ~ '=no') in sunbeam_cluster_members.stdout)
+        or sunbeam_join_remove_half_joined_nodes | bool
+    fail_msg: >-
+      {{ item.fqdn }} is a member of the Sunbeam cluster daemon but does not run
+      Sunbeam: the cluster knows it, `sunbeam cluster list` does not list it. This
+      is what a join that died half-way leaves behind (the cold 1201-1203 build
+      did exactly this on both workers while the workers could not reach the
+      controller endpoint), and it cannot be joined again as is: `sunbeam cluster
+      add {{ item.fqdn }}` reports "Node is already a member of the Sunbeam
+      cluster", exits 0 and writes an empty token file.
+      Remove the leftover member and repeat this stage:
+      pct exec {{ sunbeam_primary_node.vmid }} -- su - {{ sunbeam_node_user }} -c
+      'sunbeam cluster remove {{ item.fqdn }} --force'
+      or let the playbook do it with -e sunbeam_join_remove_half_joined_nodes=true.
+  loop: "{{ sunbeam_nodes }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Remove the half-joined nodes from the cluster daemon
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ sunbeam_node_user }}"
+      - -c
+      - "sunbeam cluster remove {{ item.fqdn }} --force"
+  loop: "{{ sunbeam_nodes }}"
+  loop_control:
+    label: "{{ item.fqdn }}"
+  register: sunbeam_join_remove_half_joined
+  when:
+    - sunbeam_join_remove_half_joined_nodes | bool
+    - >-
+      ('microcluster ' ~ item.fqdn ~ '=yes') in sunbeam_cluster_members.stdout
+      and ('member ' ~ item.fqdn ~ '=no') in sunbeam_cluster_members.stdout
+
+- name: Report the removed half-joined members
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item.fqdn }} was removed from the cluster daemon (rc={{ item.rc }});
+      it can now join normally.
+  loop: "{{ sunbeam_join_remove_half_joined.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.fqdn | default('unknown') }}"
+  when: not (item.skipped | default(false) | bool)
 
 - name: Read the current join wrapper inside every worker CT
   ansible.builtin.command:
@@ -104,10 +183,10 @@
       - "{{ sunbeam_primary_node.vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ sunbeam_node_user }}"
       - -c
-      - "sunbeam cluster add {{ item.fqdn }} --output {{ sunbeam_join_token_primary_path }}"
+      - "sunbeam cluster add {{ sunbeam_node_names[item.vmid | string] | default(item.hostname) }} --output {{ sunbeam_join_token_primary_path }}"
   loop: "{{ sunbeam_worker_nodes }}"
   vars:
     vmid: "{{ item.vmid }}"
@@ -176,14 +255,15 @@
       - item.stat.exists
       - item.stat.size | default(0) > 0
     fail_msg: >-
-      The join token for {{ item.item.fqdn }} could not be pulled from
-      {{ sunbeam_primary_node.fqdn }} ({{ sunbeam_staging_dir }}/{{ item.item.vmid }}-join-token.asc
-      is {{ 'missing' if not item.stat.exists else 'empty' }}). Stopping before any node is
-      joined rather than half-joining the cluster; the staged tokens are left in place so
-      the run can simply be repeated.
-  loop: "{{ sunbeam_join_token_staged.results }}"
+      A node has no usable join token staged on the PVE host, so this run stops
+      before joining anything rather than half-joining the cluster. Look for
+      `<vmid>-join-token.asc` in {{ sunbeam_staging_dir }}/: a missing file means
+      `sunbeam cluster add` produced none, an empty one means the node is already
+      a member of the cluster daemon (see the half-joined gate above). The staged
+      tokens are left in place, so the run can simply be repeated.
+  loop: "{{ sunbeam_join_token_staged.results | default([]) | selectattr('stat', 'defined') | list }}"
   loop_control:
-    label: "{{ item.item.fqdn }}"
+    label: "{{ item.item.item.fqdn }}"
 
 - name: Push each join token into its worker CT
   ansible.builtin.command:
@@ -212,7 +292,7 @@
       - "{{ item.item.vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ sunbeam_node_user }}"
       - -c
       - "{{ sunbeam_join_wrapper_path }} {{ item.item.role }}"
@@ -221,8 +301,21 @@
   register: sunbeam_join_run
   async: "{{ sunbeam_join_timeout }}"
   poll: "{{ sunbeam_poll_interval }}"
+  failed_when: false
   loop_control:
     label: "{{ item.item.fqdn }}"
+
+- name: Report the join CLI exit code of every node that ran a join
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item.item.fqdn }}: join CLI rc={{ item.rc }}. The CLI exit code is not
+      the verdict -- a node can do its whole join and still exit non-zero when a
+      charm hook is slow or briefly in error (see the note on the join task). The
+      membership assertions after the re-read decide whether the node is in.
+  loop: "{{ sunbeam_join_run.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.item.fqdn | default('unknown') }}"
+  when: not (item.skipped | default(false) | bool)
 
 - name: Remove the join token from the worker CTs that joined successfully
   ansible.builtin.command:
@@ -277,8 +370,15 @@
     that:
       - "('member ' ~ item.fqdn ~ '=yes') in sunbeam_cluster_members_after.stdout"
     fail_msg: >-
-      {{ item.fqdn }} failed to join the cluster. Check the logs under
-      {{ sunbeam_node_log_dir }}/ inside that CT and the `sunbeam cluster list` output.
+      {{ item.fqdn }} is still not a member of the Sunbeam cluster. The join CLI
+      reported
+      {{ (sunbeam_join_run.results | default([])
+          | selectattr('item.item.fqdn', 'eq', item.fqdn)
+          | map(attribute='rc') | first) | default('n/a (no join ran for it)') }}
+      for that node; check the logs under {{ sunbeam_node_log_dir }}/ inside its CT
+      and `sunbeam cluster list` on {{ sunbeam_primary_node.fqdn }}. A node that
+      the cluster daemon already knows but Sunbeam does not is a join that died
+      half-way -- see the half-joined gate at the top of this stage.
   loop: "{{ sunbeam_nodes }}"
   loop_control:
     label: "{{ item.fqdn }}"

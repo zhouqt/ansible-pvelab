@@ -1,18 +1,41 @@
 #!/bin/bash
 set -euo pipefail
 
-changed=0
+hosts=/etc/hosts
+desired=$(mktemp)
+work=$(mktemp)
+trap 'rm -f "$desired" "$work" "$work.next" "$work.final"' EXIT
 
-ensure_host() {
-    local line="$1" fqdn="$2"
-    if ! grep -qw "$fqdn" /etc/hosts; then
-        echo "$line" >> /etc/hosts
-        changed=$((changed + 1))
-    fi
-}
-
+cat > "$desired" <<'EOF'
 {% for node in sunbeam_nodes %}
-ensure_host "{{ node.pub_ip }} {{ node.fqdn }} {{ node.hostname }}" "{{ node.fqdn }}"
+{{ node.pub_ip }} {{ node.fqdn }} {{ node.hostname }}
 {% endfor %}
+EOF
+
+cp "$hosts" "$work"
+{% for node in sunbeam_nodes %}
+grep -v -w '{{ node.fqdn }}' "$work" > "$work.next" || true
+mv "$work.next" "$work"
+{% endfor %}
+
+awk -v desired="$desired" '
+    /^# --- BEGIN PVE ---/ && !inserted {
+        while ((getline line < desired) > 0) print line
+        inserted = 1
+    }
+    { print }
+    END {
+        if (!inserted) {
+            while ((getline line < desired) > 0) print line
+        }
+    }
+' "$work" > "$work.final"
+
+if cmp -s "$hosts" "$work.final"; then
+    changed=0
+else
+    cat "$work.final" > "$hosts"
+    changed=1
+fi
 
 echo "hosts changed=$changed"

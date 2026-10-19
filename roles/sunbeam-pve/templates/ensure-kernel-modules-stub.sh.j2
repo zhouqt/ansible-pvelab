@@ -1,0 +1,31 @@
+#!/bin/bash
+set -eu
+
+pkg="linux-modules-extra-$(uname -r)"
+
+if dpkg -s "$pkg" >/dev/null 2>&1; then
+    echo "KERNEL_STUB=present pkg=$pkg"
+    exit 0
+fi
+
+build_dir=$(mktemp -d)
+trap 'rm -rf "$build_dir"' EXIT
+mkdir -p "$build_dir/DEBIAN"
+cat > "$build_dir/DEBIAN/control" <<EOF
+Package: $pkg
+Version: $(uname -r | cut -d- -f1)
+Architecture: all
+Maintainer: homelab ops <root@localhost>
+Section: kernel
+Description: stub for the PVE host kernel modules package name
+ Inside an LXC container the kernel and its modules belong to the host, so
+ Ubuntu can never ship linux-modules-extra for a PVE kernel. The
+ sunbeam-machine charm installs this package name verbatim; this stub makes
+ apt consider it present without shipping any modules.
+EOF
+deb=$(mktemp --suffix=.deb)
+dpkg-deb --build "$build_dir" "$deb" >/dev/null
+dpkg -i "$deb" >/dev/null
+rm -f "$deb"
+
+echo "KERNEL_STUB=installed pkg=$pkg"

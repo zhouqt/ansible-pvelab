@@ -23,3 +23,42 @@ else
     echo "member {{ node.fqdn }}=no"
 fi
 {% endfor %}
+
+mc=$(curl -s --unix-socket /var/snap/openstack/common/state/control.socket \
+    http://localhost/core/1.0/cluster 2>/dev/null || true)
+
+if [ -z "$mc" ]; then
+    echo "microcluster=unreadable"
+{% for node in sunbeam_nodes %}
+    echo "microcluster {{ node.fqdn }}=unknown"
+{% endfor %}
+    exit 0
+fi
+
+mc_names=$(printf '%s' "$mc" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+for member in data.get("metadata") or []:
+    print(member.get("name", ""))
+' 2>/dev/null)
+
+if [ -z "$mc_names" ]; then
+    echo "microcluster=unreadable"
+{% for node in sunbeam_nodes %}
+    echo "microcluster {{ node.fqdn }}=unknown"
+{% endfor %}
+    exit 0
+fi
+echo "microcluster=ok"
+
+{% for node in sunbeam_nodes %}
+if printf '%s\n' "$mc_names" | grep -qxF '{{ node.fqdn }}'; then
+    echo "microcluster {{ node.fqdn }}=yes"
+else
+    echo "microcluster {{ node.fqdn }}=no"
+fi
+{% endfor %}
+
