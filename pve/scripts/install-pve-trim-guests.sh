@@ -23,6 +23,8 @@ INCLUDE_STOPPED="${TRIM_INCLUDE_STOPPED:-0}"
 DRY_RUN="${TRIM_DRY_RUN:-0}"
 QUIET="${TRIM_QUIET:-1}"
 
+LVM_WARNINGS=""
+
 GUEST_NICE=(nice -n 19)
 command -v ionice >/dev/null 2>&1 && GUEST_NICE+=(ionice -c3)
 
@@ -54,10 +56,15 @@ trim_ct() {
         return 0
     fi
 
-    trimmed=$(printf '%s\n' "$out" | grep 'trimmed on' | grep -v '0 B (0 bytes)' \
-              | sed "s#/var/lib/lxc/$vmid/rootfs#<rootfs>#")
+    trimmed=$(printf '%s\n' "$out" | grep 'trimmed' | grep -v '0 B (0 bytes)' \
+              | sed -e "s#^/var/lib/lxc/$vmid/rootfs#<rootfs>#" -e "s#^<rootfs>/:#<rootfs>:#")
     errs=$(printf '%s\n' "$out" | grep -iE 'fstrim:.*(failed|error|permitted|not supported)' || true)
-    other=$(printf '%s\n' "$out" | grep -viE 'trimmed on|fstrim:' || true)
+
+    lvm_warn=$(printf '%s\n' "$out" | grep -oE 'WARNING: Thin volume [^;]*' \
+               | sed -E 's/maps [0-9]+/maps N/' | sort -u || true)
+    [ -n "$lvm_warn" ] && LVM_WARNINGS="${LVM_WARNINGS}${lvm_warn}"$'\n'
+
+    other=$(printf '%s\n' "$out" | grep -viE 'trimmed|fstrim:|WARNING: Thin volume' || true)
 
     if [ -n "$trimmed" ]; then
         while IFS= read -r line; do log "ct/$vmid ($name): $line"; done <<< "$trimmed"
@@ -141,6 +148,15 @@ main() {
 
     log "===== end -- thin pool allocated data: $(gib "$before") GiB -> $(gib "$after") GiB" \
         "(${delta_txt}); processed ${n_ct} containers and ${n_vm} KVM VMs ====="
+
+    if printf '%s' "$LVM_WARNINGS" | grep -q '[^[:space:]]'; then
+        log "note: the mappings of the thin volumes below disagree with their virtual size (unrelated to this trim, it is pre-existing pool state,"
+        log "      printed every time pct fstrim activates a volume). The usual cause is that the volume was lvreduce'd/shrunk;"
+        log "      pool blocks past the end of the volume are never reclaimed by fstrim; the only fix is to back up and rebuild the volume:"
+        printf '%s\n' "$LVM_WARNINGS" | sort -u | grep . | while IFS= read -r line; do
+            log "    $line"
+        done
+    fi
 }
 
 main "$@"
