@@ -3,8 +3,33 @@ set -u
 
 rc_path={{ sunbeam_admin_openrc_path }}
 
-if [ -s "$rc_path" ]; then
-    echo "configured=yes"
-else
+required_keys="OS_AUTH_URL OS_IDENTITY_API_VERSION OS_PROJECT_DOMAIN_NAME OS_USER_DOMAIN_NAME OS_USERNAME OS_PASSWORD OS_PROJECT_NAME OS_REGION_NAME"
+
+if [ ! -e "$rc_path" ]; then
     echo "configured=no"
+    echo "openrc=absent"
+    exit 0
+fi
+
+if [ ! -s "$rc_path" ]; then
+    echo "configured=no"
+    echo "openrc=empty"
+    exit 0
+fi
+
+present=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\{0,1\}\([A-Z_][A-Z0-9_]*\)=.*/\2/p' "$rc_path" | sort -u)
+
+missing=""
+for key in $required_keys; do
+    if ! printf '%s\n' "$present" | grep -qx "$key"; then
+        missing="$missing $key"
+    fi
+done
+
+echo "openrc=present mode=$(stat -c '%a' "$rc_path" 2>/dev/null || echo '?') keys=$(printf '%s\n' "$present" | wc -l)"
+
+if [ -n "$missing" ]; then
+    echo "configured=partial missing=${missing# }"
+else
+    echo "configured=yes"
 fi

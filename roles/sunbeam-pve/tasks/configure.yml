@@ -25,11 +25,76 @@
   changed_when: false
   failed_when: false
 
+- name: Classify the deployment configuration state
+  ansible.builtin.set_fact:
+    sunbeam_configure_state: >-
+      {{ (sunbeam_deployment_state.stdout | default(''))
+         | regex_findall('(?m)^configured=(\S+)') | first | default('unknown') }}
+    sunbeam_configure_missing: >-
+      {{ (sunbeam_deployment_state.stdout | default(''))
+         | regex_findall('(?m)^configured=partial missing=(.*)$') | first | default('') }}
+
+- name: Refuse to walk past a half-written openrc
+  ansible.builtin.assert:
+    that:
+      - sunbeam_repair_openrc | bool or sunbeam_force_configure | bool
+    fail_msg: >-
+      {{ sunbeam_admin_openrc_path }} exists but is incomplete: missing
+      {{ sunbeam_configure_missing | default('(unknown keys)') }}.
+      Running further would leave every OpenStack call failing on an incomplete
+      environment. Either repair the credentials in place with
+      -e sunbeam_repair_openrc=true (re-renders the openrc, touches no cloud resources),
+      or replay the whole configuration with -e sunbeam_force_configure=true.
+  when: sunbeam_configure_state == 'partial'
+
+- name: Repair the half-written openrc
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'run-refresh-openrc.sh.j2') }}"
+  register: sunbeam_openrc_repair
+  when:
+    - sunbeam_configure_state == 'partial'
+    - sunbeam_repair_openrc | bool
+
+- name: Re-check the openrc after the repair
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'check-deployment-configured.sh.j2') }}"
+  register: sunbeam_deployment_state_repaired
+  changed_when: false
+  failed_when: false
+  when:
+    - sunbeam_configure_state == 'partial'
+    - sunbeam_repair_openrc | bool
+
+- name: Assert the repaired openrc is complete
+  ansible.builtin.assert:
+    that:
+      - "'configured=yes' in (sunbeam_deployment_state_repaired.stdout | default(''))"
+    fail_msg: >-
+      The openrc repair ran but {{ sunbeam_admin_openrc_path }} is still incomplete:
+      {{ sunbeam_deployment_state_repaired.stdout | default('') | trim | default('(no output)', true) }}.
+      Check {{ sunbeam_node_log_dir }}/refresh-openrc.log inside {{ sunbeam_primary_node.fqdn }}.
+  when:
+    - sunbeam_configure_state == 'partial'
+    - sunbeam_repair_openrc | bool
+
 - name: Decide whether configure deployment must run
   ansible.builtin.set_fact:
     sunbeam_configure_needed: >-
-      {{ 'configured=no' in sunbeam_deployment_state.stdout
-         or sunbeam_force_configure | bool }}
+      {{ sunbeam_configure_state != 'yes' or sunbeam_force_configure | bool }}
 
 - name: Render the Sunbeam deployment manifest
   ansible.builtin.template:
@@ -139,8 +204,16 @@
 
 - name: Report deployment configuration result
   ansible.builtin.debug:
-    msg:
-      - "openrc: {{ sunbeam_admin_openrc_path }} ({{ sunbeam_node_user }}, 0600)"
-      - "configure deployment executed this run: {{ 'yes' if sunbeam_configure_needed | bool else 'no (already configured)' }}"
-      - "resource inventory:"
-      - "{{ sunbeam_deployment_inventory.stdout_lines }}"
+    msg: >-
+      {{ [
+           'openrc: ' ~ sunbeam_admin_openrc_path ~ ' (' ~ sunbeam_node_user ~ ', 0600)',
+           'configure deployment state on entry: ' ~ sunbeam_configure_state,
+         ]
+         + (['missing openrc keys: ' ~ sunbeam_configure_missing]
+            if (sunbeam_configure_missing | default('') | length > 0) else [])
+         + [
+           'configure deployment executed this run: '
+           ~ ('yes' if sunbeam_configure_needed | bool else 'no (already configured)'),
+           'resource inventory:',
+         ]
+         + sunbeam_deployment_inventory.stdout_lines }}
