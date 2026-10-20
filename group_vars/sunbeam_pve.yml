@@ -22,6 +22,7 @@ sunbeam_osd_microceph_device_prefix: pve-ceph-osd-device-
 sunbeam_osd_slots_default: { lv: 40, by_id: 41 }
 sunbeam_char_devices_default:
   - { index: 0, path: "/dev/kmsg", mode: "0644", extra: "deny-write=1" }
+  - { index: 1, path: "/dev/loop-control", mode: "0660" }
   - { index: 33, path: "/dev/kvm", mode: "0660" }
   - { index: 34, path: "/dev/net/tun", mode: "0666" }
 sunbeam_loop_device_first: 2
@@ -32,51 +33,38 @@ sunbeam_loop_device_low_slots:
 sunbeam_loop_reap_stale_csi_devices: false
 
 sunbeam_nodes_input:
-  - vmid: 1281
+  - vmid: 1201
     hostname: sunbeam-01
     primary: true
     role: control,compute,storage
-    pub_ip: 192.168.21.21
-    internal_ip: 192.168.23.21
-    osd_slots: { lv: 32, by_id: 35 }
-    char_devices:
-      - { index: 0, path: "/dev/kmsg", mode: "0644", extra: "deny-write=1" }
-      - { index: 1, path: "/dev/loop-control", mode: "0660" }
-      - { index: 33, path: "/dev/net/tun", mode: "0666" }
-      - { index: 34, path: "/dev/kvm", mode: "0660" }
+    pub_ip: 192.168.21.31
+    internal_ip: 192.168.23.31
     mounts:
       - "/proc/sys/vm/overcommit_memory proc/sys/vm/overcommit_memory none bind,create=file 0 0"
       - "/proc/sys/kernel/panic proc/sys/kernel/panic none bind,create=file 0 0"
       - "/proc/sys/kernel/panic_on_oops proc/sys/kernel/panic_on_oops none bind,create=file 0 0"
       - "/dev/loop-control dev/loop-control none bind,create=file 0 0"
-  - vmid: 1282
+  - vmid: 1202
     hostname: sunbeam-02
     primary: false
     role: compute,storage
-    pub_ip: 192.168.21.22
-    internal_ip: 192.168.23.22
-    osd_slots: { lv: 3, by_id: 35 }
-    char_devices:
-      - { index: 0, path: "/dev/kmsg", mode: "0644", extra: "deny-write=1" }
-      - { index: 1, path: "/dev/kvm", mode: "0660" }
-      - { index: 2, path: "/dev/net/tun", mode: "0666" }
-  - vmid: 1283
+    pub_ip: 192.168.21.32
+    internal_ip: 192.168.23.32
+    mounts:
+      - "/dev/loop-control dev/loop-control none bind,create=file 0 0"
+  - vmid: 1203
     hostname: sunbeam-03
     primary: false
     role: compute,storage
-    pub_ip: 192.168.21.23
-    internal_ip: 192.168.23.23
-    osd_slots: { lv: 4, by_id: 35 }
-    char_devices:
-      - { index: 0, path: "/dev/kmsg", mode: "0644", extra: "deny-write=1" }
-      - { index: 1, path: "/dev/kvm", mode: "0660" }
-      - { index: 2, path: "/dev/vhost-vsock", mode: "0660" }
-      - { index: 3, path: "/dev/net/tun", mode: "0666" }
+    pub_ip: 192.168.21.33
+    internal_ip: 192.168.23.33
+    mounts:
+      - "/dev/loop-control dev/loop-control none bind,create=file 0 0"
 
 sunbeam_cluster_list_expected_nodes: 3
 
 sunbeam_interface_names: { generic: eth0, internal: eth1, external: eth2 }
-sunbeam_pve_bridges: { generic: pub21, internal: int23, external: pub12 }
+sunbeam_pve_bridges: { generic: pub21, internal: int23, external: pub22 }
 
 sunbeam_management_cidr: 192.168.21.0/24
 sunbeam_management_gateway: 192.168.21.1
@@ -84,14 +72,14 @@ sunbeam_internal_cidr: 192.168.23.0/24
 sunbeam_external_network:
   name: physnet1
   openstack_name: external-network
-  cidr: 192.168.12.0/24
-  gateway: 192.168.12.1
-  floating_range: 192.168.12.200-192.168.12.229
+  cidr: 192.168.22.0/24
+  gateway: 192.168.22.1
+  floating_range: 192.168.22.200-192.168.22.229
   network_type: flat
   segmentation_id: 0
-  allow_shared_l2: true
+  allow_shared_l2: false
 sunbeam_external_reserved_ips:
-  - 192.168.12.1
+  - 192.168.22.1
 sunbeam_external_reserved_ranges: []
 sunbeam_k8s_loadbalancer_range: 172.16.1.201-172.16.1.240
 sunbeam_k8s_loadbalancer_cidr: 172.16.1.0/24
@@ -99,9 +87,10 @@ sunbeam_tenant_cidr: 192.168.0.0/24
 sunbeam_tenant_network_name: demo-network
 sunbeam_dns_nameservers: 8.8.8.8
 
-sunbeam_proxy_enabled: true
+sunbeam_proxy_enabled: false
 sunbeam_proxy_allow_unreachable: false
 sunbeam_proxy_url: http://192.168.11.2:12345
+sunbeam_snapd_store_proxy_url: http://192.168.11.1:12345
 sunbeam_proxy_no_proxy_tail:
   - 10.1.0.0/16
   - 10.140.97.0/24
@@ -164,6 +153,16 @@ sunbeam_repair_openrc: false
 sunbeam_ceph_remove_bootstrap_osd: false
 sunbeam_pve_preflight_only: false
 
+sunbeam_env_id: env2
+sunbeam_savepoint_tag: noble-sunbeam-2024.1
+sunbeam_savepoint_name: ""
+sunbeam_savepoint_prefix: "sp-{{ sunbeam_savepoint_tag }}-{{ sunbeam_env_id }}{% if sunbeam_savepoint_name | length > 0 %}-{{ sunbeam_savepoint_name }}{% endif %}"
+sunbeam_savepoint_take: false
+sunbeam_savepoint_restore: false
+sunbeam_savepoint_include_osd: true
+sunbeam_savepoint_repair_network: true
+sunbeam_savepoint_verify_fip_ping: true
+
 sunbeam_nodes: >-
   {%- set ns = namespace(out=[]) -%}
   {%- for n in sunbeam_nodes_input -%}
@@ -212,6 +211,9 @@ sunbeam_host_expected_subnets:
   - "{{ sunbeam_external_network.cidr }}"
 sunbeam_host_expected_subnet_ids: >-
   {{ sunbeam_host_expected_subnets | map('regex_replace', '/', '-') | list }}
+sunbeam_host_expected_snat_cidrs:
+  - "{{ sunbeam_management_cidr }}"
+  - "{{ sunbeam_external_network.cidr }}"
 sunbeam_manifest_external_nic: "{{ sunbeam_interface_names.external }}"
 sunbeam_vm_test_network: "{{ sunbeam_tenant_network_name }}"
 
@@ -229,23 +231,22 @@ sunbeam_tls_endpoint_apps:
   internal: traefik
   rgw: traefik-rgw
 
-sunbeam_ceph_unmanaged_osds:
-  - { osd: 1, location: sunbeam-01, path: /var/snap/microceph/common/data/osd/ceph-1/osd-backing.img }
+sunbeam_ceph_unmanaged_osds: []
 sunbeam_ceph_expected_osds: >-
   {{ (sunbeam_ceph_managed_osd_devices | int)
      + (0 if (sunbeam_ceph_remove_bootstrap_osd | bool) else (sunbeam_ceph_unmanaged_osds | length)) }}
-sunbeam_ceph_expected_pgs: 193
+sunbeam_ceph_expected_pgs: 385
 sunbeam_ceph_expected_pools: 7
 sunbeam_ceph_pool_size: 3
 sunbeam_ceph_pool_min_size: 2
 sunbeam_health_require_all_active: false
 sunbeam_known_blocked_applications: [sunbeam-machine]
 sunbeam_ceph_tolerated_warnings:
-  - "is low on available space"
+  - "pool\\(s\\) have no replicas configured"
   - "experiencing slow operations in BlueStore"
 sunbeam_pve_module_release: 7.0.2-6-pve
 
-sunbeam_baseline_fingerprint: "84753f2d-7b95-4e9b-8047-e1fd516e1c62"
+sunbeam_baseline_fingerprint: "2faacd72-c0f3-4c39-ac88-302eb9ee15c7"
 sunbeam_baseline_enforced: true
 
 sunbeam_thinpool_max_data_percent: 90
@@ -268,6 +269,9 @@ sunbeam_vm_test_image_name: sunbeam-ansible-cirros-smoke
 sunbeam_vm_test_volume_size_gb: 1
 sunbeam_vm_test_cirros_url: "{{ sunbeam_cirros_image_url }}"
 sunbeam_vm_test_flavor: m1.tiny
+sunbeam_vm_test_ping: false
+sunbeam_vm_test_security_group: sunbeam-ansible-smoke
+sunbeam_vm_test_ping_timeout: 120
 
 sunbeam_flavors:
   - { name: cirros,      ram: 512,  disk: 1,  vcpus: 1 }

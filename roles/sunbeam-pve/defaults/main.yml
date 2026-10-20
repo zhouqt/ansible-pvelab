@@ -12,6 +12,8 @@ sunbeam_valid_stages:
   - flavors
   - verify
   - vm-volume-test
+  - savepoint
+  - savepoint-restore
 sunbeam_stage: status
 
 sunbeam_readonly_stages: [status, verify]
@@ -37,6 +39,8 @@ sunbeam_k8s_loadbalancer_cidr: ""
 sunbeam_proxy_enabled: false
 sunbeam_proxy_allow_unreachable: false
 
+sunbeam_snapd_store_proxy_url: ""
+
 sunbeam_thinpool_max_data_percent: 90
 sunbeam_ct_rootfs_warn_percent: 85
 
@@ -48,6 +52,19 @@ sunbeam_baseline_enforced: true
 sunbeam_vm_volume_test: false
 sunbeam_vm_test_keep: false
 sunbeam_health_require_all_active: false
+
+sunbeam_savepoint_take: false
+sunbeam_savepoint_restore: false
+sunbeam_savepoint_include_osd: true
+sunbeam_savepoint_repair_network: true
+sunbeam_savepoint_verify_openstack: true
+sunbeam_savepoint_verify_fip_ping: true
+sunbeam_savepoint_preflight_only: false
+sunbeam_savepoint_detach_guest_loops: true
+sunbeam_savepoint_repair_mon: true
+sunbeam_savepoint_metadata_dir: /root
+sunbeam_restore_timeout: 1800
+sunbeam_restore_first_window: 300
 
 sunbeam_force_node_prepare: false
 

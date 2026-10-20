@@ -15,6 +15,11 @@ net={{ sunbeam_vm_test_network }}
 size={{ sunbeam_vm_test_volume_size_gb }}
 img_file={{ sunbeam_node_home }}/{{ sunbeam_vm_test_image_name }}.img
 keep={{ 'yes' if sunbeam_vm_test_keep else 'no' }}
+ping={{ 'yes' if sunbeam_vm_test_ping else 'no' }}
+ping_timeout={{ sunbeam_vm_test_ping_timeout | int }}
+fip_net={{ sunbeam_external_network.openstack_name }}
+sg={{ sunbeam_vm_test_security_group }}
+tag={{ sunbeam_vm_test_security_group }}
 
 run() { su - "$user" -c ". $rc_path && $*" ; }
 
@@ -31,8 +36,12 @@ wait_for() {
 {
     echo "== pre-clean stale test resources =="
     run openstack server delete --wait "$srv" 2>/dev/null || true
+    for addr in $(run openstack floating ip list --tags "$tag" -f value -c 'Floating IP Address' 2>/dev/null || true); do
+        run openstack floating ip delete "$addr" 2>/dev/null || true
+    done
     run openstack volume delete "$vol" 2>/dev/null || true
     run openstack image delete "$img_name" 2>/dev/null || true
+    run openstack security group delete "$sg" 2>/dev/null || true
 
     echo "== download cirros =="
     su - "$user" -c "curl -fsSL --retry 3 -o $img_file $img_url"
@@ -53,13 +62,48 @@ wait_for() {
     server_status=$(run openstack server show "$srv" -f value -c status 2>/dev/null || true)
     server_host=$(run openstack server show "$srv" -f value -c 'OS-EXT-SRV-ATTR:host' 2>/dev/null || true)
 
+    floating_ip=""
+    ping_ok="skipped"
+    ping_output=""
+    if [ "$ping" = yes ]; then
+        echo "== security group with ICMP ingress =="
+        run openstack security group create "$sg" --description "$tag" >/dev/null 2>&1 || true
+        run openstack security group rule create --proto icmp --ingress --remote-ip 0.0.0.0/0 "$sg" >/dev/null 2>&1 || true
+        run openstack server add security group "$srv" "$sg"
+
+        echo "== floating ip =="
+        floating_ip=$(run openstack floating ip create "$fip_net" --tag "$tag" --description "$tag" -f value -c floating_ip_address 2>/dev/null || true)
+        if [ -n "$floating_ip" ]; then
+            run openstack server add floating ip "$srv" "$floating_ip"
+            echo "floating ip $floating_ip attached to $srv"
+            ping_ok=no
+            deadline=$(( $(date +%s) + ping_timeout ))
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+                if ping -c 2 -W 2 "$floating_ip" >/dev/null 2>&1; then
+                    ping_ok=yes
+                    break
+                fi
+                sleep 5
+            done
+            ping_output=$(ping -c 2 -W 2 "$floating_ip" 2>&1 | tail -n 3 | tr '\n' ' ')
+            echo "ping_ok=$ping_ok ($ping_output)"
+        else
+            echo "FAILED to allocate a floating ip from $fip_net"
+        fi
+    fi
+
     echo "== cleanup =="
     if [ "$keep" = yes ]; then
-        echo "keep=yes: keeping test resources ($srv / $vol / $img_name)"
+        echo "keep=yes: keeping test resources ($srv / $vol / $img_name / ${floating_ip:-no-fip} / $sg)"
     else
+        if [ -n "$floating_ip" ]; then
+            run openstack server remove floating ip "$srv" "$floating_ip" 2>/dev/null || true
+            run openstack floating ip delete "$floating_ip" 2>/dev/null || true
+        fi
         run openstack server delete --wait "$srv" 2>/dev/null || true
         run openstack volume delete "$vol" 2>/dev/null || true
         run openstack image delete "$img_name" 2>/dev/null || true
+        run openstack security group delete "$sg" 2>/dev/null || true
         rm -f "$img_file"
         echo "keep=no: test resources deleted"
     fi
@@ -70,10 +114,14 @@ wait_for() {
     echo "volume_host=$volume_host"
     echo "server_status=$server_status"
     echo "server_host=$server_host"
+    echo "floating_ip=$floating_ip"
+    echo "ping_ok=$ping_ok"
+    echo "ping_output=$ping_output"
+    echo "security_group=$sg"
     echo "=== END SUMMARY ==="
 } >"$log" 2>&1
 rc=$?
 
 echo "vm-volume-test rc=$rc (log: $log)"
-tail -n 60 "$log"
+tail -n 80 "$log"
 exit "$rc"

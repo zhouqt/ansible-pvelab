@@ -1,0 +1,55 @@
+#!/bin/bash
+set -u
+
+ceph={{ sunbeam_microceph_ceph_bin }}
+user={{ sunbeam_node_user }}
+expected_mon={{ sunbeam_nodes | length }}
+expected_osd={{ sunbeam_ceph_expected_osds | int }}
+expected_pgs={{ sunbeam_ceph_expected_pgs | int }}
+ready=yes
+
+echo "### CEPH"
+s=$("$ceph" -s 2>&1 || true)
+printf '%s\n' "$s" | sed -n '1,20p'
+
+quorum=$(printf '%s\n' "$s" \
+    | sed -n 's/.*mon: [0-9]* daemons, quorum \([^(]*\).*/\1/p' \
+    | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -c .)
+osd_up=$(printf '%s\n' "$s" | sed -n 's/.*osd: [0-9]* osds: \([0-9]*\) up.*/\1/p')
+osd_in=$(printf '%s\n' "$s" | sed -n 's/.*osd: [0-9]* osds: [0-9]* up.* \([0-9]*\) in.*/\1/p')
+pgs=$(printf '%s\n' "$s" | sed -n 's/.*pgs: *\([0-9]*\) active+clean.*/\1/p')
+
+[ "$quorum" = "$expected_mon" ] || { echo "ceph-mon-quorum=$quorum (want $expected_mon)"; ready=no; }
+[ "$osd_up" = "$expected_osd" ] || { echo "ceph-osd-up=$osd_up (want $expected_osd)"; ready=no; }
+[ "$osd_in" = "$expected_osd" ] || { echo "ceph-osd-in=$osd_in (want $expected_osd)"; ready=no; }
+[ "$pgs" = "$expected_pgs" ] || { echo "ceph-pgs-active-clean=$pgs (want $expected_pgs)"; ready=no; }
+
+echo "### K8S"
+k=$(/snap/bin/k8s kubectl get nodes --no-headers 2>&1 || true)
+printf '%s\n' "$k"
+if [ -z "$k" ]; then
+    echo "k8s-nodes=none"; ready=no
+else
+    not_ready=$(printf '%s\n' "$k" | awk '$2 != "Ready"' | grep -c .)
+    [ "$not_ready" = 0 ] || { echo "k8s-not-ready=$not_ready"; ready=no; }
+fi
+
+echo "### LXD"
+lx=$(su - "$user" -c 'lxc list -f csv -c n,s' 2>&1 || true)
+printf '%s\n' "$lx"
+running=$(printf '%s\n' "$lx" | grep -c ',RUNNING$' || true)
+[ "$running" -ge 1 ] || { echo "lxd-running=$running"; ready=no; }
+
+echo "### CLUSTER"
+cl=$(su - "$user" -c 'sunbeam cluster list --format yaml' 2>&1 || true)
+printf '%s\n' "$cl" | head -40
+for host in {{ sunbeam_nodes | map(attribute='hostname') | join(' ') }}; do
+    printf '%s\n' "$cl" | grep -q "hostname: $host" || { echo "cluster-missing=$host"; ready=no; }
+done
+bad=$(printf '%s\n' "$cl" \
+    | awk '/^[[:space:]]+(compute|control|machine|network|storage):/ {print $2}' \
+    | grep -Ev '^(active|running)$' | sort -u | tr '\n' ',')
+[ -z "$bad" ] || { echo "cluster-not-active=$bad"; ready=no; }
+
+echo "RESTORE-READY=$ready"
+exit 0

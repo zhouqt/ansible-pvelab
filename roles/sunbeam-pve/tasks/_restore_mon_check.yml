@@ -1,0 +1,65 @@
+---
+- name: Probe the MicroCeph mon on every node
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ item.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: |
+      set -u
+      for i in $(seq 1 12); do
+        st=$(systemctl is-active snap.microceph.mon 2>/dev/null || true)
+        [ "$st" = "active" ] && break
+        [ "$st" = "failed" ] && break
+        sleep 5
+      done
+      quorum=""
+      if [ "$st" = "active" ]; then
+        for i in $(seq 1 6); do
+          quorum=$(/snap/bin/microceph.ceph -s 2>/dev/null \
+            | sed -n 's/.*mon: [0-9]* daemons, quorum \([^ (]*\).*/\1/p')
+          [ -n "$quorum" ] && break
+          sleep 10
+          st=$(systemctl is-active snap.microceph.mon 2>/dev/null || true)
+          [ "$st" = "active" ] || break
+        done
+      fi
+      case ",$quorum," in
+        *",{{ item.hostname }},"*) echo "MON-STATE=in-quorum" ;;
+        *) echo "MON-STATE=broken systemd=$st quorum=${quorum:-unknown}" ;;
+      esac
+  loop: "{{ sunbeam_nodes }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  register: sunbeam_restore_mon_state
+  changed_when: false
+  failed_when: false
+
+- name: Report the MicroCeph mon state
+  ansible.builtin.debug:
+    msg: "{{ sunbeam_restore_mon_state.results | map(attribute='stdout') | list }}"
+
+- name: Refuse to repair a mon on a guest that could not even be probed
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - "'MON-STATE=' in item.stdout"
+    fail_msg: >-
+      Could not probe the MicroCeph mon on {{ item.item.hostname }}
+      ({{ item.item.vmid }}): rc={{ item.rc }}
+      stdout={{ item.stdout | default('') }} stderr={{ item.stderr | default('') }}
+  loop: "{{ sunbeam_restore_mon_state.results }}"
+  loop_control:
+    label: "{{ item.item.hostname }}"
+
+- name: Rebuild the mons that are not in the quorum
+  ansible.builtin.include_tasks: _restore_mon_repair.yml
+  loop: "{{ sunbeam_restore_mon_state.results
+            | rejectattr('stdout', 'search', 'MON-STATE=in-quorum')
+            | map(attribute='item') | list }}"
+  loop_control:
+    label: "{{ item.hostname }} ({{ item.vmid }})"
+  when: sunbeam_savepoint_repair_mon | bool

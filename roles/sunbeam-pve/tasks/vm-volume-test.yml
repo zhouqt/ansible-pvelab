@@ -57,10 +57,25 @@
       The boot-from-volume VM did not become ACTIVE: {{ sunbeam_vm_test_summary }}.
       Check {{ sunbeam_node_log_dir }}/vm-volume-test.log inside {{ sunbeam_primary_node.fqdn }}.
 
+- name: Assert the floating IP answers ICMP
+  ansible.builtin.assert:
+    that:
+      - (sunbeam_vm_test_summary['floating_ip'] | default('')) | length > 0
+      - sunbeam_vm_test_summary['ping_ok'] | default('') == 'yes'
+    fail_msg: >-
+      The test server did not answer pings on its floating IP
+      ({{ sunbeam_vm_test_summary['floating_ip'] | default('none') }}):
+      {{ sunbeam_vm_test_summary['ping_output'] | default('') }}.
+      Check the OVN gateway chassis (br-ex uplink / patch port), the external
+      network's SNAT rules and the security group rules. Full log:
+      {{ sunbeam_node_log_dir }}/vm-volume-test.log inside {{ sunbeam_primary_node.fqdn }}.
+  when: sunbeam_vm_test_ping | bool
+
 - name: Report the end-to-end test result
   ansible.builtin.debug:
     msg:
       - "image: {{ sunbeam_vm_test_image_name }} -> {{ sunbeam_vm_test_summary['image_status'] | default('?') }}"
       - "volume: {{ sunbeam_vm_test_volume_name }} -> {{ sunbeam_vm_test_summary['volume_status'] | default('?') }} @ {{ sunbeam_vm_test_summary['volume_host'] | default('?') }}"
       - "server: {{ sunbeam_vm_test_name }} -> {{ sunbeam_vm_test_summary['server_status'] | default('?') }} @ {{ sunbeam_vm_test_summary['server_host'] | default('?') }}"
+      - "floating ip: {{ (sunbeam_vm_test_summary['floating_ip'] | default('')) or '(not requested)' }} ping_ok={{ sunbeam_vm_test_summary['ping_ok'] | default('skipped') }}"
       - "keep test resources: {{ sunbeam_vm_test_keep }}"

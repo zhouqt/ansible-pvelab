@@ -1,0 +1,98 @@
+---
+- name: Find a healthy mon to take the cluster monmap from
+  ansible.builtin.set_fact:
+    sunbeam_restore_mon_peer: >-
+      {{ sunbeam_restore_mon_state.results
+         | selectattr('stdout', 'search', 'MON-STATE=in-quorum')
+         | map(attribute='item')
+         | rejectattr('vmid', 'equalto', item.vmid)
+         | list | first | default({}, true) }}
+
+- name: Refuse to rebuild a mon without a healthy peer
+  ansible.builtin.assert:
+    that:
+      - sunbeam_restore_mon_peer['vmid'] is defined
+    fail_msg: >-
+      {{ item.hostname }} ({{ item.vmid }}) did not start its MicroCeph mon and
+      no other node has a healthy mon to copy the cluster monmap from. Recover
+      the quorum by hand before retrying.
+
+- name: Export the cluster monmap from a healthy peer
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_restore_mon_peer.vmid }}"
+      - --
+      - /snap/bin/microceph.ceph
+      - mon
+      - getmap
+      - -o
+      - /var/snap/microceph/common/restore-monmap
+  changed_when: false
+
+- name: Copy the monmap to the host
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - pull
+      - "{{ sunbeam_restore_mon_peer.vmid }}"
+      - /var/snap/microceph/common/restore-monmap
+      - "{{ sunbeam_staging_dir }}/restore-monmap-{{ item.vmid }}"
+  changed_when: false
+
+- name: Push the monmap into the broken guest
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - push
+      - "{{ item.vmid }}"
+      - "{{ sunbeam_staging_dir }}/restore-monmap-{{ item.vmid }}"
+      - /var/snap/microceph/common/restore-monmap
+  changed_when: false
+
+- name: Rebuild the broken mon store from the monmap
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ item.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: |
+      set -euo pipefail
+      base=/var/snap/microceph/common/data/mon
+      dir="$base/ceph-{{ item.hostname }}"
+      common=/var/snap/microceph/common
+      ts=$(date -u +%Y%m%dT%H%M%SZ)
+      systemctl stop snap.microceph.mon 2>/dev/null || true
+      cp "$dir/keyring" "$common/restore-mon-keyring"
+      chmod 600 "$common/restore-mon-keyring"
+      mv "$dir" "$dir.broken-$ts"
+      mkdir -m 700 "$dir"
+      snap run --shell microceph.mon -c \
+        "ceph-mon -i {{ item.hostname }} --mkfs \
+         --monmap $common/restore-monmap \
+         --keyring $common/restore-mon-keyring \
+         -c /var/snap/microceph/current/conf/ceph.conf"
+      systemctl reset-failed snap.microceph.mon
+      systemctl start snap.microceph.mon
+      for i in $(seq 1 24); do
+        st=$(systemctl is-active snap.microceph.mon 2>/dev/null || true)
+        [ "$st" = "active" ] && break
+        sleep 5
+      done
+      echo "MON-REBUILT {{ item.hostname }} state=$st old-store=$dir.broken-$ts"
+      [ "$st" = "active" ]
+  register: sunbeam_restore_mon_rebuild
+  changed_when: "'MON-REBUILT' in sunbeam_restore_mon_rebuild.stdout"
+
+- name: Assert the rebuilt mon is running
+  ansible.builtin.assert:
+    that:
+      - "'MON-REBUILT' in sunbeam_restore_mon_rebuild.stdout"
+    fail_msg: >-
+      Rebuilding the MicroCeph mon on {{ item.hostname }} ({{ item.vmid }})
+      failed: {{ sunbeam_restore_mon_rebuild.stdout }}
+      {{ sunbeam_restore_mon_rebuild.stderr | default('') }}

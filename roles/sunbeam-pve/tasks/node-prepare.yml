@@ -533,6 +533,9 @@
   loop_control:
     label: "{{ item.item.item.fqdn }}"
 
+- name: Point snapd's store traffic at the configured proxy
+  ansible.builtin.include_tasks: _snapd_store_proxy.yml
+
 - name: Report node preparation result
   ansible.builtin.debug:
     msg:
