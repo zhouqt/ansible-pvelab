@@ -64,7 +64,8 @@ sunbeam_savepoint_detach_guest_loops: true
 sunbeam_savepoint_repair_mon: true
 sunbeam_savepoint_metadata_dir: /root
 sunbeam_restore_timeout: 1800
-sunbeam_restore_first_window: 300
+sunbeam_restore_first_window: 60
+sunbeam_savepoint_run_verify: true
 
 sunbeam_force_node_prepare: false
 

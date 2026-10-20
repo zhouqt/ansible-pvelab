@@ -33,7 +33,7 @@
       - curl
       - -sS
       - --max-time
-      - "45"
+      - "20"
       - --unix-socket
       - /run/snapd.socket
       - "http://localhost/v2/find?name=microovn"

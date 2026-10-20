@@ -213,24 +213,46 @@
   ansible.builtin.set_fact:
     sunbeam_savepoint_stop_order: "{{ sunbeam_worker_nodes + [sunbeam_primary_node] }}"
 
-- name: Stop every guest
+- name: Stop the worker guests in parallel
+  ansible.builtin.shell: |
+    set -uo pipefail
+    pct_bin={{ sunbeam_pct_bin | quote }}
+    fail=0
+    for vmid in {{ sunbeam_worker_nodes | map(attribute='vmid') | join(' ') }}; do
+      (
+        if "$pct_bin" status "$vmid" | grep -q 'status: running'; then
+          "$pct_bin" shutdown "$vmid" --timeout 300 || true
+        fi
+        if "$pct_bin" status "$vmid" | grep -q 'status: running'; then
+          "$pct_bin" stop "$vmid"
+        fi
+        "$pct_bin" status "$vmid" | grep -q 'status: stopped' \
+          || { echo "RESTORE-FAIL $vmid did not stop" >&2; exit 1; }
+        echo "RESTORE-STOPPED $vmid"
+      ) &
+    done
+    for pid in $(jobs -p); do wait "$pid" || fail=1; done
+    [ "$fail" -eq 0 ]
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+- name: Stop the primary guest
   ansible.builtin.shell: |
     set -euo pipefail
-    vmid={{ item.vmid }}
-    if pct status "$vmid" | grep -q 'status: running'; then
-      pct shutdown "$vmid" --timeout 300 || true
+    pct_bin={{ sunbeam_pct_bin | quote }}
+    vmid={{ sunbeam_primary_node.vmid }}
+    if "$pct_bin" status "$vmid" | grep -q 'status: running'; then
+      "$pct_bin" shutdown "$vmid" --timeout 300 || true
     fi
-    if pct status "$vmid" | grep -q 'status: running'; then
-      pct stop "$vmid"
+    if "$pct_bin" status "$vmid" | grep -q 'status: running'; then
+      "$pct_bin" stop "$vmid"
     fi
-    pct status "$vmid" | grep -q 'status: stopped' \
+    "$pct_bin" status "$vmid" | grep -q 'status: stopped' \
       || { echo "RESTORE-FAIL $vmid did not stop" >&2; exit 1; }
     echo "RESTORE-STOPPED $vmid"
   args:
     executable: /bin/bash
-  loop: "{{ sunbeam_savepoint_stop_order }}"
-  loop_control:
-    label: "{{ item.hostname }} ({{ item.vmid }})"
   changed_when: true
 
 - name: Detach loop devices that outlive the stopped guests
@@ -358,12 +380,22 @@
       `pct status {{ sunbeam_primary_node.vmid }}` and the container's journal on
       {{ sunbeam_host }}.
 
-- name: Start the worker containers
-  ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", start, "{{ item.vmid }}"]
-  loop: "{{ sunbeam_worker_nodes }}"
-  loop_control:
-    label: "{{ item.hostname }} ({{ item.vmid }})"
+- name: Start the worker containers in parallel
+  ansible.builtin.shell: |
+    set -uo pipefail
+    pct_bin={{ sunbeam_pct_bin | quote }}
+    fail=0
+    for vmid in {{ sunbeam_worker_nodes | map(attribute='vmid') | join(' ') }}; do
+      (
+        "$pct_bin" start "$vmid" \
+          || { echo "RESTORE-FAIL $vmid did not start" >&2; exit 1; }
+        echo "RESTORE-STARTED $vmid"
+      ) &
+    done
+    for pid in $(jobs -p); do wait "$pid" || fail=1; done
+    [ "$fail" -eq 0 ]
+  args:
+    executable: /bin/bash
   changed_when: true
 
 - name: Wait for every worker container to accept commands
@@ -393,7 +425,7 @@
 - name: Probe and repair the MicroCeph mons
   ansible.builtin.include_tasks: _restore_mon_check.yml
 
-- name: Wait up to five minutes for the cluster to converge after the restore
+- name: Wait for the first convergence window after the restore
   ansible.builtin.command:
     argv:
       - "{{ sunbeam_pct_bin }}"
@@ -485,6 +517,7 @@
 
 - name: Run the standard health verification
   ansible.builtin.include_tasks: verify.yml
+  when: sunbeam_savepoint_run_verify | bool
 
 - name: Enable the end-to-end OpenStack check
   ansible.builtin.set_fact:
@@ -503,4 +536,5 @@
       - "restored: {{ sunbeam_savepoint_prefix }}-*"
       - "guests: {{ sunbeam_savepoint_stop_order | map(attribute='hostname') | join(', ') }}"
       - "OSD volumes restored: {{ sunbeam_savepoint_restore_osd }}"
+      - "health verify: {{ sunbeam_savepoint_run_verify }}"
       - "openstack end-to-end check: {{ sunbeam_savepoint_verify_openstack }} (floating-ip ping: {{ sunbeam_savepoint_verify_fip_ping }})"
