@@ -66,6 +66,10 @@ sunbeam_savepoint_metadata_dir: /root
 sunbeam_restore_timeout: 1800
 sunbeam_restore_first_window: 60
 sunbeam_savepoint_run_verify: true
+sunbeam_restore_juju_recovery_rounds: 3
+sunbeam_restore_juju_recovery_delay: 10
+sunbeam_restore_gateway_timeout: 360
+sunbeam_restore_gateway_poll_interval: 10
 
 sunbeam_force_node_prepare: false
 

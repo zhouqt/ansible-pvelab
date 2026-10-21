@@ -472,48 +472,27 @@
       the restore. Last probe output:
       {{ sunbeam_restore_ready.stdout }}
 
-- name: Restore the external uplink on the OVN gateway chassis
-  ansible.builtin.shell: |
-    set -u
-    nic={{ sunbeam_manifest_external_nic | quote }}
-    nodes=( {{ sunbeam_nodes | map(attribute='vmid') | join(' ') }} )
-    pct_bin={{ sunbeam_pct_bin | quote }}
-    for attempt in $(seq 1 36); do
-      for vmid in "${nodes[@]}"; do
-        ports=$("$pct_bin" exec "$vmid" -- \
-          /snap/bin/ovs-vsctl list-ports br-ex 2>/dev/null || true)
-        if printf '%s\\n' "$ports" | grep -q '^patch-'; then
-          "$pct_bin" exec "$vmid" -- \
-            /snap/bin/ovs-vsctl --may-exist add-port br-ex "$nic" || continue
-          "$pct_bin" exec "$vmid" -- ip link set br-ex up || continue
-          echo "UPLINK=gateway-restored vmid=$vmid"
-          exit 0
-        fi
-      done
-      sleep 10
-    done
-    echo "UPLINK=no-gateway"
-    exit 0
-  args:
-    executable: /bin/bash
-  register: sunbeam_restore_uplink
-  changed_when: "'UPLINK=gateway-restored' in sunbeam_restore_uplink.stdout"
-
-- name: Report the external uplink state
-  ansible.builtin.debug:
-    msg: "{{ sunbeam_restore_uplink.stdout }}"
-
-- name: Require the gateway chassis to expose its external uplink
-  ansible.builtin.assert:
-    that:
-      - "'UPLINK=gateway-restored' in sunbeam_restore_uplink.stdout"
-    fail_msg: >-
-      No guest exposes the external uplink within the 6-minute discovery window.
-      Probe result: {{ sunbeam_restore_uplink.stdout }}. The FIP ping at the end
-      of this play would fail, so stop here and inspect the guest OVS topology.
-
 - name: Restore snapd's store proxy (rolled back with the rootfs)
   ansible.builtin.include_tasks: _snapd_store_proxy.yml
+
+- name: Build post-restore Juju and gateway reconciliation inputs
+  ansible.builtin.set_fact:
+    sunbeam_restore_reconcile_config:
+      pct_bin: "{{ sunbeam_pct_bin }}"
+      primary_vmid: "{{ sunbeam_primary_node.vmid }}"
+      node_user: "{{ sunbeam_node_user }}"
+      openstack_model: "{{ sunbeam_juju_openstack_model }}"
+      machines_model: "{{ sunbeam_juju_machines_model }}"
+      external_nic: "{{ sunbeam_manifest_external_nic }}"
+      physnet: "{{ sunbeam_external_network.name }}"
+      juju_recovery_rounds: "{{ sunbeam_restore_juju_recovery_rounds | int }}"
+      juju_recovery_delay: "{{ sunbeam_restore_juju_recovery_delay | int }}"
+      gateway_timeout: "{{ sunbeam_restore_gateway_timeout | int }}"
+      gateway_poll_interval: "{{ sunbeam_restore_gateway_poll_interval | int }}"
+      nodes: "{{ sunbeam_nodes }}"
+
+- name: Recover Juju workload errors and ensure every node is an OVN gateway
+  ansible.builtin.include_tasks: _restore_reconcile.yml
 
 - name: Run the standard health verification
   ansible.builtin.include_tasks: verify.yml
