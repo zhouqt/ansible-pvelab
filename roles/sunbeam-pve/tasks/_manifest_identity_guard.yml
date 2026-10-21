@@ -1,0 +1,26 @@
+---
+- name: Assert the manifest is keyed by the probed node identities
+  vars:
+    sunbeam_manifest_rendered: "{{ lookup('template', 'manifest.yaml.j2') | from_yaml }}"
+    sunbeam_manifest_expected_keys: >-
+      {{ (sunbeam_node_names | default({})).values() | list | sort }}
+    sunbeam_manifest_nic_keys: >-
+      {{ (sunbeam_manifest_rendered.core.config['external-networks'][sunbeam_external_network.name]['nics']
+          | default({})).keys() | list | sort }}
+    sunbeam_manifest_microceph_keys: >-
+      {{ (sunbeam_manifest_rendered.core.config.microceph_config | default({})).keys() | list | sort }}
+  ansible.builtin.assert:
+    that:
+      - sunbeam_node_names is defined
+      - sunbeam_manifest_expected_keys | length == sunbeam_nodes | length
+      - sunbeam_manifest_nic_keys == sunbeam_manifest_expected_keys
+      - sunbeam_manifest_microceph_keys == sunbeam_manifest_expected_keys
+    fail_msg: >-
+      The manifest's node-keyed maps are not keyed by the Sunbeam node identity
+      (utils.get_fqdn()). Sunbeam looks each node up by that name and silently skips
+      one it does not find, so such a node would get no OSD preseed and no external
+      NIC / gateway-chassis role.
+      probed identities: {{ sunbeam_manifest_expected_keys }}
+      nics keys: {{ sunbeam_manifest_nic_keys }}
+      microceph_config keys: {{ sunbeam_manifest_microceph_keys }}
+      If this stage did not run _node_identity.yml before rendering, add it.

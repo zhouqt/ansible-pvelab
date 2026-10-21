@@ -96,11 +96,19 @@
     sunbeam_configure_needed: >-
       {{ sunbeam_configure_state != 'yes' or sunbeam_force_configure | bool }}
 
+- name: Resolve the Sunbeam node identities
+  ansible.builtin.include_tasks: _node_identity.yml
+  when: sunbeam_configure_needed | bool
+
 - name: Render the Sunbeam deployment manifest
   ansible.builtin.template:
     src: manifest.yaml.j2
     dest: "{{ sunbeam_staging_dir }}/manifest.yaml"
     mode: "0600"
+  when: sunbeam_configure_needed | bool
+
+- name: Require the rendered manifest to be keyed by the probed node identities
+  ansible.builtin.include_tasks: _manifest_identity_guard.yml
   when: sunbeam_configure_needed | bool
 
 - name: Read the manifest currently stored in the primary CT

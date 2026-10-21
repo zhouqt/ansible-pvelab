@@ -81,6 +81,10 @@
     mode: "0600"
   when: sunbeam_bootstrap_needed | bool
 
+- name: Require the rendered manifest to be keyed by the probed node identities
+  ansible.builtin.include_tasks: _manifest_identity_guard.yml
+  when: sunbeam_bootstrap_needed | bool
+
 - name: Read the manifest currently stored in the primary CT
   ansible.builtin.command:
     argv:
