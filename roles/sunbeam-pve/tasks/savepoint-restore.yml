@@ -355,6 +355,13 @@
   changed_when: false
   when: sunbeam_savepoint_restore_osd | bool
 
+- name: Rebuild and verify the per-CT SMBIOS identity
+  ansible.builtin.include_role:
+    name: pve-ct-system-uuid
+  vars:
+    pve_ct_system_uuid_items: "{{ sunbeam_nodes | map(attribute='vmid') | list }}"
+    pve_ct_system_uuid_verify_running: false
+
 - name: Start the primary container
   ansible.builtin.command:
     argv: ["{{ sunbeam_pct_bin }}", start, "{{ sunbeam_primary_node.vmid }}"]

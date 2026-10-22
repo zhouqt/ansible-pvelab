@@ -336,3 +336,62 @@
       msg: >-
         openrc {{ sunbeam_admin_openrc_path }}: {{ state }}{{ ' (missing ' ~ missing ~ ')'
            if state == 'partial' else '' }}
+
+- name: Read the SMBIOS system UUID exposed inside every CT
+  ansible.builtin.command:
+    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", "--", cat,
+           "{{ pve_ct_system_uuid_guest_product_uuid | default('/sys/class/dmi/id/product_uuid') }}"]
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_status_system_uuid
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Read the per-container identity registry of the PVE host
+  ansible.builtin.slurp:
+    src: "{{ pve_ct_system_uuid_registry_file | default('/etc/pve/priv/ansible-pve/ct-system-uuid.conf') }}"
+  register: sunbeam_status_uuid_registry
+  failed_when: false
+
+- name: Index the UUIDs that are exposed by more than one CT
+  ansible.builtin.set_fact:
+    sunbeam_status_uuid_counts: >-
+      {%- set out = {} -%}
+      {%- for u in sunbeam_status_system_uuid.results
+                    | map(attribute='stdout') | map('trim') | map('lower')
+                    | select('match', '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+                    | list -%}
+      {%-   set _ = out.update({u: (out.get(u, 0) + 1)}) -%}
+      {%- endfor -%}
+      {{ out }}
+    sunbeam_status_uuid_registered: >-
+      {{ dict((sunbeam_status_uuid_registry.content | default('') | b64decode)
+              | regex_findall('(?m)^([0-9]+)\s+([0-9a-fA-F-]{36})\s*$')) }}
+
+- name: Record the SMBIOS identity of every CT
+  ansible.builtin.set_fact:
+    sunbeam_status_findings: "{{ sunbeam_status_findings + [ entry ] }}"
+  loop: "{{ sunbeam_status_system_uuid.results }}"
+  loop_control:
+    label: "{{ item.item.fqdn }}"
+  vars:
+    observed: "{{ item.stdout | default('') | trim | lower }}"
+    running: "{{ (item.rc | default(1) | int) == 0 }}"
+    canonical: "{{ observed is match('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') }}"
+    shared_count: "{{ sunbeam_status_uuid_counts.get(observed, 0) | int }}"
+    registered: "{{ sunbeam_status_uuid_registered.get(item.item.vmid | string, '') | lower }}"
+    entry:
+      level: >-
+        {{ 'OK' if (not running
+                    or (canonical and shared_count == 1
+                        and (registered | length == 0 or registered == observed)))
+           else 'RISK' }}
+      msg: >-
+        {{ 'system uuid ' ~ item.item.fqdn ~ ': '
+           ~ (observed if running else 'not running, unchecked')
+           ~ (' (not a UUID)' if running and not canonical else '')
+           ~ (' (shared by ' ~ (shared_count | string) ~ ' CTs, libvirt refuses live migration)'
+              if canonical and shared_count > 1 else '')
+           ~ (' (registry says ' ~ registered ~ ')' if running and registered | length > 0
+              and registered != observed else '') }}

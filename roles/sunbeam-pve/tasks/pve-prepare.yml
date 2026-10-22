@@ -479,6 +479,15 @@
       {{ item.fqdn }} {{ sunbeam_pve_rootfs_gb[item.vmid | string] }}G ->
       {{ sunbeam_rootfs_size_gb }}G
 
+- name: Give every Sunbeam CT its own SMBIOS system UUID
+  ansible.builtin.include_role:
+    name: pve-ct-system-uuid
+  vars:
+    pve_ct_system_uuid_items: "{{ sunbeam_nodes | map(attribute='vmid') | list }}"
+    pve_ct_system_uuid_apply_live: "{{ sunbeam_system_uuid_apply_live | bool }}"
+    pve_ct_system_uuid_restart_services: "{{ sunbeam_system_uuid_restart_services }}"
+    pve_ct_system_uuid_verify_running: false
+
 - name: Ensure every Sunbeam CT is running
   ansible.builtin.command:
     argv: ["{{ sunbeam_pct_bin }}", start, "{{ item.vmid }}"]

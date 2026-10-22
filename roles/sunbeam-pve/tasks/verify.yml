@@ -37,5 +37,28 @@
   loop_control:
     label: "{{ item.fqdn }}"
 
+- name: Check whether the system UUID helpers are installed on the PVE host
+  ansible.builtin.stat:
+    path: "{{ pve_ct_system_uuid_helper_dir | default('/usr/local/lib/ansible-pve') }}/ct_uuid_registry.py"
+  register: sunbeam_verify_system_uuid_helper
+
+- name: Assert every Sunbeam CT keeps its own SMBIOS system UUID
+  ansible.builtin.include_role:
+    name: pve-ct-system-uuid
+  vars:
+    pve_ct_system_uuid_items: "{{ sunbeam_nodes | map(attribute='vmid') | list }}"
+    pve_ct_system_uuid_verify_only: true
+  when: sunbeam_verify_system_uuid_helper.stat.exists
+
+- name: Report an environment without per-CT system UUIDs
+  ansible.builtin.debug:
+    msg: >-
+      pve-ct-system-uuid is not installed on this host, so the check is skipped.
+      Run -e sunbeam_stage=system-uuid -e sunbeam_confirm_system_uuid=true (or the
+      pve-prepare stage) to give every CT its own system UUID; until then live
+      migration between Sunbeam nodes fails with
+      "Attempt to migrate guest to the same host".
+  when: not sunbeam_verify_system_uuid_helper.stat.exists
+
 - name: Parse the snapshot and assert the health baseline
   ansible.builtin.include_tasks: verify-parse.yml

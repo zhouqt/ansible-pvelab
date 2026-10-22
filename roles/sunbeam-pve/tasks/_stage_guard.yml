@@ -31,6 +31,8 @@
   when: >-
     sunbeam_stage not in sunbeam_readonly_stages
     and not (sunbeam_pve_preflight_only | bool)
+    and not (sunbeam_stage == 'system-uuid'
+             and not (sunbeam_confirm_system_uuid | default(false) | bool))
 
 - name: Derive per-node helper facts
   ansible.builtin.set_fact:

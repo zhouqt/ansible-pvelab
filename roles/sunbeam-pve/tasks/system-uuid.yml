@@ -1,0 +1,12 @@
+---
+- name: Load shared stage facts
+  ansible.builtin.include_tasks: _stage_guard.yml
+
+- name: Give every Sunbeam CT its own SMBIOS system UUID
+  ansible.builtin.include_role:
+    name: pve-ct-system-uuid
+  vars:
+    pve_ct_system_uuid_items: "{{ sunbeam_nodes | map(attribute='vmid') | list }}"
+    pve_ct_system_uuid_apply_live: "{{ sunbeam_system_uuid_apply_live | bool }}"
+    pve_ct_system_uuid_restart_services: "{{ sunbeam_system_uuid_restart_services }}"
+    pve_ct_system_uuid_verify_only: "{{ not (sunbeam_confirm_system_uuid | bool) }}"

@@ -3,6 +3,7 @@
 sunbeam_valid_stages:
   - status
   - pve-prepare
+  - system-uuid
   - node-prepare
   - bootstrap
   - join
@@ -26,6 +27,9 @@ sunbeam_confirm_cluster_join: false
 sunbeam_confirm_external_changes: false
 sunbeam_confirm_ceph_osd: false
 sunbeam_confirm_tls: false
+sunbeam_confirm_system_uuid: false
+sunbeam_system_uuid_apply_live: false
+sunbeam_system_uuid_restart_services: []
 
 sunbeam_allow_unreadable_cluster_state: false
 sunbeam_join_remove_half_joined_nodes: false
