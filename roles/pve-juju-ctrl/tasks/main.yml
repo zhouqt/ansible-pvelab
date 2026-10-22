@@ -165,6 +165,13 @@
       - "'ip=dhcp' not in pve_juju_controller_config_after_update.stdout"
     fail_msg: "the NICs of CT {{ pve_juju_controller_vmid }} are still on DHCP; configure static IPs as the runbook says first, so the bootstrap target and the CT address cannot disagree."
 
+- name: Give the Juju controller CT its own SMBIOS system UUID
+  ansible.builtin.include_role:
+    name: pve-ct-system-uuid
+  vars:
+    pve_ct_system_uuid_items: ["{{ pve_juju_controller_vmid }}"]
+    pve_ct_system_uuid_apply_live: true
+
 - name: Check whether Juju controller CT is running
   ansible.builtin.command: "pct status {{ pve_juju_controller_vmid }}"
   register: pve_juju_controller_runtime_status

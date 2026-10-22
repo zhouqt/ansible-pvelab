@@ -1,0 +1,12 @@
+---
+
+pve_ct_system_uuid_namespace: pve-ct-host
+pve_ct_system_uuid_dir: /var/lib/ansible-pve/dmi
+
+pve_ct_system_uuid_registry:
+  "1101": "9193ab1d-363f-54b6-a157-e411b8ae4893"
+  "1102": "8dacadb9-c0e2-578a-a69c-77f82b648fdf"
+  "1201": "45c26f8b-97a4-5079-a5f5-a4f544f0f963"
+  "1202": "2be2fa1b-0d59-5d28-9600-2ea8066437a0"
+  "1203": "e31babfe-2817-5c54-be57-5c6cd5338118"
+  "1304": "1299086c-f4a6-5dc9-a2ce-bfb89906eca4"

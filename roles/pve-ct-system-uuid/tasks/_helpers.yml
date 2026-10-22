@@ -1,0 +1,55 @@
+---
+- name: Ensure the helper directory exists
+  ansible.builtin.file:
+    path: "{{ pve_ct_system_uuid_helper_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Install the DMI patch helper
+  ansible.builtin.copy:
+    src: patch_smbios_uuid.py
+    dest: "{{ pve_ct_system_uuid_helper_dir }}/patch_smbios_uuid.py"
+    mode: "0755"
+
+- name: Install the container config editor
+  ansible.builtin.copy:
+    src: ct_conf_entries.py
+    dest: "{{ pve_ct_system_uuid_helper_dir }}/ct_conf_entries.py"
+    mode: "0755"
+
+- name: Install the identity registry helper
+  ansible.builtin.copy:
+    src: ct_uuid_registry.py
+    dest: "{{ pve_ct_system_uuid_helper_dir }}/ct_uuid_registry.py"
+    mode: "0755"
+
+- name: Install the boot-time self-heal script
+  ansible.builtin.copy:
+    src: pve-ct-dmi-sync.sh
+    dest: "{{ pve_ct_system_uuid_sync_script }}"
+    mode: "0755"
+  register: pve_ct_system_uuid_sync_script_state
+  when: pve_ct_system_uuid_install_sync_unit | bool
+
+- name: Install the boot-time self-heal unit
+  ansible.builtin.copy:
+    src: pve-ct-dmi-sync.service
+    dest: "{{ pve_ct_system_uuid_sync_unit }}"
+    mode: "0644"
+  register: pve_ct_system_uuid_sync_unit_state
+  when: pve_ct_system_uuid_install_sync_unit | bool
+
+- name: Enable the boot-time self-heal unit
+  ansible.builtin.systemd:
+    name: pve-ct-dmi-sync.service
+    enabled: true
+    daemon_reload: "{{ pve_ct_system_uuid_sync_unit_state is changed }}"
+  when: pve_ct_system_uuid_install_sync_unit | bool
+
+- name: Exercise the self-heal script once after installing it
+  ansible.builtin.command: "{{ pve_ct_system_uuid_sync_script }}"
+  register: pve_ct_system_uuid_sync_dry_run
+  changed_when: false
+  when:
+    - pve_ct_system_uuid_install_sync_unit | bool
+    - pve_ct_system_uuid_sync_script_state is changed or pve_ct_system_uuid_sync_unit_state is changed

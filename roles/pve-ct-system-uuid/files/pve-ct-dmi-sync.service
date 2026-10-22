@@ -1,0 +1,14 @@
+[Unit]
+Description=Rebuild the per-container DMI copies before PVE starts the containers
+Requires=pve-cluster.service
+After=local-fs.target pve-cluster.service
+Before=pve-guests.service
+ConditionPathExists=/usr/local/lib/ansible-pve/patch_smbios_uuid.py
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pve-ct-dmi-sync.sh
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

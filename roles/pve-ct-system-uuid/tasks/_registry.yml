@@ -1,0 +1,13 @@
+---
+
+- name: Record the identity of vmid {{ pve_ct_system_uuid_current.vmid }} in the host registry
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ pve_ct_system_uuid_helper_dir }}/ct_uuid_registry.py"
+      - --file
+      - "{{ pve_ct_system_uuid_registry_file }}"
+      - --set
+      - "{{ pve_ct_system_uuid_current.vmid }}={{ pve_ct_system_uuid_current.system_uuid }}"
+  register: pve_ct_system_uuid_registry_write
+  changed_when: pve_ct_system_uuid_registry_write.stdout | trim == 'changed'

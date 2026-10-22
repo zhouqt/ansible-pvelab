@@ -61,3 +61,10 @@
   register: pve_maas_provision
   changed_when: "'creating container' in pve_maas_provision.stdout or 'downloading template' in pve_maas_provision.stdout or 'running init' in pve_maas_provision.stdout"
   no_log: true
+
+- name: Give the MAAS controller its own SMBIOS system UUID
+  ansible.builtin.include_role:
+    name: pve-ct-system-uuid
+  vars:
+    pve_ct_system_uuid_items: ["{{ pve_maas_vmid }}"]
+    pve_ct_system_uuid_apply_live: true

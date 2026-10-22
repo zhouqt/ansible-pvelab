@@ -605,6 +605,13 @@
   loop_control:
     label: "{{ item.vmid }} {{ item.hostname }}"
 
+- name: Give every workload container its own SMBIOS system UUID
+  ansible.builtin.include_role:
+    name: pve-ct-system-uuid
+  vars:
+    pve_ct_system_uuid_items: "{{ pve_workload_containers | map(attribute='vmid') | list }}"
+    pve_ct_system_uuid_apply_live: true
+
 - name: Start workload LXC containers
   ansible.builtin.shell: |
     set -euo pipefail
