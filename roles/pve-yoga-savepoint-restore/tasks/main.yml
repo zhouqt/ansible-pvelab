@@ -140,6 +140,15 @@
   changed_when: "'RESTORE-OSD-ACTIVE' in pve_yoga_restore_osd.stdout"
   when: pve_yoga_savepoint_include_osd | bool
 
+- name: Give every restored yoga CT its own SMBIOS system UUID
+  ansible.builtin.include_role:
+    name: pve-ct-system-uuid
+  vars:
+    pve_ct_system_uuid_items: >-
+      {{ pve_yoga_savepoint_guests | selectattr('kind', 'equalto', 'ct')
+         | map(attribute='vmid') | list }}
+    pve_ct_system_uuid_apply_live: true
+
 - name: Start the controller first
   ansible.builtin.command: "pct start {{ pve_yoga_controller_vmid }}"
   changed_when: true

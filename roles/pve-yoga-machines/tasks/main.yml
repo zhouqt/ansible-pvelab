@@ -227,6 +227,13 @@
   changed_when: false
   failed_when: "'OSD-MOUNT-OK' not in pve_yoga_machines_osd_mount.stdout"
 
+- name: Give every yoga workload CT its own SMBIOS system UUID
+  ansible.builtin.include_role:
+    name: pve-ct-system-uuid
+  vars:
+    pve_ct_system_uuid_items: "{{ pve_yoga_workload_cts | map(attribute='vmid') | list }}"
+    pve_ct_system_uuid_apply_live: true
+
 - name: Check runtime state of yoga workload CTs
   ansible.builtin.command: "pct status {{ item.vmid }}"
   loop: "{{ pve_yoga_workload_cts }}"

@@ -683,6 +683,21 @@
   tags: [never, openstack-pve-recovery]
   roles: [pve-yoga-recovery]
 
+- name: Give every yoga container its own SMBIOS system UUID
+  hosts: pve
+  become: false
+  tags: [never, openstack-pve-ct-system-uuid]
+  tasks:
+    - name: Apply the per-container SMBIOS system UUIDs
+      ansible.builtin.include_role:
+        name: pve-ct-system-uuid
+      vars:
+        pve_ct_system_uuid_items: >-
+          {{ ([pve_yoga_controller_vmid | int]
+              + (pve_yoga_workload_cts | map(attribute='vmid') | map('int') | list)) }}
+        pve_ct_system_uuid_apply_live: true
+      when: pve_yoga_run_ct_system_uuid | bool
+
 - name: Take a savepoint of the PVE yoga environment
   hosts: pve
   become: false

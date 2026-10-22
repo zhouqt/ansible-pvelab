@@ -488,6 +488,7 @@ pve_yoga_recover_deferred_apps:
 pve_yoga_run_host_baseline: false
 pve_yoga_run_sdn: false
 pve_yoga_sdn_stop_guests: false
+pve_yoga_run_ct_system_uuid: false
 pve_yoga_control_plane_two_wave: true
 pve_yoga_control_plane_wave1_apps:
   - keystone

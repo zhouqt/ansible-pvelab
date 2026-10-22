@@ -200,6 +200,13 @@
       - "'ip=dhcp' not in pve_yoga_controller_config.stdout"
     fail_msg: "the NICs of CT {{ pve_yoga_controller_vmid }} are still on DHCP; configure static IPs first."
 
+- name: Give the Juju controller CT its own SMBIOS system UUID
+  ansible.builtin.include_role:
+    name: pve-ct-system-uuid
+  vars:
+    pve_ct_system_uuid_items: ["{{ pve_yoga_controller_vmid }}"]
+    pve_ct_system_uuid_apply_live: true
+
 - name: Check whether Juju controller CT is running
   ansible.builtin.command: "pct status {{ pve_yoga_controller_vmid }}"
   register: pve_yoga_controller_runtime_status
