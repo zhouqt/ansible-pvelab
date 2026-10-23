@@ -1,0 +1,13 @@
+[Unit]
+Description=Create the /dev/loopN nodes the Sunbeam primary container binds
+Documentation=file:/usr/local/sbin/pve-ensure-loop-nodes.sh
+After=local-fs.target
+Before=pve-guests.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/pve-ensure-loop-nodes.sh
+
+[Install]
+WantedBy=multi-user.target

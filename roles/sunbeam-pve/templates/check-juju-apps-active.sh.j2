@@ -1,0 +1,42 @@
+#!/bin/bash
+set -u
+
+user={{ sunbeam_node_user }}
+openstack_model={{ sunbeam_juju_openstack_model }}
+machines_model={{ sunbeam_juju_machines_model }}
+settled=yes
+
+check_model() {
+    model="$1"
+    exempt="$2"
+    echo "### MODEL $model"
+    raw=$(su - "$user" -c "juju status -m $model --format json" 2>&1 || true)
+    echo "${raw:0:200}"
+    bad=$(printf '%s\n' "$raw" | python3 -c '
+import json, sys
+
+raw = sys.stdin.read()
+exempt = set(sys.argv[1].split(",")) if sys.argv[1] else set()
+try:
+    status = json.loads(raw)
+except ValueError:
+    print("(no json)")
+    sys.exit(0)
+applications = status.get("applications") or {}
+offenders = [
+    name
+    for name, app in applications.items()
+    if name not in exempt
+    and (app.get("application-status") or {}).get("current") != "active"
+]
+print(",".join(sorted(offenders)))
+' "$exempt")
+    echo "non-active-applications=$bad"
+    [ -z "$bad" ] || settled=no
+}
+
+check_model "$openstack_model" ""
+check_model "$machines_model" "{{ sunbeam_known_blocked_applications | join(',') }}"
+
+echo "SETTLED=$settled"
+exit 0

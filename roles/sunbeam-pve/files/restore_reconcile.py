@@ -396,7 +396,27 @@ def execute_recovery(config: Mapping) -> dict:
         return read_model(config, model)
 
     def resolve(model: str, unit: str) -> None:
-        juju_command(config, ["resolved", "-m", model, unit], timeout=120)
+
+        result = run_command(
+            [
+                config["pct_bin"],
+                "exec",
+                str(config["primary_vmid"]),
+                "--",
+                "su",
+                "-",
+                config["node_user"],
+                "-c",
+                shlex.join(["juju", "resolved", "-m", model, unit]),
+            ],
+            timeout=120,
+            check=False,
+        )
+        if result.returncode and "is not in an error state" not in result.stderr:
+            raise RecoveryError(
+                "Command failed (rc=%d): juju resolved -m %s %s\nstdout=%s\nstderr=%s"
+                % (result.returncode, model, unit, result.stdout.strip(), result.stderr.strip())
+            )
 
     snapshots, resolved_units = recover_workload_errors(
         models,

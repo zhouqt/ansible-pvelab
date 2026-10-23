@@ -256,24 +256,7 @@
   changed_when: true
 
 - name: Detach loop devices that outlive the stopped guests
-  ansible.builtin.shell: |
-    set -uo pipefail
-    detached=0
-    for l in $(losetup -a | cut -d: -f1); do
-      bf=$(cat "/sys/block/${l#/dev/}/loop/backing_file" 2>/dev/null || true)
-      [ -n "$bf" ] || continue
-      [ -e "$bf" ] && continue
-      if losetup -d "$l"; then
-        echo "LOOP-DETACHED $l ($bf)"
-        detached=$((detached + 1))
-      fi
-    done
-    echo "LOOPS-DETACHED=$detached"
-  args:
-    executable: /bin/bash
-  register: sunbeam_restore_loops
-  changed_when: "'LOOPS-DETACHED=0' not in sunbeam_restore_loops.stdout"
-  when: sunbeam_savepoint_detach_guest_loops | bool
+  ansible.builtin.include_tasks: _detach_guest_loops.yml
 
 - name: Require every volume about to be replaced to be closed
   ansible.builtin.shell: |
@@ -362,6 +345,9 @@
     pve_ct_system_uuid_items: "{{ sunbeam_nodes | map(attribute='vmid') | list }}"
     pve_ct_system_uuid_verify_running: false
 
+- name: Ensure the loop device nodes the primary binds exist
+  ansible.builtin.include_tasks: _ensure_loop_nodes.yml
+
 - name: Start the primary container
   ansible.builtin.command:
     argv: ["{{ sunbeam_pct_bin }}", start, "{{ sunbeam_primary_node.vmid }}"]
@@ -432,6 +418,9 @@
 - name: Probe and repair the MicroCeph mons
   ansible.builtin.include_tasks: _restore_mon_check.yml
 
+- name: Probe and repair the MicroCeph OSDs
+  ansible.builtin.include_tasks: _restore_osd_check.yml
+
 - name: Wait for the first convergence window after the restore
   ansible.builtin.command:
     argv:
@@ -451,6 +440,10 @@
 
 - name: Re-probe and repair the mons when the first window was not enough
   ansible.builtin.include_tasks: _restore_mon_check.yml
+  when: "'RESTORE-READY=yes' not in sunbeam_restore_ready.stdout"
+
+- name: Re-probe and repair the OSDs when the first window was not enough
+  ansible.builtin.include_tasks: _restore_osd_check.yml
   when: "'RESTORE-READY=yes' not in sunbeam_restore_ready.stdout"
 
 - name: Wait for Ceph, K8s and Sunbeam to converge after the restore
@@ -500,6 +493,32 @@
 
 - name: Recover Juju workload errors and ensure every node is an OVN gateway
   ansible.builtin.include_tasks: _restore_reconcile.yml
+
+- name: Wait for the Juju applications to settle after the reconciliation
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'check-juju-apps-active.sh.j2') }}"
+  register: sunbeam_restore_settled
+  until: "'SETTLED=yes' in sunbeam_restore_settled.stdout"
+  retries: "{{ (sunbeam_restore_settle_timeout | int / sunbeam_poll_interval | int) | int }}"
+  delay: "{{ sunbeam_poll_interval }}"
+  changed_when: false
+  failed_when: false
+
+- name: Assert the Juju applications settled
+  ansible.builtin.assert:
+    that:
+      - "'SETTLED=yes' in sunbeam_restore_settled.stdout"
+    fail_msg: >-
+      The Juju applications did not all reach the active state within
+      {{ sunbeam_restore_settle_timeout }}s after the reconciliation. Last probe:
+      {{ sunbeam_restore_settled.stdout }}
 
 - name: Run the standard health verification
   ansible.builtin.include_tasks: verify.yml

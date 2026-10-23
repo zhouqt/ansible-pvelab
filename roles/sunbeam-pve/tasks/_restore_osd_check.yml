@@ -1,0 +1,89 @@
+---
+- name: Probe the MicroCeph OSD on every node
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ item.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: |
+      set -u
+      for i in $(seq 1 12); do
+        st=$(systemctl is-active snap.microceph.osd 2>/dev/null || true)
+        [ "$st" = "active" ] && break
+        [ "$st" = "failed" ] && break
+        sleep 5
+      done
+      echo "OSD-STATE=$st"
+  loop: "{{ sunbeam_nodes }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  register: sunbeam_restore_osd_state
+  changed_when: false
+  failed_when: false
+
+- name: Report the MicroCeph OSD state
+  ansible.builtin.debug:
+    msg: "{{ sunbeam_restore_osd_state.results | map(attribute='stdout') | list }}"
+
+- name: Refuse to repair an OSD on a guest that could not even be probed
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - "'OSD-STATE=' in item.stdout"
+    fail_msg: >-
+      Could not probe the MicroCeph OSD on {{ item.item.hostname }}
+      ({{ item.item.vmid }}): rc={{ item.rc }}
+      stdout={{ item.stdout | default('') }} stderr={{ item.stderr | default('') }}
+  loop: "{{ sunbeam_restore_osd_state.results }}"
+  loop_control:
+    label: "{{ item.item.hostname }}"
+
+- name: Repair the MicroCeph OSD units that did not come up
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ item.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: |
+      set -u
+      echo "== recreate the OSD device node =="
+      {{ sunbeam_osd_setup_script }} {{ item.vmid }} || echo "OSD-SETUP-FAILED"
+      echo "== restart the unit =="
+      systemctl reset-failed snap.microceph.osd 2>/dev/null || true
+      systemctl restart snap.microceph.osd 2>/dev/null || systemctl start snap.microceph.osd
+      for i in $(seq 1 24); do
+        st=$(systemctl is-active snap.microceph.osd 2>/dev/null || true)
+        [ "$st" = "active" ] && break
+        sleep 5
+      done
+      echo "OSD-STATE=$st"
+  loop: "{{ sunbeam_restore_osd_state.results
+            | rejectattr('stdout', 'search', 'OSD-STATE=active')
+            | map(attribute='item') | list }}"
+  loop_control:
+    label: "{{ item.hostname }} ({{ item.vmid }})"
+  register: sunbeam_restore_osd_repair
+  changed_when: true
+  failed_when: false
+
+- name: Report the MicroCeph OSD repair
+  ansible.builtin.debug:
+    msg: "{{ sunbeam_restore_osd_repair.results | map(attribute='stdout_lines') | list }}"
+
+- name: Assert every MicroCeph OSD is running again
+  ansible.builtin.assert:
+    that:
+      - "'OSD-STATE=active' in (item.stdout | default(''))"
+    fail_msg: >-
+      The MicroCeph OSD on {{ item.item.vmid }} ({{ item.item.hostname }}) did not
+      come back after the repair attempt: {{ item.stdout | default('') }}
+      {{ item.stderr | default('') }}
+  loop: "{{ sunbeam_restore_osd_repair.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.hostname }}"

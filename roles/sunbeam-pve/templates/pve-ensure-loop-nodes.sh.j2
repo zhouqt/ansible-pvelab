@@ -1,0 +1,22 @@
+#!/bin/bash
+set -u
+
+created=0
+replaced=0
+for n in {{ sunbeam_loop_nodes_needed | join(' ') }}; do
+    dev="/dev/loop$n"
+    if [ -b "$dev" ]; then
+        continue
+    fi
+    if [ -e "$dev" ]; then
+        rm -f "$dev" || continue
+        replaced=$((replaced + 1))
+    fi
+    if mknod "$dev" b 7 "$n" 2>/dev/null; then
+        created=$((created + 1))
+    else
+        echo "LOOP-NODE-FAILED $dev" >&2
+    fi
+done
+
+echo "LOOP-NODES-CREATED=$created REPLACED=$replaced"

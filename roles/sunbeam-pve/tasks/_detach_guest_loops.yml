@@ -1,0 +1,21 @@
+---
+
+- name: Detach loop devices that outlive the stopped guests
+  ansible.builtin.shell: |
+    set -uo pipefail
+    detached=0
+    for l in $(losetup -a | cut -d: -f1); do
+      bf=$(cat "/sys/block/${l#/dev/}/loop/backing_file" 2>/dev/null || true)
+      [ -n "$bf" ] || continue
+      [ -e "$bf" ] && continue
+      if losetup -d "$l"; then
+        echo "LOOP-DETACHED $l ($bf)"
+        detached=$((detached + 1))
+      fi
+    done
+    echo "LOOPS-DETACHED=$detached"
+  args:
+    executable: /bin/bash
+  register: sunbeam_restore_loops
+  changed_when: "'LOOPS-DETACHED=0' not in sunbeam_restore_loops.stdout"
+  when: sunbeam_savepoint_detach_guest_loops | bool

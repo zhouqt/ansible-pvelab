@@ -15,6 +15,7 @@ sunbeam_valid_stages:
   - vm-volume-test
   - savepoint
   - savepoint-restore
+  - teardown
 sunbeam_stage: status
 
 sunbeam_readonly_stages: [status, verify]
@@ -27,6 +28,7 @@ sunbeam_confirm_cluster_join: false
 sunbeam_confirm_external_changes: false
 sunbeam_confirm_ceph_osd: false
 sunbeam_confirm_tls: false
+sunbeam_confirm_teardown: false
 sunbeam_confirm_system_uuid: false
 sunbeam_system_uuid_apply_live: false
 sunbeam_system_uuid_restart_services: []
@@ -70,8 +72,9 @@ sunbeam_savepoint_metadata_dir: /root
 sunbeam_restore_timeout: 1800
 sunbeam_restore_first_window: 60
 sunbeam_savepoint_run_verify: true
-sunbeam_restore_juju_recovery_rounds: 3
-sunbeam_restore_juju_recovery_delay: 10
+sunbeam_restore_juju_recovery_rounds: 10
+sunbeam_restore_juju_recovery_delay: 20
+sunbeam_restore_settle_timeout: 300
 sunbeam_restore_gateway_timeout: 360
 sunbeam_restore_gateway_poll_interval: 10
 
