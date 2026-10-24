@@ -17,6 +17,8 @@ __pycache__/
 *~
 .vscode/
 
+.claude/
+
 .DS_Store
 docs/k8s-backup-guide.md
 docs/k8s-restore-guide.md
