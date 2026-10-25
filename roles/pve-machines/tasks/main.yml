@@ -36,7 +36,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - test -s ~/.ssh/id_ed25519.pub
@@ -51,7 +51,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - test -s ~/.ssh/id_ed25519
@@ -66,7 +66,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - "{{ pve_juju_bin }} models --controller {{ pve_juju_controller_name }} --format json"
@@ -88,7 +88,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - "{{ pve_juju_bin }} status -m {{ pve_juju_controller_name }}:openstack --format json"
@@ -102,228 +102,149 @@
       - "'machines' in (pve_workload_openstack_status.stdout | from_json)"
     fail_msg: "cannot read the OpenStack Juju model status; refusing to change PVE based on an incomplete machine inventory."
 
-- name: Read current LMA Juju machine inventory
-  ansible.builtin.command:
-    argv:
-      - pct
-      - exec
-      - "{{ pve_juju_client_vmid }}"
-      - --
-      - su
-      - -
-      - "{{ pve_juju_client_user }}"
-      - -c
-      - "{{ pve_juju_bin }} status -m {{ pve_juju_controller_name }}:lma --format json"
-  register: pve_workload_lma_status
-  changed_when: false
-
-- name: Fail safely if the LMA Juju status command fails
+- name: Require the openstack Juju model to exist
   ansible.builtin.assert:
     that:
-      - pve_workload_lma_status.rc == 0
-      - "'machines' in (pve_workload_lma_status.stdout | from_json)"
-    fail_msg: "cannot read the LMA Juju model status; refusing to change PVE based on an incomplete machine inventory."
+      - "'models' in (pve_workload_juju_models.stdout | from_json)"
+      - >-
+        ((pve_workload_juju_models.stdout | from_json).models
+         | selectattr('short-name', 'equalto', 'openstack') | list | length) == 1
+    fail_msg: "run --tags pve-juju-ctrl first to create the Juju controller and the openstack model."
 
-- name: Validate existing OpenStack Juju machine-ID sequence before creating workload guests
+- name: Validate the topology table shape
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_topology | length > 0
+      - pve_ussuri_topology | map(attribute='vmid') | unique | length == pve_ussuri_topology | length
+      - pve_ussuri_topology | map(attribute='hostname') | unique | length == pve_ussuri_topology | length
+      - "pve_ussuri_topology | map(attribute='kind') | unique | sort == ['ct', 'kvm']"
+      - pve_ussuri_workload_cts | length >= 1
+      - pve_ussuri_workload_kvms | length == 1
+      - "'openstack' in pve_ussuri_teardown_models"
+    fail_msg: "pve_ussuri_topology is invalid: vmid/hostname must be unique, kind may only be ct/kvm, and there must be exactly one KVM guest."
+
+- name: Require every haproxy-writing API charm to appear exactly once
   ansible.builtin.assert:
     that:
       - >-
-        (
-          (pve_workload_openstack_status.stdout | from_json).machines
-          | dict2items | map(attribute='key') | map('int') | list | sort
-        ) == range(0, ((pve_workload_openstack_status.stdout | from_json).machines | length)) | list
-        and ((pve_workload_openstack_status.stdout | from_json).machines | length) <= 21
-        or
-        (
-          (pve_workload_openstack_status.stdout | from_json).machines
-          | dict2items | map(attribute='key') | map('int') | list | sort
-        ) == ((range(0, 21) | list) + [22, 23])
-    fail_msg: >-
-      Existing OpenStack machine IDs must be a contiguous prefix 0-20 or the complete verified
-      mapping 0-20,22,23 with 21 absent. Refusing to make PVE changes against a conflicting map.
+        (pve_ussuri_topology | rejectattr('writer', 'none') | map(attribute='writer') | list)
+        | unique | length
+        == (pve_ussuri_topology | rejectattr('writer', 'none') | list | length)
+    fail_msg: "the same haproxy writer appears on several machines; each writer must live on exactly one machine."
 
-- name: Validate existing OpenStack Juju machine addresses before creating workload guests
+- name: Require the expected replica counts and contiguous unit indexes
+  vars:
+    pve_ussuri_expected_units:
+      mysql-innodb-cluster: 3
+      ovn-central: 3
+      ceph-mon: 3
+      ceph-osd: 3
+      nova-compute: 2
+      nova-compute-kvm: 1
   ansible.builtin.assert:
     that:
-      - item.value is mapping
-      - item.value.get('ip-addresses', []) is sequence
-      - item.value.get('ip-addresses', []) is not string
-      - item.value.get('dns-name', '') is string
       - >-
-        (
-          ('192.168.11.' ~ ((101 + (item.key | int)) | string))
-          if (item.key | int) <= 20 else
-          '192.168.11.123' if (item.key | int) == 22 else
-          '192.168.11.122'
-        ) in (item.value.get('ip-addresses', []) + [item.value.get('dns-name', '')])
+        (pve_ussuri_machine_of_unit.keys() | select('match', '^' ~ item.key ~ '/[0-9]+$') | list | length)
+        == item.value
+      - >-
+        (pve_ussuri_machine_of_unit.keys() | select('match', '^' ~ item.key ~ '/[0-9]+$')
+         | map('regex_replace', '^.*/', '') | map('int') | list | sort)
+        == range(item.value) | list
+    fail_msg: "the unit numbers of {{ item.key }} must be the contiguous range 0..{{ item.value | int - 1 }}, exactly {{ item.value }} of them."
+  loop: "{{ pve_ussuri_expected_units | dict2items }}"
+  loop_control:
+    label: "{{ item.key }} × {{ item.value }}"
+
+- name: Require replica units of one application to land on distinct machines
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pve_ussuri_machine_of_unit.keys() | select('match', '^' ~ item ~ '/[0-9]+$')
+         | map('extract', pve_ussuri_machine_of_unit) | list) | unique | length
+        == (pve_ussuri_machine_of_unit.keys() | select('match', '^' ~ item ~ '/[0-9]+$') | list | length)
+    fail_msg: "the replicas of {{ item }} land on the same machine; replicas must be spread across machines."
+  loop:
+    - mysql-innodb-cluster
+    - ovn-central
+    - ceph-mon
+    - ceph-osd
+    - nova-compute
+
+- name: Require every nova-compute unit to sit on a machine with a br-ex uplink
+  ansible.builtin.assert:
+    that:
+      - item.uplink | bool
+    fail_msg: "VMID {{ item.vmid }} runs nova-compute but has no dedicated br-ex uplink (uplink: true)."
+  when: item.units | select('match', '^nova-compute/[0-9]+$') | list | length > 0
+  loop: "{{ pve_ussuri_topology }}"
+  loop_control:
+    label: "vmid {{ item.vmid }} {{ item.hostname }}"
+
+- name: Forbid cinder and nova-compute on the same machine
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (item.writer is not none and item.writer == 'cinder'
+             and (item.units | select('match', '^nova-compute/[0-9]+$') | list | length) > 0)
+    fail_msg: "VMID {{ item.vmid }} hosts both cinder and nova-compute; their ceph keyrings would overwrite each other."
+  loop: "{{ pve_ussuri_topology }}"
+  loop_control:
+    label: "vmid {{ item.vmid }} {{ item.hostname }}"
+
+- name: Derive the workload registration addresses from the topology
+  ansible.builtin.set_fact:
+    pve_workload_registration_ips: >-
+      {%- set ns = namespace(out=[]) -%}
+      {%- for v in pve_ussuri_workload_vmids -%}
+      {%-   set ns.out = ns.out + [pve_juju_network_spaces[0].cidr
+             | regex_replace('\\.0/24$', '.' ~ ((v | int) - (pve_ussuri_ip_offset | int)))] -%}
+      {%- endfor -%}
+      {{ ns.out }}
+
+- name: Validate already-registered Juju machines against the topology addresses
+  ansible.builtin.assert:
+    that:
+      - item.value.get('dns-name', '') in pve_workload_registration_ips
     fail_msg: >-
-      OpenStack machine {{ item.key }} does not have its fixed pub11 address; refuse to make
-      PVE changes while the manual-provider machine map is ambiguous.
+      Juju machine {{ item.key }} ({{ item.value.get('dns-name', '') }}) is not in the address set declared by the topology table;
+      the machine map of the existing model disagrees with pve_ussuri_topology; refusing to change PVE on top of it.
   loop: "{{ (pve_workload_openstack_status.stdout | from_json).machines | dict2items }}"
   loop_control:
     label: "Juju machine {{ item.key }}"
 
-- name: Validate existing LMA Juju machine IDs before creating workload guests
-  ansible.builtin.assert:
-    that:
-      - >-
-        (
-          (pve_workload_lma_status.stdout | from_json).machines | default({})
-          | dict2items | map(attribute='key') | map('int') | list | sort
-        ) == range(0, ((pve_workload_lma_status.stdout | from_json).machines | default({}) | length)) | list
-      - "((pve_workload_lma_status.stdout | from_json).machines | default({}) | length) <= 4"
-    fail_msg: "LMA machine IDs must be a contiguous prefix from 0 through 3; resolve other inventories manually."
-
-- name: Assert required Juju models exist
-  ansible.builtin.assert:
-    that:
-      - "'models' in (pve_workload_juju_models.stdout | from_json)"
-      - "((pve_workload_juju_models.stdout | from_json).models | selectattr('short-name', 'equalto', 'openstack') | list | length) == 1"
-      - "((pve_workload_juju_models.stdout | from_json).models | selectattr('short-name', 'equalto', 'lma') | list | length) == 1"
-    fail_msg: "run --tags pve-juju-ctrl first to create the Juju controller and the two models."
-
-- name: Check for an owned interrupted machine-ID gap operation
-  ansible.builtin.stat:
-    path: "{{ pve_workload_gap_marker }}"
-  register: pve_workload_gap_marker_status
-
-- name: Read an existing machine-ID gap marker
-  ansible.builtin.slurp:
-    src: "{{ pve_workload_gap_marker }}"
-  register: pve_workload_gap_marker_data
-  when: pve_workload_gap_marker_status.stat.exists
-
-- name: Validate ownership marker before creating workload guests
-  ansible.builtin.assert:
-    that:
-      - (pve_workload_gap_marker_data.content | b64decode | trim) in ['intent', 'ct-ready', 'registered']
-    fail_msg: "Machine-ID gap marker is invalid; refusing to create or register workload guests."
-  when: pve_workload_gap_marker_status.stat.exists
-
-- name: Refuse workload guest changes when a machine-ID gap recovery marker exists
-  ansible.builtin.assert:
-    that:
-      - not pve_workload_gap_marker_status.stat.exists
-    fail_msg: >-
-      A stale machine-21 gap marker exists at {{ pve_workload_gap_marker }}. The workload role
-      does not create or remove Juju machines; inspect and resolve the reservation manually after
-      verifying Juju 2.9 machine-ID behavior.
-
-- name: Check whether KVM workload VMID 1122 exists
-  ansible.builtin.command: qm status 1122
-  register: pve_kvm_1122_status
-  failed_when: false
-  changed_when: false
-  when: pve_create_kvm_1122 | bool
-
-- name: Check whether VMID 1122 is occupied by an LXC container
-  ansible.builtin.command: pct status 1122
-  register: pve_kvm_1122_ct_status
-  failed_when: false
-  changed_when: false
-  when: pve_create_kvm_1122 | bool
-
-- name: Refuse VMID 1122 collision before optional KVM creation
-  ansible.builtin.assert:
-    that:
-      - pve_kvm_1122_status.rc == 0 or pve_kvm_1122_ct_status.rc != 0
-    fail_msg: "VMID 1122 is taken by an LXC or another PVE guest; refusing to overwrite it. Verify it by hand, then decide."
-  when: pve_create_kvm_1122 | bool
-
-- name: Refuse KVM VMID 1122 when its Juju machine mapping is not verified
-  ansible.builtin.assert:
-    that:
-      - >-
-        '23' in (pve_workload_openstack_status.stdout | from_json).machines
-        or
-        (
-          (pve_workload_openstack_status.stdout | from_json).machines.keys()
-          | map('int') | list | sort
-        ) == range(0, ((pve_workload_openstack_status.stdout | from_json).machines | length)) | list
-    fail_msg: >-
-      Juju machine 23 for KVM VMID 1122 is not present and the current IDs are not a contiguous
-      prefix; refusing to create/reuse a KVM guest whose manual-cloud registration would collide.
-
-- name: Initialize Juju workload container inventory
-  ansible.builtin.set_fact:
-    pve_workload_containers: []
-
-- name: Build Juju workload CT inventory, excluding KVM VMID 1122
+- name: Build the Juju workload CT inventory from the topology
   ansible.builtin.set_fact:
     pve_workload_containers: >-
-      {{ pve_workload_containers + [{
-        'vmid': item | int,
-        'hostname': ('os' ~ (item | int - pve_workload_start_vmid) if (item | int) < 1124 else 'lma' ~ (item | int - 1124),
-        'ip': '192.168.11.' ~ (item | int - 1000),
-        'tags': ('juju,openstack' if (item | int) < 1124 else 'juju,lma'),
-        'secondary_networks': (pve_workload_secondary_network_ips.get(item | int, pve_workload_secondary_network_ips.get(item | string, {})) if (item | int) < 1124 else {})
-      }] }}
-  loop: "{{ range(pve_workload_start_vmid | int, pve_workload_end_vmid | int + 1) | list }}"
-  when: item | int != 1122
+      {%- set ns = namespace(out=[]) -%}
+      {%- for e in pve_ussuri_workload_cts -%}
+      {%-   set last = (e.vmid | int) - (pve_ussuri_ip_offset | int) -%}
+      {%-   set ns.out = ns.out + [{
+            'vmid': e.vmid | int,
+            'hostname': e.hostname,
+            'ip': pve_juju_network_spaces[0].cidr | regex_replace('\\.0/24$', '.' ~ last),
+            'tags': 'juju,openstack',
+            'uplink': e.uplink | bool,
+            'secondary_networks': pve_ussuri_secondary_network_ips[e.vmid | string]}] -%}
+      {%- endfor -%}
+      {{ ns.out }}
 
-- name: Require explicit secondary network addresses for all OpenStack workload guests
+- name: Validate the derived CT inventory against the topology
   ansible.builtin.assert:
     that:
-      - >-
-        (pve_workload_secondary_network_ips.keys() | map('int') | list | sort)
-        == (((range(1101, 1122) | list) + [1122, 1123]) | sort)
+      - pve_workload_containers | length == pve_ussuri_workload_cts | length
+      - (pve_workload_containers | map(attribute='vmid') | unique | list | length) == (pve_workload_containers | length)
+      - item.secondary_networks is mapping
+      - (item.secondary_networks.keys() | list | sort) == ['internal', 'oam', 'storage']
+      - (item.secondary_networks.oam.split('.') | last | int) == (item.vmid | int) - (pve_ussuri_ip_offset | int)
+      - (item.secondary_networks.internal.split('.') | last | int) == (item.vmid | int) - (pve_ussuri_ip_offset | int)
+      - (item.secondary_networks.storage.split('.') | last | int) == (item.vmid | int) - (pve_ussuri_ip_offset | int)
+      - (item.ip.split('.') | last | int) == (item.vmid | int) - (pve_ussuri_ip_offset | int)
     fail_msg: >-
-      Define oam/internal/storage addresses for every OpenStack workload VMID 1101-1123,
-      including KVM VMID 1122. The repository does not contain a verified allocation for these
-      networks; refusing to invent IPs or build incomplete manual-provider machines.
-
-- name: Build secondary network address list
-  ansible.builtin.set_fact:
-    pve_workload_secondary_network_ip_list: >-
-      {{ pve_workload_secondary_network_ips.values() | map('dict2items') | flatten
-         | map(attribute='value') | list }}
-
-- name: Require globally unique secondary network addresses
-  ansible.builtin.assert:
-    that:
-      - pve_workload_secondary_network_ip_list | unique | length == 69
-    fail_msg: "pve_workload_secondary_network_ips contains duplicate secondary network addresses."
-
-- name: Validate secondary network addresses for OpenStack workload guests
-  ansible.builtin.assert:
-    that:
-      - item.value is mapping
-      - item.value.keys() | list | sort == ['internal', 'oam', 'storage']
-      - item.value.oam is string
-      - item.value.internal is string
-      - item.value.storage is string
-      - item.value.oam is match('^192[.]168[.]12[.]([2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4])$')
-      - item.value.internal is match('^192[.]168[.]13[.]([2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4])$')
-      - item.value.storage is match('^192[.]168[.]14[.]([2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4])$')
-      - item.value.oam != '192.168.12.3'
-      - item.value.internal != '192.168.13.3'
-      - item.value.storage != '192.168.14.3'
-    fail_msg: "the oam/internal/storage addresses of VMID {{ item.key }} are invalid or clash with MAAS CT 1000."
-  loop: "{{ pve_workload_secondary_network_ips | dict2items }}"
+      the derived address of VMID {{ item.vmid }} ({{ item.hostname }}) does not follow "last octet = vmid -
+      {{ pve_ussuri_ip_offset }}" pattern, or the secondary subnet layout is malformed.
+  loop: "{{ pve_workload_containers }}"
   loop_control:
-    label: "VMID {{ item.key }}"
-
-- name: Set deterministic Juju machine registration IP lists
-  ansible.builtin.set_fact:
-    pve_openstack_machine_ips: >-
-      {{ range(pve_workload_openstack_first_ip_octet | int, pve_workload_openstack_last_ip_octet | int + 1)
-         | map('string') | map('regex_replace', '^', '192.168.11.') | list }}
-    pve_lma_machine_ips: >-
-      {{ range(pve_workload_lma_first_ip_octet | int, pve_workload_lma_last_ip_octet | int + 1)
-         | map('string') | map('regex_replace', '^', '192.168.11.') | list }}
-
-- name: Require workload range to match the validated manual-cloud machine map
-  ansible.builtin.assert:
-    that:
-      - pve_workload_start_vmid | int == 1101
-      - pve_workload_end_vmid | int == 1127
-      - pve_workload_start_vmid | int == 1101 and pve_workload_openstack_last_ip_octet | int - pve_workload_openstack_first_ip_octet | int == 22
-      - pve_workload_openstack_first_ip_octet | int == 101
-      - pve_workload_openstack_last_ip_octet | int == 123
-      - pve_workload_lma_first_ip_octet | int == 124
-      - pve_workload_lma_last_ip_octet | int == 127
-      - pve_create_kvm_1122 | bool
-    fail_msg: "the current Juju machine mapping relies on the fixed 1101-1127 guest list and KVM 1122; to change it, update and verify the --to machine IDs in the deploy scripts first."
+    label: "VMID {{ item.vmid }} {{ item.hostname }}"
 
 - name: Check for existing Juju workload CTs
   ansible.builtin.command: "pct config {{ item.vmid }}"
@@ -356,45 +277,37 @@
   ansible.builtin.assert:
     that:
       - "item.rc != 0 or ('hostname: ' ~ item.item.hostname) in item.stdout"
-      - "item.rc != 0 or ('ip=192.168.11.' ~ (item.item.vmid | int - 1000) ~ '/24') in item.stdout"
+      - "item.rc != 0 or ('ip=' ~ item.item.ip ~ '/24') in item.stdout"
     fail_msg: "VMID {{ item.item.vmid }} is already a CT with a different config; refusing to overwrite or reuse it."
   loop: "{{ pve_workload_ct_configs.results }}"
   loop_control:
     label: "{{ item.item.vmid }} {{ item.item.hostname }}"
-
-- name: Check VMID 1122 is not already registered as an LXC workload CT
-  ansible.builtin.assert:
-    that:
-      - >-
-        (pve_workload_ct_configs.results | selectattr('item.vmid', 'equalto', 1122)
-        | selectattr('rc', 'equalto', 0) | list | length) == 0
-    fail_msg: "VMID 1122 appears in the workload inventory as a CT; the fixed Juju mapping requires 1122 to be a KVM guest. Verify the migration by hand first."
 
 - name: Validate secondary network NIC identity of existing OpenStack workload CTs
   ansible.builtin.assert:
     that:
       - >-
         item.rc != 0 or
-        (item.stdout_lines | select('search', 'bridge=pub11')
-        | select('search', 'ip=192[.]168[.]11[.]' ~ (item.item.vmid | int - 1000) ~ '/24')
-        | select('search', 'gw=192[.]168[.]11[.]1')
+        (item.stdout_lines | select('search', 'bridge=' ~ pve_juju_network_spaces[0].bridge)
+        | select('search', 'ip=' ~ item.item.ip | regex_escape ~ '/24')
+        | select('search', 'gw=' ~ pve_ussuri_gateway | regex_escape)
         | list | length) == 1
       - >-
         item.rc != 0 or
-        (item.stdout_lines | select('search', 'bridge=pub12')
+        (item.stdout_lines | select('search', 'bridge=' ~ pve_juju_network_spaces[1].bridge)
         | select('search', 'ip=' ~ item.item.secondary_networks.oam ~ '/24')
         | list | length) == 1
       - >-
         item.rc != 0 or
-        (item.stdout_lines | select('search', 'bridge=int13')
+        (item.stdout_lines | select('search', 'bridge=' ~ pve_juju_network_spaces[2].bridge)
         | select('search', 'ip=' ~ item.item.secondary_networks.internal ~ '/24')
         | list | length) == 1
       - >-
         item.rc != 0 or
-        (item.stdout_lines | select('search', 'bridge=int14')
+        (item.stdout_lines | select('search', 'bridge=' ~ pve_juju_network_spaces[3].bridge)
         | select('search', 'ip=' ~ item.item.secondary_networks.storage ~ '/24')
         | list | length) == 1
-    fail_msg: "the oam/internal/storage NICs of VMID {{ item.item.vmid }} do not match the declared addresses; refusing to reuse it."
+    fail_msg: "the oam/internal/storage NICs of VMID {{ item.item.vmid }} do not match the addresses/bridges the topology declares; refusing to reuse it."
   loop: "{{ pve_workload_ct_configs.results | selectattr('item.tags', 'search', 'openstack') | list }}"
   loop_control:
     label: "{{ item.item.vmid }} {{ item.item.hostname }}"
@@ -405,8 +318,13 @@
       - pve_compute_uplink_bridge in pve_juju_network_spaces | map(attribute='bridge') | list
       - pve_compute_uplink_pve_net_index | int == 4
       - pve_compute_uplink_guest_interface is match('^ens[0-9]+$')
-      - pve_compute_uplink_vmids | sort == [1101, 1102, 1122]
-    fail_msg: "the dedicated uplink must be net4 on a compute node and free of L3; existing guests only start after the NIC is added when that is explicitly authorised."
+      - pve_compute_uplink_vmids | length > 0
+      - (pve_compute_uplink_vmids | difference(pve_ussuri_workload_vmids)) | length == 0
+      - (pve_compute_uplink_vmids | difference(pve_ussuri_compute_ct_vmids) | sort)
+        == (pve_ussuri_workload_kvms | map(attribute='vmid') | list | sort)
+    fail_msg: >-
+      the dedicated uplink must be net4 on a compute node and free of L3; guests with an uplink may only come from
+      entries marked uplink: true (pct adds the NIC for CTs, kvm-workload.yml does it for KVM guests).
 
 - name: Validate existing compute CT uplink NIC configuration
   ansible.builtin.assert:
@@ -432,7 +350,7 @@
       {{ pve_compute_uplink_guest_interface }}->{{ pve_compute_uplink_bridge }} uplink; refusing to overwrite it.
   loop: >-
     {{ pve_workload_ct_configs.results
-       | selectattr('item.vmid', 'in', pve_compute_uplink_vmids | difference([1122])) | list }}
+       | selectattr('item.vmid', 'in', pve_ussuri_compute_ct_vmids) | list }}
   loop_control:
     label: "CT {{ item.item.vmid }}"
 
@@ -445,7 +363,7 @@
     - (item.stdout_lines | select('match', '^net4:') | list | length) == 0
   loop: >-
     {{ pve_workload_ct_configs.results
-       | selectattr('item.vmid', 'in', pve_compute_uplink_vmids | difference([1122])) | list }}
+       | selectattr('item.vmid', 'in', pve_ussuri_compute_ct_vmids) | list }}
   loop_control:
     label: "CT {{ item.item.vmid }}"
 
@@ -483,7 +401,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - cat ~/.ssh/id_ed25519.pub
@@ -549,14 +467,14 @@
       echo "EXISTS-SKIP $vmid $hostname"
       exit 0
     fi
-    networks=(--net0 "name=eth0,bridge=pub11,ip=${ip}/24,gw=192.168.11.1")
+    networks=(--net0 "name=eth0,bridge={{ pve_juju_network_spaces[0].bridge }},ip=${ip}/24,gw={{ pve_ussuri_gateway }}")
     if [[ "$tags" == *openstack* ]]; then
       networks+=(
-        --net1 "name=eth1,bridge=pub12,ip={{ item.secondary_networks.oam }}/24"
-        --net2 "name=eth2,bridge=int13,ip={{ item.secondary_networks.internal }}/24"
-        --net3 "name=eth3,bridge=int14,ip={{ item.secondary_networks.storage }}/24"
+        --net1 "name=eth1,bridge={{ pve_juju_network_spaces[1].bridge }},ip={{ item.secondary_networks.oam }}/24"
+        --net2 "name=eth2,bridge={{ pve_juju_network_spaces[2].bridge }},ip={{ item.secondary_networks.internal }}/24"
+        --net3 "name=eth3,bridge={{ pve_juju_network_spaces[3].bridge }},ip={{ item.secondary_networks.storage }}/24"
       )
-      if [[ "$vmid" == "1101" || "$vmid" == "1102" ]]; then
+      if [[ "{{ item.uplink | bool }}" == "True" ]]; then
         networks+=(--net4 "name={{ pve_compute_uplink_guest_interface }},bridge={{ pve_compute_uplink_bridge }},ip=manual")
       fi
     fi
@@ -564,7 +482,7 @@
       --hostname "$hostname" --ostype ubuntu --cores 2 --memory 4096 --swap 0 \
       --rootfs '{{ pve_storage }}:16' --unprivileged 0 --features nesting=1,fuse=1 \
       "${networks[@]}" \
-      --nameserver 8.8.8.8 --tags "$tags" --onboot 1 --startup 'order=3' \
+      --nameserver 8.8.8.8 --tags "$tags" --onboot 1 --startup 'order=3' --start 0 \
       >"/var/tmp/ctcreate-${vmid}.log" 2>&1
     echo "CREATE-OK $vmid $hostname"
   args:
@@ -577,7 +495,7 @@
   ansible.builtin.command: "pct config {{ item }}"
   register: pve_compute_uplink_ct_configs_after
   changed_when: false
-  loop: "{{ pve_compute_uplink_vmids | difference([1122]) }}"
+  loop: "{{ pve_ussuri_compute_ct_vmids }}"
   loop_control:
     label: "CT {{ item }}"
 
@@ -593,17 +511,56 @@
   loop_control:
     label: "CT {{ item.item }}"
 
+- name: Copy the ussuri OSD thin-LV helper to the PVE host
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/pve/scripts/ussuri-setup-osd-lv.sh"
+    dest: /root/ussuri-setup-osd-lv.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Provision each ceph-osd container's dedicated thin-LV disk before first boot
+  ansible.builtin.command:
+    argv:
+      - /root/ussuri-setup-osd-lv.sh
+      - "{{ pve_ussuri_osd_spec }}"
+  environment:
+    OSD_LV_PREFIX: "{{ pve_ussuri_osd_lv_prefix }}"
+    OSD_SIZE_MB: "{{ pve_ussuri_osd_size_mb }}"
+    OSD_THINPOOL: "{{ pve_ussuri_osd_thinpool }}"
+    OSD_THINPOOL_MAX_DATA_PERCENT: "{{ pve_ussuri_osd_thinpool_max_data_percent }}"
+  register: pve_ussuri_osd_lv
+  changed_when: "'USSURI-SETUP-OSD-LV-DONE' in pve_ussuri_osd_lv.stdout"
+  when: pve_ussuri_osd_spec | trim | length > 0
+
+- name: Copy the cap.drop baseline writer to the PVE host
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/pve/scripts/ussuri-set-capdrop.py"
+    dest: /root/ussuri-set-capdrop.py
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Copy the CT virtual-machine device passthrough helper to the PVE host
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/pve/scripts/ussuri-ct-vm-devices.sh"
+    dest: /root/ussuri-ct-vm-devices.sh
+    owner: root
+    group: root
+    mode: "0700"
+
 - name: Ensure workload LXC containers can run Juju agents
-  ansible.builtin.blockinfile:
-    path: "/etc/pve/lxc/{{ item.vmid }}.conf"
-    marker: "# {mark} ANSIBLE JUJU LXC SETTINGS"
-    insertbefore: BOF
-    block: |
-      lxc.cap.drop:
-      lxc.cap.drop: mac_override sys_time sys_module sys_rawio
+  ansible.builtin.command:
+    argv:
+      - python3
+      - /root/ussuri-set-capdrop.py
+      - "{{ item.vmid }}"
+      - USSURI WORKLOAD SETTINGS
   loop: "{{ pve_workload_containers }}"
   loop_control:
     label: "{{ item.vmid }} {{ item.hostname }}"
+  register: pve_ussuri_capdrop
+  changed_when: "'CHANGED' in pve_ussuri_capdrop.stdout"
 
 - name: Give every workload container its own SMBIOS system UUID
   ansible.builtin.include_role:
@@ -611,6 +568,18 @@
   vars:
     pve_ct_system_uuid_items: "{{ pve_workload_containers | map(attribute='vmid') | list }}"
     pve_ct_system_uuid_apply_live: true
+
+- name: Pass through /dev/net/tun and /dev/kvm to the compute LXC containers
+  ansible.builtin.command:
+    argv:
+      - /root/ussuri-ct-vm-devices.sh
+      - "{{ item }}"
+  loop: "{{ pve_ussuri_compute_ct_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+  register: pve_ussuri_ct_vm_devices
+  changed_when: "'ADDED' in pve_ussuri_ct_vm_devices.stdout"
+  tags: pve-ussuri-ct-vm-devices
 
 - name: Start workload LXC containers
   ansible.builtin.shell: |
@@ -647,12 +616,21 @@
   loop_control:
     label: "{{ item.vmid }} {{ item.hostname }}"
 
-- name: Create KVM workload VM 1122 and register its Juju client key
-  ansible.builtin.include_tasks: kvm-1122.yml
+- name: Create the KVM workload VMs declared in the topology
+  ansible.builtin.include_tasks: kvm-workload.yml
   vars:
-    pve_kvm_1122_secondary_networks: >-
-      {{ pve_workload_secondary_network_ips.get(1122, pve_workload_secondary_network_ips.get('1122', {})) }}
-  when: pve_create_kvm_1122 | bool
+    pve_kvm: >-
+      {{ {'vmid': item.vmid | int,
+          'hostname': item.hostname,
+          'cores': pve_ussuri_kvm_cores,
+          'memory': pve_ussuri_kvm_memory,
+          'disk': pve_ussuri_kvm_disk,
+          'ip': pve_juju_network_spaces[0].cidr
+                | regex_replace('\.0/24$', '.' ~ ((item.vmid | int) - (pve_ussuri_ip_offset | int)))} }}
+    pve_kvm_secondary_networks: "{{ pve_ussuri_secondary_network_ips[item.vmid | string] }}"
+  loop: "{{ pve_ussuri_workload_kvms }}"
+  loop_control:
+    label: "VMID {{ item.vmid }} {{ item.hostname }}"
 
 - name: Copy Juju workload registration helper to PVE host
   ansible.builtin.copy:
@@ -726,5 +704,12 @@
     CLIENT_VMID: "{{ pve_juju_client_vmid }}"
     CLIENT_USER: "{{ pve_juju_client_user }}"
     JUJU_BIN: "{{ pve_juju_bin }}"
+    MODEL: openstack
+    WORKLOAD_VMIDS: "{{ pve_ussuri_workload_vmids | join(' ') }}"
+    IP_OFFSET: "{{ pve_ussuri_ip_offset }}"
+    PRIMARY_PREFIX: "{{ pve_juju_network_spaces[0].cidr | regex_replace('\\.0/24$', '') }}"
   register: pve_workload_registration
   changed_when: "'JUJU-WORKLOAD-MAPPING-CHANGED' in pve_workload_registration.stdout"
+
+- name: Install the env1 static name resolution map into every guest
+  ansible.builtin.include_tasks: hosts-sync.yml

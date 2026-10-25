@@ -1,42 +1,40 @@
 ---
-- name: Require explicit secondary IP assignments for every OpenStack workload guest
+- name: Validate every topology guest has derived secondary network addresses
   ansible.builtin.assert:
     that:
+      - pve_ussuri_secondary_network_ips is mapping
       - >-
-        (pve_workload_secondary_network_ips.keys() | map('int') | list | sort)
-        == (((range(1101, 1122) | list) + [1122, 1123]) | sort)
+        ((pve_ussuri_secondary_network_ips.keys() | map('int') | list | sort)
+        == (pve_ussuri_workload_vmids | sort))
     fail_msg: >-
-      Define pve_workload_secondary_network_ips for every OpenStack workload VMID 1101-1123,
-      including KVM VMID 1122, with oam/internal/storage addresses. No verified address
-      allocation exists in this repository; refusing to invent addresses or build incomplete NICs.
+      pve_ussuri_secondary_network_ips must cover exactly every vmid in pve_ussuri_topology
+      (both come from the same table; a mismatch means the variables were overridden by hand).
 
 - name: Validate each workload secondary network address
   ansible.builtin.assert:
     that:
       - item.value is mapping
-      - item.value.keys() | list | sort == ['internal', 'oam', 'storage']
-      - item.value.oam is match('^192[.]168[.]12[.]([2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4])$')
-      - item.value.internal is match('^192[.]168[.]13[.]([2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4])$')
-      - item.value.storage is match('^192[.]168[.]14[.]([2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4])$')
-      - item.value.oam != '192.168.12.3'
-      - item.value.internal != '192.168.13.3'
-      - item.value.storage != '192.168.14.3'
-    fail_msg: "the oam/internal/storage addresses of VMID {{ item.key }} are invalid or clash with MAAS CT 1000."
-  loop: "{{ pve_workload_secondary_network_ips | dict2items }}"
+      - (item.value.keys() | list | sort) == ['internal', 'oam', 'storage']
+      - (item.value.oam.split('.') | last | int) == (item.key | int) - (pve_ussuri_ip_offset | int)
+      - (item.value.internal.split('.') | last | int) == (item.key | int) - (pve_ussuri_ip_offset | int)
+      - (item.value.storage.split('.') | last | int) == (item.key | int) - (pve_ussuri_ip_offset | int)
+      - (item.value.oam.split('.')[0:3] | join('.')) == (pve_juju_network_spaces[1].cidr.split('.')[0:3] | join('.'))
+      - (item.value.internal.split('.')[0:3] | join('.')) == (pve_juju_network_spaces[2].cidr.split('.')[0:3] | join('.'))
+      - (item.value.storage.split('.')[0:3] | join('.')) == (pve_juju_network_spaces[3].cidr.split('.')[0:3] | join('.'))
+    fail_msg: >-
+      the oam/internal/storage addresses of VMID {{ item.key }} do not follow "last octet = vmid -
+      {{ pve_ussuri_ip_offset }}" pattern, or they disagree with the subnets in pve_juju_network_spaces.
+  loop: "{{ pve_ussuri_secondary_network_ips | dict2items }}"
   loop_control:
     label: "VMID {{ item.key }}"
-
-- name: Build unique secondary network address list
-  ansible.builtin.set_fact:
-    pve_network_secondary_ip_list: >-
-      {{ pve_workload_secondary_network_ips.values() | map('dict2items') | flatten
-         | map(attribute='value') | list }}
 
 - name: Require globally unique secondary network addresses
   ansible.builtin.assert:
     that:
-      - pve_network_secondary_ip_list | unique | length == 69
-    fail_msg: "pve_workload_secondary_network_ips contains duplicate secondary network addresses."
+      - >-
+        (pve_ussuri_secondary_network_ips.values() | map('dict2items') | flatten
+         | map(attribute='value') | list | unique | length) == (pve_ussuri_workload_vmids | length) * 3
+    fail_msg: "pve_ussuri_secondary_network_ips contains duplicate secondary network addresses."
 
 - name: Read OpenStack Juju model status before network configuration
   ansible.builtin.command:
@@ -46,7 +44,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - "{{ pve_juju_bin }} status -m {{ pve_juju_controller_name }}:openstack --format json"
@@ -61,20 +59,19 @@
       - "'applications' in (pve_network_status_before.stdout | from_json)"
     fail_msg: "cannot read the OpenStack Juju machines/applications; refusing to configure spaces from an incomplete inventory."
 
-- name: Build expected Juju machine IDs by PVE VMID
+- name: Build expected Juju machine mapping and addresses from the topology
   ansible.builtin.set_fact:
-    pve_network_expected_vmids: "{{ (range(1101, 1122) | map('string') | list) + ['1122', '1123'] }}"
+    pve_network_expected_vmids: "{{ pve_ussuri_workload_vmids | map('string') | list }}"
     pve_network_machine_ids: >-
-      {{ dict(((range(1101, 1122) | map('string') | list) + ['1122', '1123'])
-      | zip(((range(0, 21) | map('string') | list) + ['23', '22']))) }}
-    pve_network_secondary_ips_by_vmid: >-
-      {{ dict((pve_workload_secondary_network_ips | dict2items
-        | map(attribute='key') | map('string') | list)
-        | zip(pve_workload_secondary_network_ips | dict2items | map(attribute='value') | list)) }}
+      {{ dict((pve_ussuri_workload_vmids | map('string') | list)
+         | zip(range(0, pve_ussuri_workload_vmids | length) | map('string') | list)) }}
     pve_network_public_ips_by_vmid: >-
-      {{ dict(((range(1101, 1122) | map('string') | list) + ['1122', '1123'])
-        | zip(((range(101, 122) | map('string') | map('regex_replace', '^', '192.168.11.') | list)
-          + ['192.168.11.122', '192.168.11.123']))) }}
+      {%- set ns = namespace(m={}) -%}
+      {%- for v in pve_ussuri_workload_vmids -%}
+      {%-   set ns.m = ns.m | combine({v | string: pve_juju_network_spaces[0].cidr
+             | regex_replace('\\.0/24$', '.' ~ ((v | int) - (pve_ussuri_ip_offset | int)))}) -%}
+      {%- endfor -%}
+      {{ ns.m }}
 
 - name: Verify Juju discovered every OpenStack workload guest secondary NIC address
   ansible.builtin.assert:
@@ -91,7 +88,7 @@
           ]
         )
       - >-
-        (pve_network_secondary_ips_by_vmid[item].values() | list
+        (pve_ussuri_secondary_network_ips[item].values() | list
         | difference(
           (pve_network_status_before.stdout | from_json).machines[
             pve_network_machine_ids[item]
@@ -117,23 +114,23 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - "{{ pve_juju_bin }} subnets -m {{ pve_juju_controller_name }}:openstack --format json"
   register: pve_network_subnets_before
   changed_when: false
 
-- name: Require OpenStack machine IDs have the fixed map before configuring Juju spaces
+- name: Require the OpenStack model to hold exactly the topology machines
   ansible.builtin.assert:
     that:
       - >-
         ((pve_network_status_before.stdout | from_json).machines | default({})
           | dict2items | map(attribute='key') | map('int') | list | sort)
-        == ((range(0, 21) | list) + [22, 23])
+        == (range(0, pve_ussuri_workload_vmids | length) | list)
     fail_msg: >-
-      OpenStack Juju machines must use the verified fixed IDs 0-20,22,23 with machine 21 absent.
-      Complete and verify the PVE machine-registration stage first.
+      OpenStack Juju machines must be exactly 0..{{ (pve_ussuri_workload_vmids | length) - 1 }}
+      (one per pve_ussuri_topology entry). Complete the pve-machines registration stage first.
 
 - name: Require every intended subnet to be discovered by Juju
   ansible.builtin.assert:
@@ -166,7 +163,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - "{{ pve_juju_bin }} spaces -m {{ pve_juju_controller_name }}:openstack --format json"
@@ -279,7 +276,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - >-
@@ -299,7 +296,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - >-
@@ -320,7 +317,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - "{{ pve_juju_bin }} subnets -m {{ pve_juju_controller_name }}:openstack --format json"
@@ -356,7 +353,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - "{{ pve_juju_bin }} spaces -m {{ pve_juju_controller_name }}:openstack --format json"
@@ -400,7 +397,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - "{{ pve_juju_bin }} model-config -m {{ pve_juju_controller_name }}:openstack default-space"
@@ -425,7 +422,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - >-
@@ -443,7 +440,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - "{{ pve_juju_bin }} model-config -m {{ pve_juju_controller_name }}:openstack default-space"

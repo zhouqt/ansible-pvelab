@@ -1,4 +1,8 @@
 #!/bin/bash
+echo "REFUSED: juju-create-kvm-1122.sh is deprecated (hardcoded vmid/IP, and it unconditionally runs qm destroy 1122 up front)." >&2
+echo "  replacement: roles/pve-machines/tasks/kvm-workload.yml, driven by --tags pve-machines." >&2
+exit 1
+
 set -euo pipefail
 cd /var/tmp
 IMG=ubuntu-20.04-server-cloudimg-amd64.img

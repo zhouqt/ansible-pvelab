@@ -1,0 +1,223 @@
+---
+
+- name: Require an explicit opt-in before restoring a savepoint
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_savepoint_restore | bool
+    fail_msg: "restoring from a snapshot is refused by default. Confirm and add -e pve_ussuri_savepoint_restore=true."
+
+- name: Require a savepoint name
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_savepoint_name | length > 0
+      - pve_ussuri_savepoint_name is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,30}$')
+    fail_msg: "pve_ussuri_savepoint_name is required and may only contain letters, digits and . _ -."
+
+- name: Define the savepoint prefix and the metadata path
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.set_fact:
+    pve_ussuri_savepoint_prefix: "sp-{{ pve_ussuri_savepoint_env_short }}-{{ pve_ussuri_savepoint_name }}"
+    pve_ussuri_savepoint_metadata: >-
+      /root/ussuri-savepoint-{{ pve_ussuri_savepoint_env_short }}-{{ pve_ussuri_savepoint_name }}.txt
+
+- name: Require the savepoint metadata to exist
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.stat:
+    path: "{{ pve_ussuri_savepoint_metadata }}"
+  register: pve_ussuri_meta_stat
+
+- name: Fail when the savepoint metadata is missing
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_meta_stat.stat.exists
+    fail_msg: >-
+      {{ pve_ussuri_savepoint_metadata }} does not exist.
+      take a savepoint first: --tags openstack-ussuri-savepoint -e pve_ussuri_savepoint_take=true
+      -e pve_ussuri_savepoint_name={{ pve_ussuri_savepoint_name }}
+
+- name: Install the restore helpers on the PVE host
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - { src: preflight-restore.py, dest: /root/.ansible-ussuri-preflight-restore.py }
+    - { src: guest-control.sh,    dest: /root/.ansible-ussuri-guest-control.sh }
+  loop_control:
+    label: "{{ item.dest }}"
+
+- name: Preflight the restore before stopping anything
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.command: >-
+    python3 /root/.ansible-ussuri-preflight-restore.py
+    {% if pve_ussuri_savepoint_restore_conf | bool %}--ignore-conf-check{% endif %}
+    {{ pve_ussuri_savepoint_metadata }}
+  register: pve_ussuri_preflight
+  changed_when: false
+  failed_when: false
+
+- name: Fail when the preflight rejects the restore
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_preflight.rc == 0
+    fail_msg: >-
+      the preflight failed, no guest was stopped:
+      {{ (pve_ussuri_preflight.stdout | default('{}', true) | from_json).errors
+         | default([pve_ussuri_preflight.stderr]) }}
+
+- name: Define the volume and guest lists from the metadata
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.set_fact:
+    pve_ussuri_savepoint_volumes: "{{ (pve_ussuri_preflight.stdout | from_json).volumes }}"
+    pve_ussuri_savepoint_guests: >-
+      {%- set out = [] -%}
+      {%- set seen = [] -%}
+      {%- for v in (pve_ussuri_preflight.stdout | from_json).volumes -%}
+        {%- if v.kind != 'raw' and v.vmid not in seen -%}
+          {%- set _ = seen.append(v.vmid) -%}
+          {%- set _ = out.append({'vmid': v.vmid, 'kind': v.kind}) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Show the restore plan
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.debug:
+    msg: >-
+      will restore from {{ pve_ussuri_savepoint_prefix }}-*
+      {{ pve_ussuri_savepoint_volumes | length }} volumes /
+      {{ pve_ussuri_savepoint_guests | length }} guests;
+      the controller {{ pve_ussuri_savepoint_controller_vmid }} is stopped last and started first;
+      restore guest conf: {{ pve_ussuri_savepoint_restore_conf | bool }}.
+
+- name: Define the workload guest list (everything except the controller)
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.set_fact:
+    pve_ussuri_savepoint_workers: >-
+      {{ pve_ussuri_savepoint_guests
+         | rejectattr('vmid', 'equalto', pve_ussuri_savepoint_controller_vmid | int) | list }}
+
+- name: Stop the workload guests in parallel
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.command: >-
+    /root/.ansible-ussuri-guest-control.sh stop {{ pve_ussuri_savepoint_restore_parallel }}
+    {% for g in pve_ussuri_savepoint_workers %}{{ g.vmid }}:{{ g.kind }} {% endfor %}
+  register: pve_ussuri_stop_workers
+  changed_when: "'GUEST-STOPPED' in pve_ussuri_stop_workers.stdout"
+
+- name: Stop the Juju controller last
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.shell: |
+    set -uo pipefail
+    vmid={{ pve_ussuri_savepoint_controller_vmid }}
+    pct status "$vmid" 2>/dev/null | grep -q 'status: running' || { echo "GUEST-SKIP $vmid already-stopped"; exit 0; }
+    pct shutdown "$vmid" --timeout 90 >/dev/null 2>&1 || true
+    pct status "$vmid" 2>/dev/null | grep -q 'status: running' && pct stop "$vmid" >/dev/null 2>&1 || true
+    pct status "$vmid" 2>/dev/null | grep -q 'status: running' && { echo "RESTORE-FAIL the controller will not stop" >&2; exit 1; }
+    echo "GUEST-STOPPED $vmid"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_stop_ctrl
+  changed_when: "'GUEST-STOPPED' in pve_ussuri_stop_ctrl.stdout"
+
+- name: Swap each volume back to its savepoint and activate it
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.shell: |
+    set -euo pipefail
+    origin="{{ item.origin }}"
+    base="{{ item.base }}"
+    lvs --noheadings -o lv_name pve-thin-pool/"$base" >/dev/null 2>&1 \
+      || { echo "RESTORE-FAIL the base is missing: $base" >&2; exit 1; }
+    lvchange -an "pve-thin-pool/$origin" >/dev/null 2>&1 || true
+    lvremove --yes "pve-thin-pool/$origin"
+    lvcreate --yes --snapshot --name "$origin" "pve-thin-pool/$base"
+    lvchange -ay -K "pve-thin-pool/$origin"
+    test -b "/dev/pve-thin-pool/$origin" \
+      || { echo "RESTORE-FAIL $origin has no device node after activation" >&2; exit 1; }
+    echo "RESTORE-SWAPPED $origin from $base"
+  args:
+    executable: /bin/bash
+  loop: "{{ pve_ussuri_savepoint_volumes }}"
+  loop_control:
+    label: "{{ item.role }}/{{ item.key }} ({{ item.origin }})"
+  register: pve_ussuri_swap
+  changed_when: "'RESTORE-SWAPPED' in pve_ussuri_swap.stdout"
+
+- name: Restore the guest configuration files from the savepoint archive
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.shell: |
+    set -euo pipefail
+    archive="/root/ussuri-savepoint-{{ pve_ussuri_savepoint_env_short }}-{{ pve_ussuri_savepoint_name }}-conf.tar.gz"
+    [ -f "$archive" ] || { echo "RESTORE-FAIL the conf archive is missing: $archive" >&2; exit 1; }
+    tar xzf "$archive" -C /etc/pve
+    echo "RESTORE-CONF-RESTORED $archive"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_conf_restore
+  changed_when: "'RESTORE-CONF-RESTORED' in pve_ussuri_conf_restore.stdout"
+  when: pve_ussuri_savepoint_restore_conf | bool
+
+- name: Give every restored CT its own SMBIOS system UUID
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.include_role:
+    name: pve-ct-system-uuid
+  vars:
+    pve_ct_system_uuid_items: >-
+      {{ pve_ussuri_savepoint_guests | selectattr('kind', 'equalto', 'ct')
+         | map(attribute='vmid') | list }}
+    pve_ct_system_uuid_apply_live: true
+
+- name: Start the Juju controller first
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.command: "pct start {{ pve_ussuri_savepoint_controller_vmid }}"
+  changed_when: true
+
+- name: Wait for the controller to accept pct exec
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.command: "pct exec {{ pve_ussuri_savepoint_controller_vmid }} -- true"
+  register: pve_ussuri_ctrl_up
+  retries: 36
+  delay: 5
+  until: pve_ussuri_ctrl_up.rc == 0
+  changed_when: false
+
+- name: Start the workload guests in parallel
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.command: >-
+    /root/.ansible-ussuri-guest-control.sh start {{ pve_ussuri_savepoint_restore_parallel }}
+    {% for g in pve_ussuri_savepoint_workers %}{{ g.vmid }}:{{ g.kind }} {% endfor %}
+  register: pve_ussuri_start_workers
+  changed_when: "'GUEST-STARTED' in pve_ussuri_start_workers.stdout"
+
+- name: Bring br-ex up on every compute node
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.shell: |
+    set -uo pipefail
+    vmid={{ item.vmid }}
+    if [ "{{ item.kind }}" = "kvm" ]; then
+      ip="{{ pve_ussuri_savepoint_public_prefix }}.$((vmid - {{ pve_ussuri_savepoint_ip_offset }}))"
+      pct exec {{ pve_ussuri_savepoint_juju_client_vmid }} -- su - {{ pve_ussuri_savepoint_juju_client_user }} -c \
+        "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ubuntu@$ip 'sudo ip link set br-ex up'" 2>/dev/null || true
+    else
+      pct exec "$vmid" -- ip link set br-ex up 2>/dev/null || true
+    fi
+    echo "RESTORE-BREX $vmid"
+  args:
+    executable: /bin/bash
+  loop: "{{ pve_ussuri_savepoint_compute_guests }}"
+  loop_control:
+    label: "compute {{ item.vmid }} ({{ item.kind }})"
+  register: pve_ussuri_brex
+  changed_when: false
+  failed_when: false
+
+- name: Hand off to the ussuri convergence chain
+  tags: [openstack-ussuri-savepoint-restore]
+  ansible.builtin.include_tasks: converge.yml

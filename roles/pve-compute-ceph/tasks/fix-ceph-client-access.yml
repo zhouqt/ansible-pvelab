@@ -1,0 +1,63 @@
+---
+
+- name: Derive which Ceph client services must be able to read the active ceph.conf
+  ansible.builtin.set_fact:
+    pve_ussuri_ceph_client_targets: >-
+      {%- set out = [] -%}
+      {%- set spec = [
+            {'unit': 'glance', 'user': 'glance', 'service': 'glance-api'},
+            {'unit': 'cinder', 'user': 'cinder', 'service': 'cinder-volume'}
+          ] -%}
+      {%- for s in spec -%}
+      {%-   set m = pve_ussuri_machine_of_unit.get(s.unit) -%}
+      {%-   if m is not none -%}
+      {%-     set _ = out.append({'vmid': pve_ussuri_topology[m | int].vmid,
+                                  'user': s.user, 'service': s.service}) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Put each Ceph client service user into the ceph group
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ item.vmid }}"
+      - --
+      - bash
+      - -lc
+      - |
+        set -uo pipefail
+        user={{ item.user }}
+        if ! id -u "$user" >/dev/null 2>&1; then
+          echo "NO-USER $user"; exit 0
+        fi
+        if id -nG "$user" | tr ' ' '\n' | grep -qx ceph; then
+          echo "ALREADY $user"; exit 0
+        fi
+        usermod -aG ceph "$user" || { echo "USERMOD-FAILED $user"; exit 1; }
+        systemctl try-restart {{ item.service }} >/dev/null 2>&1 || true
+        echo "ADDED $user"
+  loop: "{{ pve_ussuri_ceph_client_targets }}"
+  loop_control:
+    label: "{{ item.service }} @ CT{{ item.vmid }}"
+  register: pve_ussuri_ceph_client_group
+  changed_when: "'ADDED' in pve_ussuri_ceph_client_group.stdout"
+
+- name: Assert every Ceph client service user can read the active ceph.conf
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ item.vmid }}"
+      - --
+      - su
+      - "-s"
+      - /bin/sh
+      - "{{ item.user }}"
+      - -c
+      - "test -r /etc/ceph/ceph.conf && echo READABLE || { echo UNREADABLE; exit 1; }"
+  loop: "{{ pve_ussuri_ceph_client_targets }}"
+  loop_control:
+    label: "{{ item.service }} @ CT{{ item.vmid }}"
+  changed_when: false

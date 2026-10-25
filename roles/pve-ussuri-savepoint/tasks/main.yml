@@ -1,0 +1,154 @@
+---
+
+- name: Require an explicit opt-in before taking a savepoint
+  tags: [openstack-ussuri-savepoint]
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_savepoint_take | bool
+    fail_msg: "taking a savepoint is refused by default. Once env1 is confirmed healthy, add -e pve_ussuri_savepoint_take=true."
+
+- name: Require a savepoint name
+  tags: [openstack-ussuri-savepoint]
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_savepoint_name | length > 0
+      - pve_ussuri_savepoint_name is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,30}$')
+    fail_msg: "pve_ussuri_savepoint_name is required and may only contain letters, digits and . _ - (e.g. baseline, 20261024-1)."
+
+- name: Refuse to snapshot when the thin pool is too full
+  tags: [openstack-ussuri-savepoint]
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct=$(lvs --noheadings -o data_percent pve-thin-pool/pve-thin-pool | tr -d ' ')
+    echo "POOL_DATA_PERCENT=$pct"
+    awk -v p="$pct" -v max="{{ pve_ussuri_savepoint_pool_max_data_percent }}" \
+      'BEGIN { exit !(p+0 < max+0) }'
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_savepoint_pool
+  changed_when: false
+  failed_when: pve_ussuri_savepoint_pool.rc != 0
+
+- name: Install the volume discovery helper on the PVE host
+  tags: [openstack-ussuri-savepoint]
+  ansible.builtin.copy:
+    src: discover-volumes.py
+    dest: /root/.ansible-ussuri-discover-volumes.py
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Discover every pve-thin-pool volume backing this environment
+  tags: [openstack-ussuri-savepoint]
+  ansible.builtin.command:
+    argv:
+      - python3
+      - /root/.ansible-ussuri-discover-volumes.py
+      - --spec
+      - >-
+        {{ {'cts': pve_ussuri_savepoint_cts,
+            'kvms': pve_ussuri_savepoint_kvms,
+            'controller_vmid': pve_ussuri_savepoint_controller_vmid,
+            'client_vmid': pve_ussuri_savepoint_client_vmid,
+            'exclude_volumes': pve_ussuri_savepoint_exclude_volumes,
+            'include_cloudinit': pve_ussuri_savepoint_include_cloudinit,
+            'include_maas_mp': pve_ussuri_savepoint_include_maas_mp,
+            'include_extra_lvs': pve_ussuri_savepoint_include_extra_lvs,
+            'extra_lvs': pve_ussuri_savepoint_extra_lvs} | to_json }}
+  register: pve_ussuri_savepoint_discover
+  changed_when: false
+
+- name: Define the savepoint prefix and the selected volume set
+  tags: [openstack-ussuri-savepoint]
+  ansible.builtin.set_fact:
+    pve_ussuri_savepoint_prefix: "sp-{{ pve_ussuri_savepoint_env_short }}-{{ pve_ussuri_savepoint_name }}"
+    pve_ussuri_savepoint_all_volumes: "{{ pve_ussuri_savepoint_discover.stdout | from_json }}"
+    pve_ussuri_savepoint_volumes: >-
+      {{ (pve_ussuri_savepoint_discover.stdout | from_json).volumes
+         | rejectattr('skip') | list }}
+
+- name: Show what will be snapshotted and what is excluded
+  tags: [openstack-ussuri-savepoint]
+  ansible.builtin.debug:
+    msg: >-
+      {{ ['will snapshot %d volumes (%d guests):' | format(pve_ussuri_savepoint_volumes | length,
+                                                  pve_ussuri_savepoint_volumes | map(attribute='vmid') | unique | length)]
+         + (pve_ussuri_savepoint_volumes | map(attribute='origin') | list)
+         + ['']
+         + (['excluded:'] if (pve_ussuri_savepoint_all_volumes.volumes | rejectattr('skip', 'none') | list | length > 0) else [])
+         + (pve_ussuri_savepoint_all_volumes.volumes | rejectattr('skip', 'none')
+            | map(attribute='origin') | zip(pve_ussuri_savepoint_all_volumes.volumes
+            | rejectattr('skip', 'none') | map(attribute='skip')) | map('join', ' → ') | list)
+         + (pve_ussuri_savepoint_all_volumes.warnings | default([])) }}
+
+- name: Snapshot each selected volume
+  tags: [openstack-ussuri-savepoint]
+  ansible.builtin.shell: |
+    set -euo pipefail
+    base="{{ pve_ussuri_savepoint_prefix }}-{{ item.role }}-{{ item.key }}"
+    if lvs --noheadings -o lv_name pve-thin-pool/"$base" >/dev/null 2>&1; then
+      echo "SAVEPOINT-SKIP $base already exists"
+      exit 0
+    fi
+    lvcreate --yes --snapshot --name "$base" "pve-thin-pool/{{ item.origin }}"
+    echo "SAVEPOINT-TAKEN $base from {{ item.origin }}"
+  args:
+    executable: /bin/bash
+  loop: "{{ pve_ussuri_savepoint_volumes }}"
+  loop_control:
+    label: "{{ item.role }}/{{ item.key }} ({{ item.origin }})"
+  register: pve_ussuri_savepoint_taken
+  changed_when: "'SAVEPOINT-TAKEN' in pve_ussuri_savepoint_taken.stdout"
+
+- name: Back up the guest configuration files
+  tags: [openstack-ussuri-savepoint]
+  ansible.builtin.shell: |
+    set -euo pipefail
+    out="/root/ussuri-savepoint-{{ pve_ussuri_savepoint_env_short }}-{{ pve_ussuri_savepoint_name }}-conf.tar.gz"
+    if [ -e "$out" ]; then
+      echo "CONF-SKIP $out already exists"
+      exit 0
+    fi
+    files=""
+    for v in {{ (pve_ussuri_savepoint_cts + pve_ussuri_savepoint_kvms) | join(' ') }}; do
+      [ -f "/etc/pve/lxc/$v.conf" ] && files="$files lxc/$v.conf"
+      [ -f "/etc/pve/qemu-server/$v.conf" ] && files="$files qemu-server/$v.conf"
+    done
+    [ -n "$files" ] || { echo "SAVEPOINT-FAIL found no guest conf at all" >&2; exit 1; }
+    tar czf "$out" -C /etc/pve $files
+    chmod 0600 "$out"
+    echo "CONF-BACKED-UP $out"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_savepoint_conf
+  changed_when: "'CONF-BACKED-UP' in pve_ussuri_savepoint_conf.stdout"
+
+- name: Record the savepoint metadata on the PVE host
+  tags: [openstack-ussuri-savepoint]
+  ansible.builtin.copy:
+    dest: "/root/ussuri-savepoint-{{ pve_ussuri_savepoint_env_short }}-{{ pve_ussuri_savepoint_name }}.txt"
+    owner: root
+    group: root
+    mode: "0600"
+    force: false
+    content: |
+      env_short={{ pve_ussuri_savepoint_env_short }}
+      name={{ pve_ussuri_savepoint_name }}
+      prefix={{ pve_ussuri_savepoint_prefix }}
+      controller_vmid={{ pve_ussuri_savepoint_controller_vmid }}
+      client_vmid={{ pve_ussuri_savepoint_client_vmid }}
+      conf_archive=/root/ussuri-savepoint-{{ pve_ussuri_savepoint_env_short }}-{{ pve_ussuri_savepoint_name }}-conf.tar.gz
+      {% for v in pve_ussuri_savepoint_volumes %}
+      vol vmid={{ v.vmid }} kind={{ v.kind }} role={{ v.role }} key={{ v.key }} origin={{ v.origin }} base={{ pve_ussuri_savepoint_prefix }}-{{ v.role }}-{{ v.key }}
+      {% endfor %}
+
+- name: Report the savepoint result
+  tags: [openstack-ussuri-savepoint]
+  ansible.builtin.debug:
+    msg: >-
+      savepoint taken: {{ pve_ussuri_savepoint_prefix }}-*
+      ({{ pve_ussuri_savepoint_volumes | length }} volumes /
+       {{ pve_ussuri_savepoint_volumes | map(attribute='vmid') | unique | length }} guests),
+      conf backup: {{ pve_ussuri_savepoint_conf.stdout | regex_search('/root/\\S+') | default('already present, unchanged') }}.
+      restore: --tags openstack-ussuri-savepoint-restore -e pve_ussuri_savepoint_restore=true
+      -e pve_ussuri_savepoint_name={{ pve_ussuri_savepoint_name }}

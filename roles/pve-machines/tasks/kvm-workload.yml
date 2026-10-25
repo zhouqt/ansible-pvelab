@@ -1,0 +1,192 @@
+---
+- name: "Check for VMID {{ pve_kvm.vmid }} collision with an existing container"
+  ansible.builtin.command: "pct status {{ pve_kvm.vmid }}"
+  register: pve_kvm_ct_status
+  failed_when: false
+  changed_when: false
+
+- name: "Refuse to overwrite an existing CT with the KVM workload VMID"
+  ansible.builtin.assert:
+    that:
+      - pve_kvm_ct_status.rc != 0
+    fail_msg: "VMID {{ pve_kvm.vmid }} is already an LXC container; refusing to overwrite it. Verify and clean up that guest first."
+
+- name: "Check whether the KVM workload VM already exists"
+  ansible.builtin.command: "qm status {{ pve_kvm.vmid }}"
+  register: pve_kvm_status
+  failed_when: false
+  changed_when: false
+
+- name: "Read existing KVM workload VM configuration before modifying NICs"
+  ansible.builtin.command: "qm config {{ pve_kvm.vmid }}"
+  register: pve_kvm_config_before
+  changed_when: false
+  when: pve_kvm_status.rc == 0
+
+- name: "Remove the unsupported ip=manual uplink ipconfig from the KVM workload VM"
+  ansible.builtin.command:
+    argv:
+      - qm
+      - set
+      - "{{ pve_kvm.vmid }}"
+      - --delete
+      - ipconfig4
+  register: pve_kvm_ipconfig4_cleanup
+  changed_when: true
+  when:
+    - pve_kvm_status.rc == 0
+    - "pve_kvm_config_before.stdout is search('(?m)^ipconfig4: ip=manual$')"
+
+- name: "Re-read the KVM workload VM configuration after the uplink ipconfig cleanup"
+  ansible.builtin.command: "qm config {{ pve_kvm.vmid }}"
+  register: pve_kvm_config_before
+  changed_when: false
+  when: pve_kvm_status.rc == 0
+
+- name: "Validate existing KVM uplink NIC before modifying the guest"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pve_kvm_config_before.stdout is not search('(?m)^net4:')
+        or
+        (
+          (pve_kvm_config_before.stdout_lines | select('match', '^net4:') | list | length) == 1
+          and (pve_kvm_config_before.stdout_lines | select('match', '^net4:') | first)
+            is search('bridge=' ~ pve_compute_uplink_bridge ~ '(?:,|$)')
+          and (pve_kvm_config_before.stdout_lines | select('match', '^net4:') | first)
+            is search('virtio')
+          and pve_kvm_config_before.stdout is not search('(?m)^ipconfig4:')
+        )
+    fail_msg: >-
+      net4/ipconfig4 of KVM VMID {{ pve_kvm.vmid }} is taken by another config; expected
+      the virtio NIC on {{ pve_compute_uplink_bridge }} without any IP configuration. Refusing to overwrite.
+  when: pve_kvm_status.rc == 0
+
+- name: "Validate existing KVM workload identity and primary networks before NIC changes"
+  ansible.builtin.assert:
+    that:
+      - "'name: {{ pve_kvm.hostname }}' in pve_kvm_config_before.stdout"
+      - "pve_kvm_config_before.stdout is search('(?m)^net0: .*bridge=' ~ pve_juju_network_spaces[0].bridge ~ '(?:,|$)')"
+      - "pve_kvm_config_before.stdout is search('(?m)^net1: .*bridge=' ~ pve_juju_network_spaces[1].bridge ~ '(?:,|$)')"
+      - "pve_kvm_config_before.stdout is search('(?m)^net2: .*bridge=' ~ pve_juju_network_spaces[2].bridge ~ '(?:,|$)')"
+      - "pve_kvm_config_before.stdout is search('(?m)^net3: .*bridge=' ~ pve_juju_network_spaces[3].bridge ~ '(?:,|$)')"
+      - "('ipconfig0: ip=' ~ pve_kvm.ip ~ '/24,gw=' ~ pve_ussuri_gateway) in pve_kvm_config_before.stdout"
+      - "('ipconfig1: ip=' ~ pve_kvm_secondary_networks.oam ~ '/24') in pve_kvm_config_before.stdout"
+      - "('ipconfig2: ip=' ~ pve_kvm_secondary_networks.internal ~ '/24') in pve_kvm_config_before.stdout"
+      - "('ipconfig3: ip=' ~ pve_kvm_secondary_networks.storage ~ '/24') in pve_kvm_config_before.stdout"
+    fail_msg: >-
+      KVM VMID {{ pve_kvm.vmid }} does not match the identity/addresses the topology table declares; refusing to add or change any NIC.
+  when: pve_kvm_status.rc == 0
+
+- name: "Read runtime state of KVM VM before adding a missing uplink NIC"
+  ansible.builtin.command: "qm status {{ pve_kvm.vmid }}"
+  register: pve_kvm_uplink_runtime
+  changed_when: false
+  when:
+    - pve_kvm_status.rc == 0
+    - pve_kvm_config_before.stdout is not search('(?m)^net4:')
+
+- name: "Require KVM VM to be stopped before adding a missing uplink NIC"
+  ansible.builtin.assert:
+    that:
+      - "pve_kvm_uplink_runtime.stdout is search('status: stopped')"
+      - pve_start_existing_compute_after_uplink | bool
+    fail_msg: >-
+      KVM VMID {{ pve_kvm.vmid }} has no net4, and it is either running or
+      pve_start_existing_compute_after_uplink is false. Stop it inside a maintenance window and re-run with
+      re-run with -e pve_start_existing_compute_after_uplink=true to authorise adding the NIC and the start step that follows.
+  when:
+    - pve_kvm_status.rc == 0
+    - pve_kvm_config_before.stdout is not search('(?m)^net4:')
+
+- name: "Add missing dedicated uplink NIC to a stopped KVM VM"
+  ansible.builtin.command:
+    argv:
+      - qm
+      - set
+      - "{{ pve_kvm.vmid }}"
+      - --net4
+      - "virtio,bridge={{ pve_compute_uplink_bridge }},firewall=0"
+  when:
+    - pve_kvm_status.rc == 0
+    - pve_kvm_config_before.stdout is not search('(?m)^net4:')
+
+- name: "Create the KVM workload VM"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    cd /var/tmp
+    image={{ pve_ussuri_kvm_image }}
+    if [ ! -s "$image" ]; then
+      curl -fsSLo "$image" {{ pve_ussuri_kvm_image_url }}
+    fi
+    vmid={{ pve_kvm.vmid }}
+    qm create "$vmid" --name {{ pve_kvm.hostname }} --ostype l26 \
+      --cores {{ pve_kvm.cores }} --memory {{ pve_kvm.memory }} --balloon 0 \
+      --cpu host --sockets 1 \
+      --net0 virtio,bridge={{ pve_juju_network_spaces[0].bridge }},firewall=0 \
+      --net1 virtio,bridge={{ pve_juju_network_spaces[1].bridge }},firewall=0 \
+      --net2 virtio,bridge={{ pve_juju_network_spaces[2].bridge }},firewall=0 \
+      --net3 virtio,bridge={{ pve_juju_network_spaces[3].bridge }},firewall=0 \
+      --net4 virtio,bridge={{ pve_compute_uplink_bridge }},firewall=0 \
+      --onboot 1 --startup order=3 --agent 1 --serial0 socket --vga std
+    qm importdisk "$vmid" "$image" '{{ pve_storage }}'
+    qm set "$vmid" --scsihw virtio-scsi-pci --scsi0 '{{ pve_storage }}:vm-'"$vmid"'-disk-0,iothread=1'
+    qm resize "$vmid" scsi0 {{ pve_kvm.disk }}G
+    qm set "$vmid" --ide2 '{{ pve_storage }}:cloudinit' --boot order=scsi0
+    qm set "$vmid" --ciuser {{ pve_juju_client_user }} --sshkeys /root/juju-client.pub \
+      --ipconfig0 ip={{ pve_kvm.ip }}/24,gw={{ pve_ussuri_gateway }} \
+      --ipconfig1 ip={{ pve_kvm_secondary_networks.oam }}/24 \
+      --ipconfig2 ip={{ pve_kvm_secondary_networks.internal }}/24 \
+      --ipconfig3 ip={{ pve_kvm_secondary_networks.storage }}/24 \
+      --nameserver 8.8.8.8
+  args:
+    executable: /bin/bash
+  environment:
+    HTTP_PROXY: "{{ pve_maas_http_proxy }}"
+    HTTPS_PROXY: "{{ pve_maas_https_proxy }}"
+    http_proxy: "{{ pve_maas_http_proxy }}"
+    https_proxy: "{{ pve_maas_https_proxy }}"
+  when: pve_kvm_status.rc != 0
+
+- name: "Read configuration of the KVM workload VM"
+  ansible.builtin.command: "qm config {{ pve_kvm.vmid }}"
+  register: pve_kvm_config
+  changed_when: false
+
+- name: "Verify KVM workload VM identity and address"
+  ansible.builtin.assert:
+    that:
+      - "'name: {{ pve_kvm.hostname }}' in pve_kvm_config.stdout"
+      - "('ipconfig0: ip=' ~ pve_kvm.ip ~ '/24,gw=' ~ pve_ussuri_gateway) in pve_kvm_config.stdout"
+      - "pve_kvm_config.stdout is search('(?m)^net0: .*bridge=' ~ pve_juju_network_spaces[0].bridge ~ '(?:,|$)')"
+      - "pve_kvm_config.stdout is search('(?m)^net1: .*bridge=' ~ pve_juju_network_spaces[1].bridge ~ '(?:,|$)')"
+      - "pve_kvm_config.stdout is search('(?m)^net2: .*bridge=' ~ pve_juju_network_spaces[2].bridge ~ '(?:,|$)')"
+      - "pve_kvm_config.stdout is search('(?m)^net3: .*bridge=' ~ pve_juju_network_spaces[3].bridge ~ '(?:,|$)')"
+      - "pve_kvm_config.stdout is search('(?m)^net4: .*bridge=' ~ pve_compute_uplink_bridge ~ '(?:,|$)')"
+      - "pve_kvm_config.stdout is not search('(?m)^ipconfig4:')"
+      - "('ipconfig1: ip=' ~ pve_kvm_secondary_networks.oam ~ '/24') in pve_kvm_config.stdout"
+      - "('ipconfig2: ip=' ~ pve_kvm_secondary_networks.internal ~ '/24') in pve_kvm_config.stdout"
+      - "('ipconfig3: ip=' ~ pve_kvm_secondary_networks.storage ~ '/24') in pve_kvm_config.stdout"
+      - "'ciuser: {{ pve_juju_client_user }}' in pve_kvm_config.stdout"
+      - "'sshkeys:' in pve_kvm_config.stdout"
+    fail_msg: "the name, NICs, addresses or cloud-init user of VMID {{ pve_kvm.vmid }} do not match the topology table; refusing to change them automatically."
+
+- name: "Read rendered cloud-init user data for the KVM workload VM"
+  ansible.builtin.command: "qm cloudinit dump {{ pve_kvm.vmid }} user"
+  register: pve_kvm_cloudinit
+  changed_when: false
+
+- name: "Verify the KVM workload VM receives the Juju client key"
+  ansible.builtin.assert:
+    that:
+      - "pve_juju_client_pubkey.stdout | trim in pve_kvm_cloudinit.stdout"
+    fail_msg: "the rendered cloud-init of VMID {{ pve_kvm.vmid }} does not contain the Juju client public key; refusing to continue."
+
+- name: "Check runtime state of the KVM workload VM"
+  ansible.builtin.command: "qm status {{ pve_kvm.vmid }}"
+  register: pve_kvm_runtime_status
+  changed_when: false
+
+- name: "Start the KVM workload VM if stopped"
+  ansible.builtin.command: "qm start {{ pve_kvm.vmid }}"
+  when: "'status: stopped' in pve_kvm_runtime_status.stdout"

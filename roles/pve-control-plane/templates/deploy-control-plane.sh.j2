@@ -1,221 +1,109 @@
 #!/bin/bash
+{%- set apps = pve_ussuri_deploy_apps | default(pve_ussuri_control_plane_apps) %}
+{%- set rels = pve_ussuri_deploy_relations | default(pve_ussuri_control_plane_relations) %}
+{%- set settle = pve_ussuri_deploy_settle_seconds | default(pve_ussuri_control_plane_settle_seconds) %}
+
 set -euo pipefail
-export HOME=/home/ubuntu PATH=/snap/bin:/usr/bin:/bin J=/snap/bin/juju
+export HOME=/home/ubuntu PATH=/snap/bin:/usr/bin:/bin
+
+{%- set rel_attempts = pve_ussuri_deploy_rel_attempts | default(pve_ussuri_control_plane_rel_attempts) %}
+{%- set rel_delay = pve_ussuri_deploy_rel_delay | default(pve_ussuri_control_plane_rel_delay) %}
+
+MODEL='{{ pve_juju_controller_name }}:{{ pve_ussuri_model_name }}'
+JUJU=/snap/bin/juju
+REL_ATTEMPTS={{ rel_attempts }}
+REL_DELAY={{ rel_delay }}
 
 j() {
   if [ "${1:-}" = add-relation ]; then
-    local output
-    if output=$(/snap/bin/juju "$@" 2>&1); then
-      printf 'REL %s\n' "$output"
-    elif grep -qiE 'relation.*already exists' <<<"$output"; then
-      printf 'REL already exists\n'
-    else
-      printf '%s\n' "$output" >&2
-      return 1
-    fi
-  else
-    /snap/bin/juju "$@"
+    local output attempt
+    for attempt in $(seq 1 "$REL_ATTEMPTS"); do
+      if output=$("$JUJU" "$@" 2>&1); then
+        printf 'REL %s\n' "$output"
+        return 0
+      fi
+      if grep -qiE '\(already exists\)|relation already exists' <<<"$output"; then
+        printf 'REL already exists\n'
+        return 0
+      fi
+      printf 'REL-RETRY %d/%d: %s\n' "$attempt" "$REL_ATTEMPTS" "$output" >&2
+      sleep "$REL_DELAY"
+    done
+    printf 'REL-FAILED: %s\n' "$output" >&2
+    return 1
   fi
+  "$JUJU" "$@"
 }
-application_exists() {
-  local application=$1 output rc
-  if ! output=$(j status -m openstack --format json); then
-    printf 'ERROR: failed to read OpenStack application inventory\n' >&2
-    exit 1
-  fi
-  if python3 -c '
-import json, sys
-try:
-    status = json.load(sys.stdin)
-except Exception as error:
-    print(f"ERROR: invalid Juju status JSON: {error}", file=sys.stderr)
-    raise SystemExit(2)
-applications = status.get("applications") if isinstance(status, dict) else None
-if not isinstance(applications, dict):
-    print("ERROR: Juju status JSON has no applications object", file=sys.stderr)
-    raise SystemExit(2)
-raise SystemExit(0 if sys.argv[1] in applications else 1)
-' "$application" <<<"$output"; then
-    return 0
-  else
-    rc=$?
-    [[ "$rc" == 1 ]] && return 1
-    exit "$rc"
-  fi
+
+STATUS_JSON=$("$JUJU" status -m "$MODEL" --format json)
+app_exists() {
+  python3 -c 'import json,sys
+d = json.load(sys.stdin)
+apps = d.get("applications") if isinstance(d, dict) else None
+raise SystemExit(0 if isinstance(apps, dict) and sys.argv[1] in apps else 1)' "$1" <<<"$STATUS_JSON"
 }
-if application_exists dashboard-mysql-router; then
-  echo "SKIP dashboard-mysql-router"
-else
-  echo "DEPLOY dashboard-mysql-router"
-  j deploy mysql-router dashboard-mysql-router --series focal --channel 8.0/stable --revision 257 --bind internal -m openstack 2>&1 | tail -1
+
+placement_state() {
+  python3 -c 'import json,sys
+app = sys.argv[1]
+want = sorted(x for x in sys.argv[2].split(",") if x)
+appinfo = (json.load(sys.stdin).get("applications") or {}).get(app) or {}
+units = appinfo.get("units") or {}
+got = sorted({str(u.get("machine")) for u in units.values() if u.get("machine")})
+if not got:
+    print("ABSENT")
+elif got == want:
+    print("OK")
+else:
+    print("MOVE " + ",".join(got))' "$1" "$2" <<<"$STATUS_JSON"
+}
+
+{% for a in apps %}
+{%- set to = (pve_ussuri_unit_machines[a.app] | default({}) | dictsort | map('last') | join(',')) %}
+{%- if to %}
+if app_exists {{ a.app }}; then
+  st=$(placement_state {{ a.app }} '{{ to }}')
+  case "$st" in
+    MOVE*)
+{% if a.movable | default(false) %}
+      echo "MOVE-REMOVE {{ a.app }} (currently ${st#MOVE }, the topology wants {{ to }})"
+      "$JUJU" remove-application --force --no-prompt -m "$MODEL" {{ a.app }} 2>&1 | tail -3
+      for i in $(seq 1 60); do
+        STATUS_JSON=$("$JUJU" status -m "$MODEL" --format json)
+        app_exists {{ a.app }} || break
+        sleep 5
+      done
+      if app_exists {{ a.app }}; then
+        echo "REMOVE-FAILED {{ a.app }}: still in the model 5 minutes after removal" >&2
+        exit 1
+      fi
+{% else %}
+      echo "PLACEMENT-MISMATCH {{ a.app }}: currently on machine ${st#MOVE }, the topology wants {{ to }}. That application is not marked movable (it may hold local data); refusing to migrate it automatically." >&2
+      exit 1
+{% endif %}
+      ;;
+  esac
 fi
-if application_exists glance; then
-  echo "SKIP glance"
+{% endif %}
+{% endfor %}
+
+{% for a in apps %}
+{%- set to = (pve_ussuri_unit_machines[a.app] | default({}) | dictsort | map('last') | join(',')) %}
+{%- set units = a.num_units | default(0) | int %}
+{%- set cfg = a.config | default({}) %}
+if app_exists {{ a.app }}; then
+  echo "SKIP {{ a.app }}"
 else
-  echo "DEPLOY glance"
-  j deploy glance glance --series focal --channel ussuri/stable --revision 589 --num-units 1 --to 12 --bind 'internal public=alpha admin=internal' -m openstack 2>&1 | tail -1
+  echo "DEPLOY {{ a.app }}"
+  j deploy {{ a.charm }} {{ a.app }} --series focal --channel {{ a.channel }} --revision {{ a.revision }}{% if not (a.subordinate | default(false)) and units > 0 %} --num-units {{ units }}{% endif %}{% if not (a.subordinate | default(false)) and to %} --to '{{ to }}'{% endif %}{% for k, v in cfg | dictsort %} --config {{ (k ~ '=' ~ (v | string)) | quote }}{% endfor %}{% if a.bind | default('') %} --bind {{ a.bind | quote }}{% endif %} -m "$MODEL" 2>&1 | tail -3
 fi
-if application_exists glance-mysql-router; then
-  echo "SKIP glance-mysql-router"
-else
-  echo "DEPLOY glance-mysql-router"
-  j deploy mysql-router glance-mysql-router --series focal --channel 8.0/stable --revision 257 --bind internal -m openstack 2>&1 | tail -1
-fi
-if application_exists keystone; then
-  echo "SKIP keystone"
-else
-  echo "DEPLOY keystone"
-  j deploy keystone keystone --series focal --channel ussuri/stable --revision 691 --num-units 1 --to 5 --config 'admin-password={{ pve_keystone_admin_password }}' --bind 'internal public=alpha admin=internal' -m openstack 2>&1 | tail -1
-fi
-if application_exists keystone-mysql-router; then
-  echo "SKIP keystone-mysql-router"
-else
-  echo "DEPLOY keystone-mysql-router"
-  j deploy mysql-router keystone-mysql-router --series focal --channel 8.0/stable --revision 257 --bind internal -m openstack 2>&1 | tail -1
-fi
-if application_exists mysql-innodb-cluster; then
-  echo "SKIP mysql-innodb-cluster"
-else
-  echo "DEPLOY mysql-innodb-cluster"
-  j deploy mysql-innodb-cluster mysql-innodb-cluster --series focal --channel 8.0/stable --revision 159 --num-units 3 --to '2,3,4' --config 'innodb-buffer-pool-size=256M' -m openstack 2>&1 | tail -1
-fi
-if application_exists neutron-api; then
-  echo "SKIP neutron-api"
-else
-  echo "DEPLOY neutron-api"
-  j deploy neutron-api neutron-api --series focal --channel ussuri/stable --revision 588 --num-units 1 --to 10 --config 'dns-domain=test-b.example.com' --config 'enable-ml2-port-security=true' --config 'flat-network-providers=physnet1' --config 'neutron-security-groups=true' --bind 'internal public=alpha admin=internal' -m openstack 2>&1 | tail -1
-fi
-if application_exists neutron-api-plugin-ovn; then
-  echo "SKIP neutron-api-plugin-ovn"
-else
-  echo "DEPLOY neutron-api-plugin-ovn"
-  j deploy neutron-api-plugin-ovn neutron-api-plugin-ovn --series focal --channel ussuri/stable --revision 98 --config 'ovn-dhcp4-global-options=' -m openstack 2>&1 | tail -1
-fi
-if application_exists neutron-mysql-router; then
-  echo "SKIP neutron-mysql-router"
-else
-  echo "DEPLOY neutron-mysql-router"
-  j deploy mysql-router neutron-mysql-router --series focal --channel 8.0/stable --revision 257 --bind internal -m openstack 2>&1 | tail -1
-fi
-if application_exists nova-cloud-controller; then
-  echo "SKIP nova-cloud-controller"
-else
-  echo "DEPLOY nova-cloud-controller"
-  j deploy nova-cloud-controller nova-cloud-controller --series focal --channel ussuri/stable --revision 748 --num-units 1 --to 6 --config 'network-manager=Neutron' --bind 'internal public=alpha admin=internal' -m openstack 2>&1 | tail -1
-fi
-if application_exists nova-mysql-router; then
-  echo "SKIP nova-mysql-router"
-else
-  echo "DEPLOY nova-mysql-router"
-  j deploy mysql-router nova-mysql-router --series focal --channel 8.0/stable --revision 257 --bind internal -m openstack 2>&1 | tail -1
-fi
-if application_exists nrpe; then
-  echo "SKIP nrpe"
-else
-  echo "DEPLOY nrpe"
-  j deploy nrpe nrpe --series focal --channel stable --revision 157 --config 'nagios_master=192.168.122.53,192.168.165.109' -m openstack 2>&1 | tail -1
-fi
-if application_exists ntp; then
-  echo "SKIP ntp"
-else
-  echo "DEPLOY ntp"
-  j deploy ntp ntp --series focal --channel stable --revision 52 -m openstack 2>&1 | tail -1
-fi
-if application_exists openstack-dashboard; then
-  echo "SKIP openstack-dashboard"
-else
-  echo "DEPLOY openstack-dashboard"
-  j deploy openstack-dashboard openstack-dashboard --series focal --channel ussuri/stable --revision 723 --num-units 1 --to 11 --bind 'internal public=alpha' -m openstack 2>&1 | tail -1
-fi
-if application_exists ovn-central; then
-  echo "SKIP ovn-central"
-else
-  echo "DEPLOY ovn-central"
-  j deploy ovn-central ovn-central --series focal --channel 20.03/stable --revision 35 --num-units 3 --to '8,14,15' -m openstack 2>&1 | tail -1
-fi
-if application_exists placement; then
-  echo "SKIP placement"
-else
-  echo "DEPLOY placement"
-  j deploy placement placement --series focal --channel ussuri/stable --revision 99 --num-units 1 --to 13 --bind internal -m openstack 2>&1 | tail -1
-fi
-if application_exists placement-mysql-router; then
-  echo "SKIP placement-mysql-router"
-else
-  echo "DEPLOY placement-mysql-router"
-  j deploy mysql-router placement-mysql-router --series focal --channel 8.0/stable --revision 257 --bind internal -m openstack 2>&1 | tail -1
-fi
-if application_exists rabbitmq-server; then
-  echo "SKIP rabbitmq-server"
-else
-  echo "DEPLOY rabbitmq-server"
-  j deploy rabbitmq-server rabbitmq-server --series focal --channel 3.8/stable --revision 222 --num-units 1 --to 18 -m openstack 2>&1 | tail -1
-fi
-if application_exists vault; then
-  echo "SKIP vault"
-else
-  echo "DEPLOY vault"
-  j deploy vault vault --series focal --channel 1.7/stable --revision 371 --num-units 1 --to 7 -m openstack 2>&1 | tail -1
-fi
-if application_exists vault-mysql-router; then
-  echo "SKIP vault-mysql-router"
-else
-  echo "DEPLOY vault-mysql-router"
-  j deploy mysql-router vault-mysql-router --series focal --channel 8.0/stable --revision 257 --bind internal -m openstack 2>&1 | tail -1
-fi
-echo "--- wait 30s ---"; sleep 30
-j add-relation -m openstack 'nova-cloud-controller:identity-service' 'keystone:identity-service' 2>&1 | tail -1
-j add-relation -m openstack 'glance:identity-service' 'keystone:identity-service' 2>&1 | tail -1
-j add-relation -m openstack 'neutron-api:identity-service' 'keystone:identity-service' 2>&1 | tail -1
-j add-relation -m openstack 'neutron-api:amqp' 'rabbitmq-server:amqp' 2>&1 | tail -1
-j add-relation -m openstack 'glance:amqp' 'rabbitmq-server:amqp' 2>&1 | tail -1
-j add-relation -m openstack 'nova-cloud-controller:image-service' 'glance:image-service' 2>&1 | tail -1
-j add-relation -m openstack 'nova-cloud-controller:amqp' 'rabbitmq-server:amqp' 2>&1 | tail -1
-j add-relation -m openstack 'openstack-dashboard:identity-service' 'keystone:identity-service' 2>&1 | tail -1
-j add-relation -m openstack 'nova-cloud-controller:neutron-api' 'neutron-api:neutron-api' 2>&1 | tail -1
-j add-relation -m openstack 'keystone:shared-db' 'keystone-mysql-router:shared-db' 2>&1 | tail -1
-j add-relation -m openstack 'glance:shared-db' 'glance-mysql-router:shared-db' 2>&1 | tail -1
-j add-relation -m openstack 'nova-cloud-controller:shared-db' 'nova-mysql-router:shared-db' 2>&1 | tail -1
-j add-relation -m openstack 'neutron-api:shared-db' 'neutron-mysql-router:shared-db' 2>&1 | tail -1
-j add-relation -m openstack 'openstack-dashboard:shared-db' 'dashboard-mysql-router:shared-db' 2>&1 | tail -1
-j add-relation -m openstack 'vault:shared-db' 'vault-mysql-router:shared-db' 2>&1 | tail -1
-j add-relation -m openstack 'keystone-mysql-router:db-router' 'mysql-innodb-cluster:db-router' 2>&1 | tail -1
-j add-relation -m openstack 'nova-mysql-router:db-router' 'mysql-innodb-cluster:db-router' 2>&1 | tail -1
-j add-relation -m openstack 'glance-mysql-router:db-router' 'mysql-innodb-cluster:db-router' 2>&1 | tail -1
-j add-relation -m openstack 'neutron-mysql-router:db-router' 'mysql-innodb-cluster:db-router' 2>&1 | tail -1
-j add-relation -m openstack 'dashboard-mysql-router:db-router' 'mysql-innodb-cluster:db-router' 2>&1 | tail -1
-j add-relation -m openstack 'vault-mysql-router:db-router' 'mysql-innodb-cluster:db-router' 2>&1 | tail -1
-j add-relation -m openstack 'neutron-api-plugin-ovn:neutron-plugin' 'neutron-api:neutron-plugin-api-subordinate' 2>&1 | tail -1
-j add-relation -m openstack 'ovn-central:certificates' 'vault:certificates' 2>&1 | tail -1
-j add-relation -m openstack 'ovn-central:ovsdb-cms' 'neutron-api-plugin-ovn:ovsdb-cms' 2>&1 | tail -1
-j add-relation -m openstack 'neutron-api:certificates' 'vault:certificates' 2>&1 | tail -1
-j add-relation -m openstack 'vault:certificates' 'neutron-api-plugin-ovn:certificates' 2>&1 | tail -1
-j add-relation -m openstack 'vault:certificates' 'glance:certificates' 2>&1 | tail -1
-j add-relation -m openstack 'vault:certificates' 'keystone:certificates' 2>&1 | tail -1
-j add-relation -m openstack 'vault:certificates' 'nova-cloud-controller:certificates' 2>&1 | tail -1
-j add-relation -m openstack 'vault:certificates' 'openstack-dashboard:certificates' 2>&1 | tail -1
-j add-relation -m openstack 'vault:certificates' 'mysql-innodb-cluster:certificates' 2>&1 | tail -1
-j add-relation -m openstack 'placement-mysql-router:db-router' 'mysql-innodb-cluster:db-router' 2>&1 | tail -1
-j add-relation -m openstack 'placement:shared-db' 'placement-mysql-router:shared-db' 2>&1 | tail -1
-j add-relation -m openstack 'placement:identity-service' 'keystone:identity-service' 2>&1 | tail -1
-j add-relation -m openstack 'placement:certificates' 'vault:certificates' 2>&1 | tail -1
-j add-relation -m openstack 'nova-cloud-controller:placement' 'placement:placement' 2>&1 | tail -1
-j add-relation -m openstack 'nrpe:general-info' 'keystone:juju-info' 2>&1 | tail -1
-j add-relation -m openstack 'nrpe:general-info' 'glance:juju-info' 2>&1 | tail -1
-j add-relation -m openstack 'nrpe:general-info' 'neutron-api:juju-info' 2>&1 | tail -1
-j add-relation -m openstack 'nrpe:general-info' 'nova-cloud-controller:juju-info' 2>&1 | tail -1
-j add-relation -m openstack 'nrpe:general-info' 'rabbitmq-server:juju-info' 2>&1 | tail -1
-j add-relation -m openstack 'nrpe:general-info' 'mysql-innodb-cluster:juju-info' 2>&1 | tail -1
-j add-relation -m openstack 'nrpe:general-info' 'vault:juju-info' 2>&1 | tail -1
-j add-relation -m openstack 'nrpe:general-info' 'openstack-dashboard:juju-info' 2>&1 | tail -1
-j add-relation -m openstack 'nrpe:general-info' 'placement:juju-info' 2>&1 | tail -1
-j add-relation -m openstack 'nrpe:general-info' 'ovn-central:juju-info' 2>&1 | tail -1
-j add-relation -m openstack 'glance:nrpe-external-master' 'nrpe:nrpe-external-master' 2>&1 | tail -1
-j add-relation -m openstack 'keystone:nrpe-external-master' 'nrpe:nrpe-external-master' 2>&1 | tail -1
-j add-relation -m openstack 'neutron-api:nrpe-external-master' 'nrpe:nrpe-external-master' 2>&1 | tail -1
-j add-relation -m openstack 'nova-cloud-controller:nrpe-external-master' 'nrpe:nrpe-external-master' 2>&1 | tail -1
-j add-relation -m openstack 'openstack-dashboard:nrpe-external-master' 'nrpe:nrpe-external-master' 2>&1 | tail -1
-j add-relation -m openstack 'ovn-central:nrpe-external-master' 'nrpe:nrpe-external-master' 2>&1 | tail -1
-j add-relation -m openstack 'rabbitmq-server:nrpe-external-master' 'nrpe:nrpe-external-master' 2>&1 | tail -1
-j add-relation -m openstack 'vault:nrpe-external-master' 'nrpe:nrpe-external-master' 2>&1 | tail -1
+{% endfor %}
+
+echo "--- settle {{ settle }}s before wiring relations ---"
+sleep {{ settle }}
+
+{% for pair in rels %}
+j add-relation -m "$MODEL" {{ pair[0] | quote }} {{ pair[1] | quote }} 2>&1 | tail -3
+{% endfor %}
+
 echo DEPLOY-SCRIPT-DONE

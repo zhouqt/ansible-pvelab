@@ -4,20 +4,27 @@ set -euo pipefail
 CLIENT_VMID="${CLIENT_VMID:-1000}"
 CLIENT_USER="${CLIENT_USER:-ubuntu}"
 JUJU_BIN="${JUJU_BIN:-/snap/bin/juju}"
+MODEL="${MODEL:-openstack}"
+IP_OFFSET="${IP_OFFSET:-1000}"
+PRIMARY_PREFIX="${PRIMARY_PREFIX:-192.168.11}"
+WORKLOAD_VMIDS="${WORKLOAD_VMIDS:?WORKLOAD_VMIDS is required (space separated vmid list, table order = machine number order)}"
+read -r -a VMIDS <<<"$WORKLOAD_VMIDS"
+[[ ${#VMIDS[@]} -gt 0 ]] || { echo "ERROR: WORKLOAD_VMIDS is empty" >&2; exit 2; }
+
 CLIENT=(pct exec "$CLIENT_VMID" -- su - "$CLIENT_USER" -c)
 changed=0
 
 juju_status() {
-  "${CLIENT[@]}" "$JUJU_BIN status -m $1 --format json"
+  "${CLIENT[@]}" "$JUJU_BIN status -m $MODEL --format json"
 }
 
 machine_id_exists() {
-  local model=$1 mid=$2 status rc
-  status=$(juju_status "$model") || {
-    echo "ERROR: could not read Juju status for model $model" >&2
+  local mid=$1 status
+  status=$(juju_status) || {
+    echo "ERROR: could not read Juju status for model $MODEL" >&2
     exit 2
   }
-  if python3 -c '
+  python3 -c '
 import json, sys
 try:
     status = json.loads(sys.stdin.read())
@@ -28,19 +35,13 @@ if not isinstance(status, dict) or not isinstance(status.get("machines"), dict):
     print("ERROR: Juju status JSON has no machines object", file=sys.stderr)
     raise SystemExit(2)
 raise SystemExit(0 if sys.argv[1] in status["machines"] else 1)
-' "$mid" <<<"$status"; then
-    return 0
-  else
-    rc=$?
-    [[ "$rc" == 1 ]] && return 1
-    exit "$rc"
-  fi
+' "$mid" <<<"$status"
 }
 
 machine_for_ip() {
-  local model=$1 ip=$2 status
-  status=$(juju_status "$model") || {
-    echo "ERROR: could not read Juju status for model $model" >&2
+  local ip=$1 status
+  status=$(juju_status) || {
+    echo "ERROR: could not read Juju status for model $MODEL" >&2
     exit 2
   }
   python3 -c '
@@ -71,9 +72,9 @@ if found is not None:
 }
 
 machine_has_ip() {
-  local model=$1 mid=$2 ip=$3 status
-  status=$(juju_status "$model") || {
-    echo "ERROR: could not read Juju status for model $model" >&2
+  local mid=$1 ip=$2 status
+  status=$(juju_status) || {
+    echo "ERROR: could not read Juju status for model $MODEL" >&2
     exit 2
   }
   python3 -c '
@@ -98,9 +99,30 @@ if sys.argv[2] not in addresses and sys.argv[2] != dns_name:
 ' "$mid" "$ip" <<<"$status"
 }
 
+next_machine_id() {
+  local status
+  status=$(juju_status) || {
+    echo "ERROR: could not read Juju status for model $MODEL" >&2
+    exit 2
+  }
+  python3 -c '
+import json, sys
+try:
+    status = json.loads(sys.stdin.read())
+except Exception as error:
+    raise SystemExit(f"ERROR: invalid Juju status JSON: {error}")
+machines = status.get("machines", {})
+try:
+    ids = [int(key) for key in machines]
+except (TypeError, ValueError):
+    raise SystemExit("ERROR: Juju machine IDs are not numeric")
+print(max(ids) + 1 if ids else 0)
+' <<<"$status"
+}
+
 add_machine() {
-  local model=$1 ip=$2
-  "${CLIENT[@]}" "/usr/local/sbin/add-juju-machine.sh $ip $model"
+  local ip=$1
+  "${CLIENT[@]}" "/usr/local/sbin/add-juju-machine.sh $ip $MODEL"
   changed=1
 }
 
@@ -110,36 +132,37 @@ install_known_host() {
     "install -d -m 0700 ~/.ssh; touch ~/.ssh/known_hosts; ssh-keygen -R \"$ip\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; ssh-keygen -R \"[$ip]:22\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; cat >> ~/.ssh/known_hosts"
 }
 
-assert_openstack_inventory_safe() {
+assert_inventory_safe() {
   local status
-  status=$(juju_status openstack) || {
-    echo "ERROR: could not read Juju status for model openstack" >&2
+  status=$(juju_status) || {
+    echo "ERROR: could not read Juju status for model $MODEL" >&2
     return 1
   }
   python3 -c '
-import json, sys
+import json, os, sys
 try:
     status = json.loads(sys.stdin.read())
 except Exception as error:
     raise SystemExit(f"ERROR: invalid Juju status JSON: {error}")
-if not isinstance(status, dict) or not isinstance(status.get("machines"), dict):
+machines = status.get("machines")
+if not isinstance(machines, dict):
     raise SystemExit("ERROR: Juju status JSON has no machines object")
-machines = status["machines"]
 try:
     ids = {int(key) for key in machines}
 except (TypeError, ValueError):
     raise SystemExit("ERROR: Juju machine IDs are not numeric")
-normal = set(range(21))
-fixed = normal | {22, 23}
-if ids <= normal:
-    if ids != set(range(len(ids))):
-        raise SystemExit("ERROR: OpenStack machine IDs are not a contiguous prefix from 0")
-elif ids != fixed:
-    raise SystemExit("ERROR: existing OpenStack machines conflict with the fixed map; expected a contiguous prefix 0-20 or the complete map 0-20,22,23 with 21 absent")
-for mid in ids:
-    if mid == 21:
-        raise SystemExit("ERROR: machine 21 must remain absent")
-    expected_ip = "192.168.11." + str(101 + mid) if mid <= 20 else ("192.168.11.123" if mid == 22 else "192.168.11.122")
+vmids = [int(v) for v in os.environ["WORKLOAD_VMIDS"].split()]
+offset = int(os.environ.get("IP_OFFSET", "1000"))
+prefix = os.environ.get("PRIMARY_PREFIX", "192.168.11")
+if len(vmids) != len(set(vmids)):
+    raise SystemExit("ERROR: WORKLOAD_VMIDS contains duplicates")
+if not ids <= set(range(len(vmids))):
+    raise SystemExit(
+        f"ERROR: existing machine IDs {sorted(ids)} fall outside 0..{len(vmids) - 1}")
+if ids != set(range(len(ids))):
+    raise SystemExit(f"ERROR: machine IDs {sorted(ids)} are not a contiguous prefix from 0")
+for mid in sorted(ids):
+    expected = f"{prefix}.{vmids[mid] - offset}"
     machine = machines[str(mid)]
     if not isinstance(machine, dict):
         raise SystemExit(f"ERROR: Juju machine {mid} is invalid")
@@ -149,53 +172,17 @@ for mid in ids:
         raise SystemExit(f"ERROR: Juju machine {mid} has invalid ip-addresses")
     if not isinstance(dns_name, str):
         raise SystemExit(f"ERROR: Juju machine {mid} has invalid dns-name")
-    if expected_ip not in addresses and dns_name != expected_ip:
-        raise SystemExit(f"ERROR: Juju machine {mid} does not match {expected_ip}")
+    if expected not in addresses and dns_name != expected:
+        raise SystemExit(
+            f"ERROR: machine {mid} should be {expected} (WORKLOAD_VMIDS[{mid}]={vmids[mid]}), "
+            f"got dns-name={dns_name!r} addresses={addresses}")
 ' <<<"$status"
 }
 
-assert_lma_inventory_safe() {
-  local status
-  status=$(juju_status lma) || {
-    echo "ERROR: could not read Juju status for model lma" >&2
-    return 1
-  }
-  python3 -c '
-import json, sys
-try:
-    status = json.loads(sys.stdin.read())
-except Exception as error:
-    raise SystemExit(f"ERROR: invalid Juju status JSON: {error}")
-if not isinstance(status, dict) or not isinstance(status.get("machines"), dict):
-    raise SystemExit("ERROR: Juju status JSON has no machines object")
-machines = status["machines"]
-try:
-    ids = {int(key) for key in machines}
-except (TypeError, ValueError):
-    raise SystemExit("ERROR: Juju machine IDs are not numeric")
-if ids != set(range(len(ids))) or len(ids) > 4:
-    raise SystemExit("ERROR: LMA machine IDs must be a contiguous prefix from 0 to 3")
-for mid in ids:
-    expected_ip = "192.168.11." + str(124 + mid)
-    machine = machines[str(mid)]
-    if not isinstance(machine, dict):
-        raise SystemExit(f"ERROR: Juju machine {mid} is invalid")
-    addresses = machine.get("ip-addresses", [])
-    dns_name = machine.get("dns-name", "")
-    if not isinstance(addresses, list) or not all(isinstance(address, str) for address in addresses):
-        raise SystemExit(f"ERROR: Juju machine {mid} has invalid ip-addresses")
-    if not isinstance(dns_name, str):
-        raise SystemExit(f"ERROR: Juju machine {mid} has invalid dns-name")
-    if expected_ip not in addresses and dns_name != expected_ip:
-        raise SystemExit(f"ERROR: Juju machine {mid} does not match {expected_ip}")
-' <<<"$status"
-}
+assert_inventory_safe
 
-assert_openstack_inventory_safe
-assert_lma_inventory_safe
-
-for octet in $(seq 101 127); do
-  ip="192.168.11.$octet"
+for vmid in "${VMIDS[@]}"; do
+  ip="${PRIMARY_PREFIX}.$((vmid - IP_OFFSET))"
   key=
   for _ in $(seq 1 60); do
     key=$(ssh-keyscan -T 3 -H "$ip" 2>/dev/null) && [[ -n "$key" ]] && break
@@ -205,49 +192,38 @@ for octet in $(seq 101 127); do
   install_known_host "$ip" "$key"
 done
 
-for octet in $(seq 101 121); do
-  ip="192.168.11.$octet"
-  expected=$((octet - 101))
-  actual=$(machine_for_ip openstack "$ip")
-  if [[ -z "$actual" ]]; then
-    if machine_id_exists openstack "$expected"; then
-      echo "ERROR: OpenStack machine $expected exists without expected IP $ip" >&2
+for i in "${!VMIDS[@]}"; do
+  vmid="${VMIDS[$i]}"
+  ip="${PRIMARY_PREFIX}.$((vmid - IP_OFFSET))"
+  actual=$(machine_for_ip "$ip")
+  if [[ -n "$actual" ]]; then
+    [[ "$actual" == "$i" ]] || {
+      echo "ERROR: $ip is machine [$actual], topology (WORKLOAD_VMIDS[$i]=$vmid) expects $i" >&2
       exit 1
-    fi
-    add_machine openstack "$ip"
-    actual=$(machine_for_ip openstack "$ip")
+    }
+    machine_has_ip "$i" "$ip"
+    continue
   fi
-  [[ "$actual" == "$expected" ]] || {
-    echo "ERROR: OpenStack $ip is machine [$actual], expected $expected" >&2
+  if machine_id_exists "$i"; then
+    echo "ERROR: machine $i exists without the expected IP $ip" >&2
+    exit 1
+  fi
+  next=$(next_machine_id)
+  [[ "$next" == "$i" ]] || {
+    echo "ERROR: Juju would assign machine $next next, but the topology expects machine $i;" >&2
+    echo "       the model is not a clean contiguous prefix — rebuild it (juju destroy-model + add-model) first." >&2
     exit 1
   }
-  machine_has_ip openstack "$expected" "$ip"
+  add_machine "$ip"
+  machine_has_ip "$i" "$ip"
 done
 
-for octet in $(seq 124 127); do
-  ip="192.168.11.$octet"
-  expected=$((octet - 124))
-  actual=$(machine_for_ip lma "$ip")
-  if [[ -z "$actual" ]]; then
-    if machine_id_exists lma "$expected"; then
-      echo "ERROR: LMA machine $expected exists without expected IP $ip" >&2
-      exit 1
-    fi
-    add_machine lma "$ip"
-    actual=$(machine_for_ip lma "$ip")
-  fi
-  [[ "$actual" == "$expected" ]] || {
-    echo "ERROR: LMA $ip is machine [$actual], expected $expected" >&2
-    exit 1
-  }
-  machine_has_ip lma "$expected" "$ip"
-done
-
-assert_openstack_inventory_safe
-if ! machine_id_exists openstack 22 || ! machine_id_exists openstack 23; then
-  echo "ERROR: machines 22/23 are not both registered. Automatic machine-21 reservation/removal is disabled until Juju 2.9 allocation behavior is verified; fixed mapping requires machine 21 absent, machine 22=.123, machine 23=.122. No machine was removed." >&2
+assert_inventory_safe
+count=$(juju_status | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("machines", {})))')
+[[ "$count" == "${#VMIDS[@]}" ]] || {
+  echo "ERROR: model has $count machines, topology expects ${#VMIDS[@]}" >&2
   exit 1
-fi
+}
 
 echo "JUJU-WORKLOAD-MAPPING-VERIFIED"
 if [[ "$changed" == 1 ]]; then

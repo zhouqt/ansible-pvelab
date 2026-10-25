@@ -1,0 +1,337 @@
+---
+
+- name: Skip the convergence chain when explicitly disabled
+  ansible.builtin.debug:
+    msg: "pve_ussuri_savepoint_converge=false, skipping the convergence chain (volumes only)."
+  when: not (pve_ussuri_savepoint_converge | bool)
+
+- name: Wait for the Juju controller API to answer
+  ansible.builtin.shell: |
+    set -uo pipefail
+    for i in $(seq 1 40); do
+      if pct exec {{ pve_ussuri_savepoint_juju_client_vmid }} -- su - {{ pve_ussuri_savepoint_juju_client_user }} -c \
+           'timeout 45 juju status -m {{ pve_ussuri_savepoint_juju_controller }}:{{ pve_ussuri_savepoint_juju_model }} --format=json' \
+           >/dev/null 2>&1; then
+        echo "JUJU-READY"; exit 0
+      fi
+      sleep 15
+    done
+    echo "JUJU-NOT-READY" >&2; exit 1
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_juju_ready
+  changed_when: false
+  when: pve_ussuri_savepoint_converge | bool
+
+- name: Wait for every Juju agent to reconnect
+  ansible.builtin.shell: |
+    set -uo pipefail
+    for i in $(seq 1 30); do
+      out=$(pct exec {{ pve_ussuri_savepoint_juju_client_vmid }} -- su - {{ pve_ussuri_savepoint_juju_client_user }} -c \
+              'timeout 60 juju status -m {{ pve_ussuri_savepoint_juju_controller }}:{{ pve_ussuri_savepoint_juju_model }} --format=json' 2>/dev/null) || { sleep 20; continue; }
+      state=$(printf '%s' "$out" | python3 -c '
+    import json, sys
+    try:
+        d = json.load(sys.stdin)
+    except Exception:
+        print("unparsable"); raise SystemExit(0)
+    bad = []
+    for app in d.get("applications", {}).values():
+        for name, unit in app.get("units", {}).items():
+            cur = unit.get("agent-status", {}).get("current", "")
+            if cur in ("down", "lost", "allocating"):
+                bad.append(name + "=" + cur)
+    print("ALL-CONNECTED" if not bad else "PENDING " + " ".join(bad))
+    ')
+      case "$state" in
+        ALL-CONNECTED) echo "AGENTS-CONNECTED"; exit 0 ;;
+      esac
+      sleep 20
+    done
+    echo "AGENTS-STILL-PENDING $state" >&2
+    exit 1
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_agents
+  changed_when: false
+  failed_when: false
+  when: pve_ussuri_savepoint_converge | bool
+
+- name: Warn when some agents never came back
+  ansible.builtin.debug:
+    msg: >-
+      ⚠️ some agents have still not reconnected ({{ pve_ussuri_agents.stderr | default('') }}).
+      carry on and the summary shows up in juju status in the end -- this usually means some CT will not come up, or the agent's
+      the machine identity does not match; look at `juju status` and `journalctl -u jujud` by hand.
+  when:
+    - pve_ussuri_savepoint_converge | bool
+    - pve_ussuri_agents.rc | default(0) != 0
+
+- name: Wait for MySQL to self-heal before forcing a rebuild
+  ansible.builtin.shell: |
+    set -uo pipefail
+    for i in $(seq 1 {{ pve_ussuri_savepoint_mysql_selfheal_polls }}); do
+      out=$(pct exec {{ pve_ussuri_savepoint_juju_client_vmid }} -- su - {{ pve_ussuri_savepoint_juju_client_user }} -c \
+              'timeout 60 juju status -m {{ pve_ussuri_savepoint_juju_controller }}:{{ pve_ussuri_savepoint_juju_model }} --format=json' 2>/dev/null) || { sleep {{ pve_ussuri_savepoint_mysql_poll_delay }}; continue; }
+      state=$(printf '%s' "$out" | python3 -c '
+    import json, sys
+    d = json.load(sys.stdin)
+    app = d.get("applications", {}).get("{{ pve_ussuri_savepoint_mysql_app }}")
+    if not app or not app.get("units"):
+        print("no-units"); raise SystemExit(0)
+    sts = {k: v.get("workload-status", {}).get("current", "") for k, v in app["units"].items()}
+    print("active" if all(s == "active" for s in sts.values()) else "unhealthy " + json.dumps(sts))
+    ')
+      case "$state" in
+        active) echo "MYSQL-ACTIVE poll=$i"; exit 0 ;;
+      esac
+      sleep {{ pve_ussuri_savepoint_mysql_poll_delay }}
+    done
+    echo "MYSQL-NOT-SELF-HEALED $state" >&2
+    exit 1
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_mysql_selfheal
+  changed_when: false
+  failed_when: false
+  when: pve_ussuri_savepoint_converge | bool
+
+- name: Rebuild the MySQL InnoDB Cluster from a complete outage
+  ansible.builtin.shell: |
+    set -uo pipefail
+    for unit in {{ pve_ussuri_savepoint_mysql_unit_indexes | join(' ') }}; do
+      out=$(pct exec {{ pve_ussuri_savepoint_juju_client_vmid }} -- su - {{ pve_ussuri_savepoint_juju_client_user }} -c \
+              'timeout 900 juju run-action --wait -m {{ pve_ussuri_savepoint_juju_controller }}:{{ pve_ussuri_savepoint_juju_model }} {{ pve_ussuri_savepoint_mysql_app }}/'"$unit"' reboot-cluster-from-complete-outage' 2>&1) || true
+      echo "----- {{ pve_ussuri_savepoint_mysql_app }}/$unit -----"
+      echo "$out"
+      if printf '%s' "$out" | grep -qi 'most up to date instance'; then
+        echo "MYSQL-NOT-LATEST unit=$unit, trying the next one"
+        continue
+      fi
+      if printf '%s' "$out" | grep -q 'status: completed'; then
+        echo "MYSQL-REBUILT unit=$unit"
+        exit 0
+      fi
+    done
+    echo "MYSQL-REBUILD-FAILED none of the three units succeeded" >&2
+    exit 1
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_mysql_rebuild
+  changed_when: "'MYSQL-REBUILT' in pve_ussuri_mysql_rebuild.stdout"
+  failed_when: false
+  when:
+    - pve_ussuri_savepoint_converge | bool
+    - pve_ussuri_mysql_selfheal.rc | default(0) != 0
+
+- name: Wait for the MySQL units to settle after the rebuild
+  ansible.builtin.shell: |
+    set -uo pipefail
+    for i in $(seq 1 {{ pve_ussuri_savepoint_mysql_settle_polls }}); do
+      out=$(pct exec {{ pve_ussuri_savepoint_juju_client_vmid }} -- su - {{ pve_ussuri_savepoint_juju_client_user }} -c \
+              'timeout 60 juju status -m {{ pve_ussuri_savepoint_juju_controller }}:{{ pve_ussuri_savepoint_juju_model }} --format=json' 2>/dev/null) || { sleep 30; continue; }
+      state=$(printf '%s' "$out" | python3 -c '
+    import json, sys
+    d = json.load(sys.stdin)
+    app = d.get("applications", {}).get("{{ pve_ussuri_savepoint_mysql_app }}")
+    sts = {k: v.get("workload-status", {}).get("current", "") for k, v in (app or {}).get("units", {}).items()}
+    print("active" if sts and all(s == "active" for s in sts.values()) else "unhealthy " + json.dumps(sts))
+    ')
+      case "$state" in
+        active) echo "MYSQL-SETTLED poll=$i"; exit 0 ;;
+      esac
+      sleep 30
+    done
+    echo "MYSQL-DID-NOT-SETTLE $state" >&2
+    exit 1
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_mysql_settle
+  changed_when: false
+  failed_when: false
+  when:
+    - pve_ussuri_savepoint_converge | bool
+    - "'MYSQL-REBUILT' in (pve_ussuri_mysql_rebuild.stdout | default(''))"
+
+- name: Look for the Vault init material on the control machine
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ pve_ussuri_vault_init_file }}"
+    - "{{ pve_ussuri_savepoint_vault_init_keys_file }}"
+  register: pve_ussuri_vault_keys_probe
+  delegate_to: localhost
+  become: false
+
+- name: Derive which Vault unseal source is available
+  ansible.builtin.set_fact:
+    pve_ussuri_vault_keys_json_exists: "{{ pve_ussuri_vault_keys_probe.results[0].stat.exists }}"
+    pve_ussuri_vault_keys_text_exists: "{{ pve_ussuri_vault_keys_probe.results[1].stat.exists }}"
+
+- name: Read the unseal keys from the JSON init material
+  ansible.builtin.set_fact:
+    pve_ussuri_vault_unseal_keys: >-
+      {{ (lookup('ansible.builtin.file', pve_ussuri_vault_init_file, errors='ignore')
+          | default('{}', true) | from_json)['keys'] | default([], true) }}
+  no_log: true
+  when:
+    - pve_ussuri_savepoint_converge | bool
+    - pve_ussuri_vault_keys_json_exists | bool
+
+- name: Read the unseal keys from the legacy plain-text key file
+  ansible.builtin.set_fact:
+    pve_ussuri_vault_unseal_keys: >-
+      {{ (lookup('ansible.builtin.file', pve_ussuri_savepoint_vault_init_keys_file, errors='ignore')
+          | default('', true)).splitlines()
+         | select('match', '^unseal-key-[0-9]+:')
+         | map('regex_replace', '^unseal-key-[0-9]+:\s*', '')
+         | map('trim') | reject('equalto', '') | list }}
+  no_log: true
+  when:
+    - pve_ussuri_savepoint_converge | bool
+    - not (pve_ussuri_vault_keys_json_exists | bool)
+    - pve_ussuri_vault_keys_text_exists | bool
+
+- name: Kick the vault service out of the systemd start-rate-limit latch
+  ansible.builtin.shell: |
+    set -uo pipefail
+    vmid={{ pve_ussuri_savepoint_vault_vmid }}
+    pct exec "$vmid" -- systemctl reset-failed vault.service >/dev/null 2>&1 || true
+    pct exec "$vmid" -- systemctl start vault.service >/dev/null 2>&1 || true
+    sleep 5
+    pct exec "$vmid" -- systemctl is-active vault.service 2>/dev/null || true
+    echo "VAULT-SERVICE-POKED $vmid"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_vault_poke
+  changed_when: false
+  when: pve_ussuri_savepoint_converge | bool
+
+- name: Unseal Vault
+  ansible.builtin.shell: |
+    set -uo pipefail
+    addr="{{ pve_ussuri_savepoint_vault_addr }}"
+    sealed() {
+      curl -sk -m 8 "$addr/v1/sys/seal-status" 2>/dev/null \
+        | python3 -c 'import json,sys;print(json.load(sys.stdin).get("sealed","unknown"))' 2>/dev/null \
+        || echo unknown
+    }
+    if [ "$(sealed)" = "unknown" ]; then
+      echo "VAULT-API-UNREACHABLE $addr" >&2
+      exit 1
+    fi
+    if [ "$(sealed)" = "False" ] || [ "$(sealed)" = "false" ]; then
+      echo "VAULT-ALREADY-UNSEALED"; exit 0
+    fi
+    {% for key in pve_ussuri_vault_unseal_keys[:3] %}
+    curl -sk -m 8 -X PUT -d '{"key":"{{ key }}"}' "$addr/v1/sys/unseal" >/dev/null 2>&1 || true
+    {% endfor %}
+    sleep 2
+    final=$(sealed)
+    echo "VAULT-SEALED=$final"
+    [ "$final" = "False" ] || [ "$final" = "false" ] || { echo "VAULT-UNSEAL-FAILED" >&2; exit 1; }
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_vault_unseal
+  changed_when: "'VAULT-ALREADY-UNSEALED' not in pve_ussuri_vault_unseal.stdout"
+  no_log: true
+  when:
+    - pve_ussuri_savepoint_converge | bool
+    - (pve_ussuri_vault_keys_json_exists | bool) or (pve_ussuri_vault_keys_text_exists | bool)
+
+- name: Warn when no Vault unseal key file is available
+  ansible.builtin.debug:
+    msg: >-
+      ⚠️ neither source has it: {{ pve_ussuri_vault_init_file }} (JSON) and
+      {{ pve_ussuri_savepoint_vault_init_keys_file }} (plain text), skipping the unseal.
+      vault/0 stays sealed -> mysql-router gets no certificate -> all 8 API charms go blocked.
+      put either source in place and re-run this role (or -e pve_ussuri_savepoint_vault_init_keys_file=<path>).
+  when:
+    - pve_ussuri_savepoint_converge | bool
+    - not (pve_ussuri_vault_keys_json_exists | bool)
+    - not (pve_ussuri_vault_keys_text_exists | bool)
+
+- name: Check the Ceph cluster
+  ansible.builtin.shell: |
+    set -uo pipefail
+    pct exec {{ pve_ussuri_savepoint_ceph_mon_vmid }} -- ceph -s 2>&1 | head -20
+    echo "CEPH-CHECKED"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_ceph
+  changed_when: false
+  failed_when: false
+  when: pve_ussuri_savepoint_converge | bool
+
+- name: Show the Ceph status
+  ansible.builtin.debug:
+    var: pve_ussuri_ceph.stdout_lines
+  when: pve_ussuri_savepoint_converge | bool
+
+- name: Resolve every unit that is stuck in an error state
+  ansible.builtin.shell: |
+    set -uo pipefail
+    out=$(pct exec {{ pve_ussuri_savepoint_juju_client_vmid }} -- su - {{ pve_ussuri_savepoint_juju_client_user }} -c \
+            'timeout 60 juju status -m {{ pve_ussuri_savepoint_juju_controller }}:{{ pve_ussuri_savepoint_juju_model }} --format=json' 2>/dev/null) || { echo "STATUS-UNREADABLE"; exit 0; }
+    units=$(printf '%s' "$out" | python3 -c '
+    import json, sys
+    d = json.load(sys.stdin)
+    for app_name, app in d.get("applications", {}).items():
+        for unit_name, unit in app.get("units", {}).items():
+            if unit.get("workload-status", {}).get("current") == "error":
+                print(unit_name)
+    ')
+    [ -n "$units" ] || { echo "NO-ERROR-UNITS"; exit 0; }
+    for u in $units; do
+      r=$(pct exec {{ pve_ussuri_savepoint_juju_client_vmid }} -- su - {{ pve_ussuri_savepoint_juju_client_user }} -c \
+            'timeout 120 juju resolved -m {{ pve_ussuri_savepoint_juju_controller }}:{{ pve_ussuri_savepoint_juju_model }} '"$u" 2>&1) || true
+      if printf '%s' "$r" | grep -qi 'not in an error state'; then
+        echo "RESOLVED-ALREADY $u"
+      else
+        echo "RESOLVED $u"
+      fi
+    done
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_resolved
+  changed_when: "'RESOLVED ' in pve_ussuri_resolved.stdout"
+  when: pve_ussuri_savepoint_converge | bool
+
+- name: Show the resolve results
+  ansible.builtin.debug:
+    var: pve_ussuri_resolved.stdout_lines
+  when: pve_ussuri_savepoint_converge | bool
+
+- name: Summarise the Juju model
+  ansible.builtin.shell: |
+    set -uo pipefail
+    pct exec {{ pve_ussuri_savepoint_juju_client_vmid }} -- su - {{ pve_ussuri_savepoint_juju_client_user }} -c \
+      'timeout 60 juju status -m {{ pve_ussuri_savepoint_juju_controller }}:{{ pve_ussuri_savepoint_juju_model }}'
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_final_status
+  changed_when: false
+  failed_when: false
+  when: pve_ussuri_savepoint_converge | bool
+
+- name: Print the Juju status
+  ansible.builtin.debug:
+    var: pve_ussuri_final_status.stdout_lines
+  when: pve_ussuri_savepoint_converge | bool
+
+- name: Verify the OpenStack API answers
+  ansible.builtin.command: "bash {{ playbook_dir }}/openstack-wrapper.sh openstack token issue"
+  delegate_to: localhost
+  become: false
+  register: pve_ussuri_token
+  changed_when: false
+  failed_when: false
+  when: pve_ussuri_savepoint_converge | bool
+
+- name: Report the end-to-end result
+  ansible.builtin.debug:
+    msg: >-
+      {{ '✅ openstack token issue succeeded (Keystone is up)'
+         if pve_ussuri_token.rc | default(1) == 0
+         else '❌ openstack token issue failed: ' ~ (pve_ussuri_token.stderr | default('') | trim) }}
+  when: pve_ussuri_savepoint_converge | bool

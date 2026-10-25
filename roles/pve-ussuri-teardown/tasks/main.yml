@@ -1,0 +1,339 @@
+---
+
+- name: Require the ussuri teardown to be explicitly requested
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_run_teardown | bool
+    fail_msg: >-
+      pve-ussuri-teardown **destroys** the whole focal-ussuri environment (the Juju openstack/lma models +
+      every workload guest plus the host OSD thin LVs; the controller CT 1001 and the credentials are kept).
+      once the target is confirmed, run it explicitly with -e pve_ussuri_run_teardown=true.
+
+- name: Derive the teardown target lists
+  ansible.builtin.set_fact:
+    pve_ussuri_teardown_all_cts: >-
+      {{ (pve_ussuri_teardown_ct_vmids + pve_ussuri_teardown_extra_ct_vmids) | unique }}
+    pve_ussuri_teardown_all_kvms: >-
+      {{ (pve_ussuri_teardown_kvm_vmids + pve_ussuri_teardown_extra_kvm_vmids) | unique }}
+
+- name: Announce the teardown target
+  ansible.builtin.debug:
+    msg: >-
+      tearing down focal-ussuri (env1): Juju model {{ pve_ussuri_teardown_models | join(', ') }}
+      (controller {{ pve_juju_controller_name }} kept), CT {{ pve_ussuri_teardown_all_cts | join(', ') }},
+      KVM {{ pve_ussuri_teardown_all_kvms | join(', ') }},OSD thin LV
+      {{ pve_ussuri_osd_lv_prefix }}-<n> (exact prefix match). `sp-*` archives and credentials/ are kept.
+
+- name: Read the Juju model list from the controller
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} models --controller {{ pve_juju_controller_name }} --format json"
+  register: pve_ussuri_teardown_model_list
+  check_mode: false
+  failed_when: false
+  changed_when: false
+  when: pve_ussuri_teardown_destroy_models | bool
+
+- name: Extract the destroyable model names from the listing
+  ansible.builtin.set_fact:
+    pve_ussuri_teardown_model_names: >-
+      {{ (((pve_ussuri_teardown_model_list.stdout | default('', true)) | from_json).get('models', [])
+          | map(attribute='short-name') | list)
+         if ((pve_ussuri_teardown_model_list.rc | default(1)) == 0
+             and (pve_ussuri_teardown_model_list.stdout | default('', true) | trim | length) > 0)
+         else [] }}
+
+- name: Destroy the Juju models owned by this environment
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_juju_bin }} destroy-model {{ pve_juju_controller_name }}:{{ item }}
+        --no-prompt --force --timeout 15m
+  loop: "{{ pve_ussuri_teardown_models }}"
+  loop_control:
+    label: "model {{ item }}"
+  changed_when: true
+  when:
+    - pve_ussuri_teardown_destroy_models | bool
+    - item in pve_ussuri_teardown_model_names
+
+- name: Report models that did not need destroying
+  ansible.builtin.debug:
+    msg: >-
+      model "{{ item }}" does not exist (the controller may be gone or the model deleted); skipping destroy-model.
+  loop: "{{ pve_ussuri_teardown_models }}"
+  loop_control:
+    label: "model {{ item }}"
+  when:
+    - not ansible_check_mode
+    - item not in pve_ussuri_teardown_model_names
+
+- name: Archive the PVE configuration of every guest about to be destroyed
+  ansible.builtin.shell: |
+    set -u
+    dir={{ pve_ussuri_teardown_backup_dir | quote }}
+    install -d -m 0700 "$dir"
+    n=0
+    for vmid in {{ pve_ussuri_teardown_all_cts | join(' ') }}; do
+      src="/etc/pve/lxc/$vmid.conf"
+      [ -e "$src" ] || continue
+      cp -a "$src" "$dir/lxc-$vmid.conf" && n=$((n + 1))
+    done
+    for vmid in {{ pve_ussuri_teardown_all_kvms | join(' ') }}; do
+      src="/etc/pve/qemu-server/$vmid.conf"
+      [ -e "$src" ] || continue
+      cp -a "$src" "$dir/qemu-$vmid.conf" && n=$((n + 1))
+    done
+    echo "USSURI-TEARDOWN-BACKUP files=$n dir=$dir"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_teardown_backup
+  changed_when: "'files=0' not in pve_ussuri_teardown_backup.stdout"
+
+- name: Record every savepoint base LV that must survive this teardown
+  ansible.builtin.shell: |
+    set -u
+    lvs --noheadings -o lv_name {{ pve_ussuri_osd_thinpool_vg }} 2>/dev/null \
+      | tr -d ' ' | grep -E '^sp-' | sort || true
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_teardown_savepoint_bases
+  changed_when: false
+  failed_when: false
+
+- name: Stop and destroy every ussuri guest
+  ansible.builtin.shell: |
+    set -u
+    vg="{{ pve_ussuri_osd_thinpool_vg }}"
+    discard={{ 1 if (pve_ussuri_teardown_discard_lvs | bool) else 0 }}
+    destroyed=0
+    trimmed=0
+
+    discard_guest_lvs() {
+      local vmid="$1" lv dev
+      for lv in $(lvs --noheadings -o lv_name "$vg" 2>/dev/null | tr -d ' ' \
+                  | grep -E "^vm-${vmid}-" || true); do
+        lvchange -ay -K "$vg/$lv" >/dev/null 2>&1 || true
+        dev=""
+        [ -b "/dev/$vg/$lv" ] && dev="/dev/$vg/$lv"
+        if [ -z "$dev" ]; then
+          dev=$(lvs --noheadings -o lv_dm_path "$vg/$lv" 2>/dev/null | tr -d ' ')
+          [ -n "$dev" ] && [ -b "$dev" ] || dev=""
+        fi
+        if [ -n "$dev" ] && blkdiscard -f "$dev" >/dev/null 2>&1; then
+          echo "discard $vg/$lv"; trimmed=$((trimmed + 1))
+        else
+          echo "discard-skip $vg/$lv (no usable block device node, or blkdiscard refused)"
+        fi
+        lvchange -an "$vg/$lv" >/dev/null 2>&1 || true
+      done
+    }
+
+    for vmid in {{ pve_ussuri_teardown_all_kvms | join(' ') }}; do
+      qm status "$vmid" >/dev/null 2>&1 || { echo "qm $vmid: absent"; continue; }
+      qm stop "$vmid" >/dev/null 2>&1 || true
+      sleep 1
+      if [ "$discard" = "1" ]; then discard_guest_lvs "$vmid"; fi
+      qm destroy "$vmid" --purge 1 --destroy-unreferenced-disks 1
+      echo "qm $vmid: destroyed"; destroyed=$((destroyed + 1))
+    done
+    for vmid in {{ pve_ussuri_teardown_all_cts | join(' ') }}; do
+      pct status "$vmid" >/dev/null 2>&1 || { echo "pct $vmid: absent"; continue; }
+      pct stop "$vmid" >/dev/null 2>&1 || true
+      sleep 1
+      if [ "$discard" = "1" ]; then discard_guest_lvs "$vmid"; fi
+      pct destroy "$vmid" --purge
+      echo "pct $vmid: destroyed"; destroyed=$((destroyed + 1))
+    done
+    echo "USSURI-TEARDOWN-GUESTS-DONE destroyed=$destroyed trimmed=$trimmed"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_teardown_guests
+  changed_when: "'destroyed=' in pve_ussuri_teardown_guests.stdout and 'destroyed=0' not in pve_ussuri_teardown_guests.stdout"
+
+- name: Tear down the ussuri OSD thin volumes on the host
+  ansible.builtin.shell: |
+    set -u
+    vg="{{ pve_ussuri_osd_thinpool_vg }}"
+    prefix="{{ pve_ussuri_osd_lv_prefix }}"
+    discard={{ 1 if (pve_ussuri_teardown_discard_lvs | bool) else 0 }}
+    changed=0
+    trimmed=0
+
+    for lv in $(lvs --noheadings -o lv_name "$vg" 2>/dev/null | tr -d ' ' \
+                | grep -E "^${prefix}-[0-9]+$" || true); do
+      idx="${lv#${prefix}-}"
+
+      for unit in "ceph-osd-lv-ussuri-$idx" "ceph-osd-lv-$idx"; do
+        f="/etc/systemd/system/$unit.service"
+        [ -e "$f" ] || continue
+        if [ "$unit" = "ceph-osd-lv-$idx" ] && ! grep -q "ussuri-osd-" "$f"; then
+          continue
+        fi
+        systemctl disable --now "$unit.service" >/dev/null 2>&1 || true
+        rm -f "$f"
+        echo "unit $unit: removed"; changed=1
+      done
+
+      dmpath=""
+      [ -e "/dev/$vg/$lv" ] && dmpath=$(readlink -f "/dev/$vg/$lv" 2>/dev/null || true)
+      [ -n "$dmpath" ] || dmpath=$(lvs --noheadings -o lv_dm_path "$vg/$lv" 2>/dev/null | tr -d ' ')
+      if [ -n "$dmpath" ] && [ -e "$dmpath" ]; then
+        dmb=$(basename "$dmpath")
+        for h in $(ls "/sys/block/$dmb/holders" 2>/dev/null || true); do
+          for h2 in $(ls "/sys/block/$h/holders" 2>/dev/null || true); do
+            n2=$(cat "/sys/block/$h2/dm/name" 2>/dev/null || true)
+            [ -n "$n2" ] && dmsetup remove "$n2" >/dev/null 2>&1 || true
+          done
+          dmname=$(cat "/sys/block/$h/dm/name" 2>/dev/null || true)
+          [ -n "$dmname" ] && dmsetup remove "$dmname" >/dev/null 2>&1 || true
+        done
+      fi
+
+      if [ "$discard" = "1" ]; then
+        lvchange -ay -K "$vg/$lv" >/dev/null 2>&1 || true
+        ddev=""
+        [ -b "/dev/$vg/$lv" ] && ddev="/dev/$vg/$lv"
+        if [ -z "$ddev" ]; then
+          ddev=$(lvs --noheadings -o lv_dm_path "$vg/$lv" 2>/dev/null | tr -d ' ')
+          [ -n "$ddev" ] && [ -b "$ddev" ] || ddev=""
+        fi
+        if [ -n "$ddev" ] && blkdiscard -f "$ddev" >/dev/null 2>&1; then
+          echo "lv $vg/$lv: blkdiscarded"; trimmed=$((trimmed + 1))
+        else
+          echo "lv $vg/$lv: not blkdiscarded (no usable block device node, or blkdiscard refused)"
+        fi
+      fi
+      lvchange -an "$vg/$lv" >/dev/null 2>&1 || true
+      if lvremove -f "$vg/$lv" >/dev/null 2>&1; then
+        echo "lv $vg/$lv: removed"; changed=1
+      else
+        echo "lv $vg/$lv: removal failed ($(lvremove -f "$vg/$lv" 2>&1 | tail -1))"
+      fi
+    done
+    systemctl daemon-reload
+    echo "USSURI-TEARDOWN-OSD-DONE changed=$changed trimmed=$trimmed"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_teardown_osd
+  changed_when: "'changed=1' in pve_ussuri_teardown_osd.stdout"
+
+- name: Remove the per-guest SMBIOS UUID state from the host
+  ansible.builtin.shell: |
+    set -u
+    n=0
+    for vmid in {{ (pve_ussuri_teardown_all_cts + pve_ussuri_teardown_all_kvms) | join(' ') }}; do
+      f="/var/lib/ansible-pve/dmi/$vmid"
+      if [ -e "$f" ]; then rm -f "$f"; n=$((n + 1)); fi
+    done
+    echo "USSURI-TEARDOWN-DMI-DONE removed=$n"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_teardown_dmi
+  changed_when: "'removed=0' not in pve_ussuri_teardown_dmi.stdout"
+
+- name: Remove stale known_hosts entries for this environment from the Juju client
+  ansible.builtin.shell: |
+    set -u
+    pct exec {{ pve_juju_client_vmid }} -- su - {{ pve_juju_client_user }} -c '
+      set -u
+      f=~/.ssh/known_hosts
+      [ -e "$f" ] || { echo "KNOWNHOSTS-REMOVED 0"; exit 0; }
+      before=$(wc -l < "$f")
+      for octet in {{ pve_ussuri_teardown_known_hosts_octets | join(" ") }}; do
+        for ip in 192.168.11.$octet 192.168.12.$octet 192.168.13.$octet 192.168.14.$octet; do
+          ssh-keygen -R "$ip" -f "$f" >/dev/null 2>&1 || true
+          ssh-keygen -R "[$ip]:22" -f "$f" >/dev/null 2>&1 || true
+        done
+      done
+      after=$(wc -l < "$f")
+      rm -f "$f.old"
+      echo "KNOWNHOSTS-REMOVED $((before - after))"
+    '
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_teardown_known_hosts
+  changed_when: "'KNOWNHOSTS-REMOVED 0' not in pve_ussuri_teardown_known_hosts.stdout"
+
+- name: Require every ussuri guest to be gone
+  ansible.builtin.shell: |
+    set -u
+    left=""
+    for vmid in {{ pve_ussuri_teardown_all_kvms | join(' ') }}; do
+      qm status "$vmid" >/dev/null 2>&1 && left="$left kvm:$vmid"
+    done
+    for vmid in {{ pve_ussuri_teardown_all_cts | join(' ') }}; do
+      pct status "$vmid" >/dev/null 2>&1 && left="$left ct:$vmid"
+    done
+    echo "LEFT:${left:- none}"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_teardown_left
+  changed_when: false
+  when: not ansible_check_mode
+  failed_when: "'LEFT: none' not in (pve_ussuri_teardown_left.stdout | default(''))"
+
+- name: Require every ussuri OSD thin volume to be released
+  ansible.builtin.shell: |
+    set -u
+    vg="{{ pve_ussuri_osd_thinpool_vg }}"
+    prefix="{{ pve_ussuri_osd_lv_prefix }}"
+    left="$(lvs --noheadings -o lv_name "$vg" 2>/dev/null | tr -d ' ' | grep -E "^${prefix}-[0-9]+$" || true)"
+    echo "LVLEFT:${left:- none}"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_teardown_lvleft
+  changed_when: false
+  failed_when: "'LVLEFT: none' not in (pve_ussuri_teardown_lvleft.stdout | default(''))"
+
+- name: Require every savepoint base to have survived the teardown
+  ansible.builtin.shell: |
+    set -u
+    missing=""
+    for base in {{ pve_ussuri_teardown_savepoint_bases.stdout_lines | default([]) | join(' ') }}; do
+      lvs "{{ pve_ussuri_osd_thinpool_vg }}/$base" >/dev/null 2>&1 || missing="$missing $base"
+    done
+    echo "SPLEFT:${missing:- none}"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_teardown_spleft
+  changed_when: false
+  when: (pve_ussuri_teardown_savepoint_bases.stdout_lines | default([])) | length > 0
+  failed_when: "'SPLEFT: none' not in (pve_ussuri_teardown_spleft.stdout | default(''))"
+
+- name: Report the teardown result
+  ansible.builtin.debug:
+    msg:
+      - >-
+        focal-ussuri (env1) torn down: model
+        {{ pve_ussuri_teardown_models | join(', ') }} destroyed (controller {{ pve_juju_controller_name }} kept),
+        no guests left (CT {{ pve_ussuri_teardown_all_cts | length }} + KVM
+        {{ pve_ussuri_teardown_all_kvms | join(', ') }}),OSD thin LV
+        {{ pve_ussuri_osd_lv_prefix }}-<n> cleaned up (dm holder and LVs released), credentials kept.
+      - >-
+        savepoint archive: {{ (pve_ussuri_teardown_savepoint_bases.stdout_lines | default([])) | length }} of them
+        every `sp-*` base was recorded before the teardown and all of them survive it.
+      - >-
+        guest conf archive: {{ pve_ussuri_teardown_backup.stdout | default('(not run)') }}
+      - >-
+        thin volumes blkdiscarded before deletion: guest disks
+        {{ ((['0'] + (pve_ussuri_teardown_guests.stdout | default('')) | regex_findall('trimmed=([0-9]+)')) | last) }} items,
+        OSD LV
+        {{ ((['0'] + (pve_ussuri_teardown_osd.stdout | default('')) | regex_findall('trimmed=([0-9]+)')) | last) }} items.
+  when: not ansible_check_mode

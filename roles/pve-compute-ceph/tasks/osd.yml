@@ -1,0 +1,252 @@
+---
+
+- name: Copy the OSD helper scripts to the PVE host
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/pve/scripts/{{ item }}"
+    dest: "/root/{{ item }}"
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - ussuri-setup-osd-lv.sh
+    - ussuri-osd-lvm.conf
+    - mk-osd.sh
+    - ceph-osd-boot-activate.sh
+    - ceph-osd-activate.service
+    - ceph-osd-charm-lxc-patch.py
+
+- name: Check whether the OSD devices are already in place (dry run)
+  ansible.builtin.command:
+    argv:
+      - bash
+      - /root/ussuri-setup-osd-lv.sh
+      - --dry-run
+      - "{{ pve_ussuri_osd_spec }}"
+  environment:
+    OSD_SIZE_MB: "{{ pve_ussuri_osd_size_mb }}"
+    OSD_LV_PREFIX: "{{ pve_ussuri_osd_lv_prefix }}"
+    OSD_THINPOOL: "{{ pve_ussuri_osd_thinpool }}"
+    OSD_THINPOOL_MAX_DATA_PERCENT: "{{ pve_ussuri_osd_thinpool_max_data_percent }}"
+  register: pve_ussuri_osd_lv_dry
+  changed_when: false
+
+- name: Refuse to continue when the OSD devices still need to be created
+  ansible.builtin.assert:
+    that:
+      - "'DRY-RUN' not in pve_ussuri_osd_lv_dry.stdout"
+    fail_msg: >-
+      the OSD devices / CT conf are still incomplete and need creating or rewriting (see the dry-run output below). This stage refuses to
+      on a running CT -- that would restart the OSD CT that hosts MySQL.
+      {{ pve_ussuri_osd_lv_dry.stdout_lines | join(' | ') }}
+      how to handle: make sure --tags pve-machines ran to completion (it writes the devices before pct start),
+      tear it down and start over if need be (--tags pve-ussuri-teardown).
+
+- name: Build the ceph-osd unit to guest mapping from the topology
+  ansible.builtin.set_fact:
+    pve_ussuri_osd_units: "{{ pve_ussuri_osd_units_doc | from_json }}"
+  vars:
+    pve_ussuri_osd_units_doc: >-
+      {%- set ns = namespace(out=[]) -%}
+      {%- for idx, vmid in pve_ussuri_osd_by_index | dictsort -%}
+      {%-   set _ = ns.out.append({'unit': 'ceph-osd/' ~ idx, 'vmid': vmid | int}) -%}
+      {%- endfor -%}
+      {{ ns.out | to_json }}
+
+- name: Require exactly one OSD unit per mapped guest
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_osd_units | length == (pve_ussuri_compute_ceph_apps | selectattr('app', 'equalto', 'ceph-osd') | map(attribute='num_units') | first | int)
+      - pve_ussuri_osd_units | map(attribute='vmid') | unique | list | length == pve_ussuri_osd_units | length
+    fail_msg: >-
+      the unit count of ceph-osd ({{ pve_ussuri_osd_units | length }}) and the ceph-osd application's
+      num_units disagree, or the topology has duplicate OSD placements. Check the
+      the ceph-osd/<idx> entries and pve_ussuri_compute_ceph_apps.
+
+- name: Install a udev-free lvm.conf inside every OSD CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ item.vmid }}"
+      - /root/ussuri-osd-lvm.conf
+      - /etc/lvm/lvm.conf
+      - --perms
+      - "0644"
+  loop: "{{ pve_ussuri_osd_units }}"
+  loop_control:
+    label: "{{ item.unit }} (CT {{ item.vmid }})"
+
+- name: Install the Ceph OSD boot-activation unit inside every OSD CT
+  ansible.builtin.shell: |
+    set -euo pipefail
+    vmid={{ item.vmid }}
+    pct push "$vmid" /root/ceph-osd-boot-activate.sh /usr/local/sbin/ceph-osd-boot-activate.sh --perms 0755
+    pct push "$vmid" /root/ceph-osd-activate.service /etc/systemd/system/ceph-osd-activate.service --perms 0644
+    pct exec "$vmid" -- systemctl daemon-reload
+    pct exec "$vmid" -- systemctl enable ceph-osd-activate.service
+  args:
+    executable: /bin/bash
+  loop: "{{ pve_ussuri_osd_units }}"
+  loop_control:
+    label: "{{ item.unit }} (CT {{ item.vmid }})"
+  changed_when: false
+
+- name: Re-activate any existing Ceph OSDs after the guest boot
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ item.vmid }}"
+      - --
+      - /usr/local/sbin/ceph-osd-boot-activate.sh
+  loop: "{{ pve_ussuri_osd_units }}"
+  loop_control:
+    label: "{{ item.unit }} (CT {{ item.vmid }})"
+  changed_when: false
+
+- name: Push the OSD creation helper into each OSD CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ item.vmid }}"
+      - /root/mk-osd.sh
+      - /root/mk-osd.sh
+      - --perms
+      - "0700"
+  loop: "{{ pve_ussuri_osd_units }}"
+  loop_control:
+    label: "{{ item.unit }} (CT {{ item.vmid }})"
+
+- name: Push the ceph-osd charm patcher into the OSD guests
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ item.vmid }}"
+      - /root/ceph-osd-charm-lxc-patch.py
+      - /root/ceph-osd-charm-lxc-patch.py
+      - --perms
+      - "0700"
+  loop: "{{ pve_ussuri_osd_units }}"
+  loop_control:
+    label: "{{ item.unit }} (CT {{ item.vmid }})"
+
+- name: Accept PVE LXC passthrough device nodes in the ceph-osd charm
+  ansible.builtin.shell: |
+    set -euo pipefail
+    vmid={{ item.vmid }}
+    charm="/var/lib/juju/agents/unit-{{ item.unit | replace('/', '-') }}/charm"
+    out="$(pct exec "$vmid" -- python3 /root/ceph-osd-charm-lxc-patch.py \
+             "$charm/lib/charms_ceph/utils.py")"
+    echo "$out"
+    if [ "$out" = "PATCHED" ]; then
+      pct exec "$vmid" -- bash -c "rm -f $charm/lib/charms_ceph/__pycache__/utils.cpython-*.pyc"
+    fi
+  args:
+    executable: /bin/bash
+  loop: "{{ pve_ussuri_osd_units }}"
+  loop_control:
+    label: "{{ item.unit }} (CT {{ item.vmid }})"
+  register: pve_ussuri_osd_patch
+  changed_when: "'PATCHED' in pve_ussuri_osd_patch.stdout_lines"
+
+- name: Re-read OpenStack model status after patching the ceph-osd charm
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} status -m {{ pve_ussuri_model }} --format json"
+  register: pve_ussuri_osd_status_patched
+  changed_when: false
+
+- name: Re-run the ceph-osd hooks that failed before the charm was patched
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} resolved -m {{ pve_ussuri_model }} {{ item.unit }}"
+  loop: "{{ pve_ussuri_osd_units }}"
+  loop_control:
+    label: "{{ item.unit }}"
+  register: pve_ussuri_osd_resolved
+  changed_when: "'not in an error state' not in (pve_ussuri_osd_resolved.stderr | default(''))"
+  failed_when:
+    - pve_ussuri_osd_resolved.rc != 0
+    - "'not in an error state' not in (pve_ussuri_osd_resolved.stderr | default(''))"
+  when: >-
+    (((pve_ussuri_osd_status_patched.stdout | default('{}', true) | from_json)
+       .applications | default({})).get('ceph-osd', {})
+       .get('units', {}).get(item.unit, {})
+       .get('workload-status', {}).get('current', '')) == 'error'
+
+- name: Wait for the ceph-osd charm to publish the bootstrap-osd keyring in each OSD guest
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ item.vmid }}"
+      - --
+      - test
+      - -f
+      - /var/lib/ceph/bootstrap-osd/ceph.keyring
+  loop: "{{ pve_ussuri_osd_units }}"
+  loop_control:
+    label: "{{ item.unit }} (CT {{ item.vmid }})"
+  register: pve_ussuri_osd_keyring
+  until: pve_ussuri_osd_keyring.rc == 0
+  retries: 60
+  delay: 10
+  changed_when: false
+
+- name: Create one Ceph OSD per device when missing
+  ansible.builtin.shell: |
+    set -euo pipefail
+    vmid={{ item.vmid }}
+    if pct exec "$vmid" -- bash -c '
+         vg=$(pvs --noheadings -o vg_name /dev/osd-block 2>/dev/null | tr -d " ")
+         [ -n "$vg" ] && lvs --noheadings -o lv_tags "$vg" 2>/dev/null | grep -q "ceph.osd_id"
+       '; then
+      echo "OSD-EXISTS $vmid"
+    else
+      pct exec "$vmid" -- bash /root/mk-osd.sh
+    fi
+  args:
+    executable: /bin/bash
+  loop: "{{ pve_ussuri_osd_units }}"
+  loop_control:
+    label: "{{ item.unit }} (CT {{ item.vmid }})"
+  register: pve_ussuri_osd_create
+  changed_when: >-
+    'OSD-EXISTS' not in pve_ussuri_osd_create.stdout
+    and 'MKOSD-SKIP-EXISTS' not in pve_ussuri_osd_create.stdout
+
+- name: Register the prepared OSD device with the ceph-osd charm
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} run-action {{ item.unit }} add-disk osd-devices=/dev/osd-block --wait=10m -m {{ pve_ussuri_model }}"
+  loop: "{{ pve_ussuri_osd_units }}"
+  loop_control:
+    label: "{{ item.unit }}"
+  register: pve_ussuri_osd_add_disk
+  changed_when: false

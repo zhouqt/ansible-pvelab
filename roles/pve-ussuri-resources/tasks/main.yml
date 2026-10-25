@@ -1,0 +1,50 @@
+---
+
+- name: Define the OpenStack command prefix and client environment
+  ansible.builtin.set_fact:
+    pve_ussuri_model: "{{ pve_juju_controller_name }}:{{ pve_ussuri_model_name }}"
+    pve_ussuri_openstack_argv:
+      - bash
+      - "{{ playbook_dir }}/openstack-wrapper.sh"
+      - openstack
+    pve_ussuri_openstack_env:
+      OPENSTACK_RC_FILE: "{{ pve_ussuri_openrc_file }}"
+
+- name: Produce the client credentials for this environment
+  ansible.builtin.include_tasks: credentials.yml
+
+- name: Verify the Keystone endpoint is reachable with the client RC
+  ansible.builtin.command:
+    argv: "{{ pve_ussuri_openstack_argv + ['token', 'issue', '-f', 'value', '-c', 'expires'] }}"
+  environment: "{{ pve_ussuri_openstack_env }}"
+  register: pve_ussuri_resources_token
+  changed_when: false
+  failed_when: false
+
+- name: Fail with a hint when Keystone is unreachable
+  ansible.builtin.assert:
+    that: pve_ussuri_resources_token.rc == 0
+    fail_msg: |
+      authentication against Keystone {{ pve_ussuri_keystone_address }} failed. Common causes:
+        1. the control plane is not deployed yet -- run --tags pve-control-plane and confirm the keystone unit is active;
+        2. Vault is sealed or the CA does not match -- check {{ pve_ussuri_vault_ca_file }};
+        3. the password in the RC differs from the one configured on the charm -- pve-control-plane will
+           `juju config keystone admin-password=...`, then re-run this stage to realign it.
+      --- stderr ---
+      {{ pve_ussuri_resources_token.stderr | default('') }}
+      --- stdout ---
+      {{ pve_ussuri_resources_token.stdout | default('') }}
+
+- name: Create the OpenStack resources for this environment
+  ansible.builtin.include_tasks: resources.yml
+
+- name: Report the environment resources
+  ansible.builtin.debug:
+    msg: >-
+      {{ pve_ussuri_slug }}:flavor {{ pve_ussuri_resources_flavors | map(attribute='name') | join(', ') }}
+      / image {{ pve_ussuri_resources_images | map(attribute='name') | join(', ') }}
+      / ext-net {{ pve_ussuri_resources_ext_net }} (FIP pool
+      {{ pve_ussuri_resources_floating_pool_start }}-{{ pve_ussuri_resources_floating_pool_end }})
+      / tenant-net {{ pve_ussuri_resources_tenant_net }} / router {{ pve_ussuri_resources_router }}
+      / keypair {{ pve_ussuri_resources_keypair }}
+      -- client RC: {{ pve_ussuri_openrc_file }}

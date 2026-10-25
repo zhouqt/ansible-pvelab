@@ -1,0 +1,54 @@
+---
+
+- name: Wait for the MySQL InnoDB cluster to form before reconciling grants
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} status -m {{ pve_ussuri_model }} --format json"
+  register: pve_ussuri_mysql_cluster_wait
+  changed_when: false
+  failed_when: false
+  until: >-
+    (((pve_ussuri_mysql_cluster_wait.stdout | default('{}', true) | from_json)
+       .applications | default({})).get('mysql-innodb-cluster', {})
+       .get('application-status', {}).get('current', '') == 'active')
+  retries: 90
+  delay: 30
+  when: not (pve_ussuri_mysql_reconcile_skip_cluster_wait | default(false) | bool)
+
+- name: Copy the MySQL grant reconcile helper to the PVE host
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/pve/scripts/ussuri-reconcile-mysql-grants.py"
+    dest: /root/ussuri-reconcile-mysql-grants.py
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Reconcile the MySQL grants the co-located leader failed to create
+  ansible.builtin.command:
+    argv:
+      - python3
+      - /root/ussuri-reconcile-mysql-grants.py
+      - --client-ct
+      - "{{ pve_juju_client_vmid }}"
+      - --client-user
+      - "{{ pve_juju_client_user }}"
+      - --juju-bin
+      - "{{ pve_juju_bin }}"
+      - --juju-data
+      - "/home/{{ pve_juju_client_user }}/.local/share/juju"
+      - --model
+      - "{{ pve_ussuri_model }}"
+      - --machine-vmids
+      - "{{ pve_ussuri_workload_vmids | join(',') }}"
+      - --wait
+      - "{{ pve_ussuri_mysql_reconcile_wait | default(300) }}"
+  register: pve_ussuri_mysql_reconcile
+  changed_when: "'RECONCILE-CREATED' in pve_ussuri_mysql_reconcile.stdout"

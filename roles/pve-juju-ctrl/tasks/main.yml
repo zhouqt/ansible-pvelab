@@ -81,7 +81,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - "cat ~/.ssh/id_ed25519.pub"
@@ -138,6 +138,52 @@
   register: pve_juju_controller_config
   changed_when: false
 
+- name: Align the existing controller CT hostname with this role's contract
+  ansible.builtin.command:
+    argv:
+      - pct
+      - set
+      - "{{ pve_juju_controller_vmid }}"
+      - --hostname
+      - pve-ctrl
+  register: pve_juju_controller_hostname_fix
+  changed_when: true
+  when:
+    - pve_juju_controller_status.rc == 0
+    - "'hostname: pve-ctrl' not in pve_juju_controller_config.stdout"
+
+- name: Re-read the Juju controller CT configuration after the hostname alignment
+  ansible.builtin.command: "pct config {{ pve_juju_controller_vmid }}"
+  register: pve_juju_controller_config
+  changed_when: false
+
+- name: Require the Juju controller name to be unaffected by the hostname alignment
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} controllers --format json"
+  register: pve_juju_controller_name_probe
+  changed_when: false
+  failed_when: false
+  when: pve_juju_controller_hostname_fix is changed
+
+- name: Fail when the Juju controller name changed unexpectedly
+  ansible.builtin.assert:
+    that:
+      - pve_juju_controller_name_probe.rc == 0
+      - pve_juju_controller_name in (pve_juju_controller_name_probe.stdout | from_json).controllers
+    fail_msg: >-
+      after you rename CT {{ pve_juju_controller_vmid }} the Juju controller
+      {{ pve_juju_controller_name }} is no longer in the controller list -- check controllers.yaml by hand right now.
+  when: pve_juju_controller_hostname_fix is changed
+
 - name: Refuse a mismatched existing Juju controller CT
   ansible.builtin.assert:
     that:
@@ -182,12 +228,45 @@
   when: "'status: stopped' in pve_juju_controller_runtime_status.stdout"
 
 - name: Wait for Juju controller CT systemd
-  ansible.builtin.command: "pct exec {{ pve_juju_controller_vmid }} -- systemctl is-system-running"
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_controller_vmid }}"
+      - --
+      - bash
+      - -lc
+      - systemctl is-system-running 2>/dev/null || true
   register: pve_juju_controller_systemd
-  until: pve_juju_controller_systemd.rc == 0 or 'degraded' in pve_juju_controller_systemd.stdout
+  until: pve_juju_controller_systemd.stdout | trim in ['running', 'degraded']
   retries: 30
   delay: 5
   changed_when: false
+
+- name: List the failed systemd units of the Juju controller CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_controller_vmid }}"
+      - --
+      - bash
+      - -lc
+      - systemctl --failed --no-legend --plain | awk '{print $1}' | sort -u
+  register: pve_juju_controller_failed_units
+  changed_when: false
+  failed_when: false
+
+- name: Require the Juju controller CT to have no unexpected failed systemd unit
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pve_juju_controller_failed_units.stdout | default('', true) | split)
+        | difference(pve_juju_controller_known_failed_units) | length == 0
+    fail_msg: >-
+      CT {{ pve_juju_controller_vmid }} has unexpected failed systemd units:
+      {{ pve_juju_controller_failed_units.stdout | default('', true) | trim }}
+      (known harmless ones: {{ pve_juju_controller_known_failed_units | join(', ') }})
 
 - name: Copy Juju controller APT proxy configuration to PVE host
   ansible.builtin.copy:
@@ -334,7 +413,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - "{{ pve_juju_bin }} controllers --format json"
@@ -371,7 +450,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - "{{ pve_juju_bin }} bootstrap manual/ubuntu@{{ pve_juju_controller_ip }} {{ pve_juju_controller_name }}"
@@ -385,7 +464,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - "{{ pve_juju_bin }} controllers --format json"
@@ -408,7 +487,7 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - "{{ pve_juju_bin }} models --controller {{ pve_juju_controller_name }} --format json"
@@ -431,22 +510,9 @@
       - "{{ pve_juju_client_vmid }}"
       - --
       - su
-      - -
+      - "-"
       - "{{ pve_juju_client_user }}"
       - -c
       - "{{ pve_juju_bin }} add-model --controller {{ pve_juju_controller_name }} openstack --config enable-os-upgrade=false"
   when: "((pve_juju_models_after_bootstrap.stdout | from_json).models | selectattr('short-name', 'equalto', 'openstack') | list | length) == 0"
 
-- name: Create LMA Juju model
-  ansible.builtin.command:
-    argv:
-      - pct
-      - exec
-      - "{{ pve_juju_client_vmid }}"
-      - --
-      - su
-      - -
-      - "{{ pve_juju_client_user }}"
-      - -c
-      - "{{ pve_juju_bin }} add-model --controller {{ pve_juju_controller_name }} lma --config enable-os-upgrade=false"
-  when: "((pve_juju_models_after_bootstrap.stdout | from_json).models | selectattr('short-name', 'equalto', 'lma') | list | length) == 0"
