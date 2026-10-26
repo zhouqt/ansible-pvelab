@@ -5,6 +5,12 @@
     pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
     pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
 
+- name: Resolve the settled-application list for this profile
+  ansible.builtin.set_fact:
+    pve_yoga_settled_applications: >-
+      {{ pve_yoga_profiles[pve_yoga_profile].settled_applications
+         | default(pve_yoga_core_applications) }}
+
 - name: Ensure the per-environment credentials directory exists on the control node
   ansible.builtin.file:
     path: "{{ pve_yoga_credentials_dir }}"
@@ -614,7 +620,7 @@
     pve_yoga_control_unsettled_doc: >-
       {%- set apps = (pve_yoga_control_gate_status.stdout | from_json).applications | default({}) -%}
       {%- set out = [] -%}
-      {%- for name in pve_yoga_core_applications -%}
+      {%- for name in pve_yoga_settled_applications -%}
       {%- set st = (apps.get(name, {}) | default({})).get('application-status', {}) | default({}) -%}
       {%- set cur = st.get('current', '') -%}
       {%- set msg = (st.get('message', '') | default('')) | lower -%}
@@ -649,7 +655,7 @@
       "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json" \
     | python3 -c '
     import json, sys
-    core = {{ pve_yoga_core_applications | to_json }}
+    core = {{ pve_yoga_settled_applications | to_json }}
     apps = json.load(sys.stdin).get("applications", {})
     bad = []
     for n in core:

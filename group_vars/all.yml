@@ -369,6 +369,50 @@ pve_yoga_profiles:
     unit_python3_packages:
       - python3-setuptools
       - python3-six
+  "focal-ussuri":
+    version_short: ussuri
+    origin: distro
+    openstack: ussuri/stable
+    ceph: octopus/stable
+    ceph_source: distro
+    ovn: "20.03/stable"
+    ovn_source: distro
+    vault: 1.7/stable
+    rabbitmq: 3.8/stable
+    mysql: 8.0/stable
+    lxc_template: "local:vztmpl/ubuntu-focal-cloudimg-rootfs_20.04-6_amd64.tar.xz"
+    kvm_image: ubuntu-20.04-server-cloudimg-amd64.img
+    kvm_image_url: "https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
+    unit_python3_packages:
+      - python3-six
+    app_revisions:
+      keystone: 691
+      keystone-mysql-router: 257
+      nova-cloud-controller: 748
+      nova-mysql-router: 257
+      placement: 99
+      placement-mysql-router: 257
+      glance: 589
+      glance-mysql-router: 257
+      neutron-api: 588
+      neutron-mysql-router: 257
+      neutron-api-plugin-ovn: 98
+      cinder: 670
+      cinder-mysql-router: 257
+      cinder-ceph: 518
+      vault: 371
+      vault-mysql-router: 257
+      mysql-innodb-cluster: 159
+      rabbitmq-server: 222
+      nova-compute: 779
+      ovn-central: 35
+      ovn-chassis: 321
+      ceph-mon: 177
+      ceph-osd: 617
+      ntp: 52
+    app_options:
+      neutron-api-plugin-ovn:
+        ovn-source: distro
 pve_yoga_juju_bin: /snap/bin/juju_yoga
 pve_yoga_juju_channel: "3.6/stable"
 pve_yoga_juju_agent_version: ""

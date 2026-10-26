@@ -1,4 +1,6 @@
 {% set p = pve_yoga_profiles[pve_yoga_profile] %}
+{% set revisions = p.app_revisions | default({}) %}
+{% set extra_opts = p.app_options | default({}) %}
 
 name: openstack-pve
 series: {{ pve_yoga_openstack_series }}
@@ -115,127 +117,243 @@ applications:
   keystone:
     charm: ch:keystone
     channel: {{ p.openstack }}
+{% if 'keystone' in revisions %}
+    revision: {{ revisions['keystone'] }}
+{% endif %}
     options:
       openstack-origin: *openstack-origin
+{% for k, v in (extra_opts.get('keystone') or {}).items() %}
+      {{ k }}: {{ v }}
+{% endfor %}
   keystone-mysql-router:
     charm: ch:mysql-router
     channel: {{ p.mysql }}
+{% if 'keystone-mysql-router' in revisions %}
+    revision: {{ revisions['keystone-mysql-router'] }}
+{% endif %}
 
   nova-cloud-controller:
     charm: ch:nova-cloud-controller
     channel: {{ p.openstack }}
+{% if 'nova-cloud-controller' in revisions %}
+    revision: {{ revisions['nova-cloud-controller'] }}
+{% endif %}
     options:
       openstack-origin: *openstack-origin
       network-manager: Neutron
+{% for k, v in (extra_opts.get('nova-cloud-controller') or {}).items() %}
+      {{ k }}: {{ v }}
+{% endfor %}
   nova-mysql-router:
     charm: ch:mysql-router
     channel: {{ p.mysql }}
+{% if 'nova-mysql-router' in revisions %}
+    revision: {{ revisions['nova-mysql-router'] }}
+{% endif %}
 
   placement:
     charm: ch:placement
     channel: {{ p.openstack }}
+{% if 'placement' in revisions %}
+    revision: {{ revisions['placement'] }}
+{% endif %}
     options:
       openstack-origin: *openstack-origin
+{% for k, v in (extra_opts.get('placement') or {}).items() %}
+      {{ k }}: {{ v }}
+{% endfor %}
   placement-mysql-router:
     charm: ch:mysql-router
     channel: {{ p.mysql }}
+{% if 'placement-mysql-router' in revisions %}
+    revision: {{ revisions['placement-mysql-router'] }}
+{% endif %}
 
   glance:
     charm: ch:glance
     channel: {{ p.openstack }}
+{% if 'glance' in revisions %}
+    revision: {{ revisions['glance'] }}
+{% endif %}
     options:
       openstack-origin: *openstack-origin
+{% for k, v in (extra_opts.get('glance') or {}).items() %}
+      {{ k }}: {{ v }}
+{% endfor %}
   glance-mysql-router:
     charm: ch:mysql-router
     channel: {{ p.mysql }}
+{% if 'glance-mysql-router' in revisions %}
+    revision: {{ revisions['glance-mysql-router'] }}
+{% endif %}
 
   neutron-api:
     charm: ch:neutron-api
     channel: {{ p.openstack }}
+{% if 'neutron-api' in revisions %}
+    revision: {{ revisions['neutron-api'] }}
+{% endif %}
     options:
       openstack-origin: *openstack-origin
       neutron-security-groups: true
       flat-network-providers: physnet1
+{% for k, v in (extra_opts.get('neutron-api') or {}).items() %}
+      {{ k }}: {{ v }}
+{% endfor %}
   neutron-mysql-router:
     charm: ch:mysql-router
     channel: {{ p.mysql }}
+{% if 'neutron-mysql-router' in revisions %}
+    revision: {{ revisions['neutron-mysql-router'] }}
+{% endif %}
   neutron-api-plugin-ovn:
     charm: ch:neutron-api-plugin-ovn
     channel: {{ p.openstack }}
+{% if 'neutron-api-plugin-ovn' in revisions %}
+    revision: {{ revisions['neutron-api-plugin-ovn'] }}
+{% endif %}
+{% if extra_opts.get('neutron-api-plugin-ovn') %}
+    options:
+{% for k, v in extra_opts['neutron-api-plugin-ovn'].items() %}
+      {{ k }}: {{ v }}
+{% endfor %}
+{% endif %}
 
   cinder:
     charm: ch:cinder
     channel: {{ p.openstack }}
+{% if 'cinder' in revisions %}
+    revision: {{ revisions['cinder'] }}
+{% endif %}
     options:
       openstack-origin: *openstack-origin
       block-device: None
       glance-api-version: 2
+{% for k, v in (extra_opts.get('cinder') or {}).items() %}
+      {{ k }}: {{ v }}
+{% endfor %}
   cinder-mysql-router:
     charm: ch:mysql-router
     channel: {{ p.mysql }}
+{% if 'cinder-mysql-router' in revisions %}
+    revision: {{ revisions['cinder-mysql-router'] }}
+{% endif %}
   cinder-ceph:
     charm: ch:cinder-ceph
     channel: {{ p.openstack }}
+{% if 'cinder-ceph' in revisions %}
+    revision: {{ revisions['cinder-ceph'] }}
+{% endif %}
 
   vault:
     charm: ch:vault
     channel: {{ p.vault }}
+{% if 'vault' in revisions %}
+    revision: {{ revisions['vault'] }}
+{% endif %}
   vault-mysql-router:
     charm: ch:mysql-router
     channel: {{ p.mysql }}
+{% if 'vault-mysql-router' in revisions %}
+    revision: {{ revisions['vault-mysql-router'] }}
+{% endif %}
 
   mysql-innodb-cluster:
     charm: ch:mysql-innodb-cluster
     channel: {{ p.mysql }}
+{% if 'mysql-innodb-cluster' in revisions %}
+    revision: {{ revisions['mysql-innodb-cluster'] }}
+{% endif %}
     options:
       innodb-buffer-pool-size: 256M
+{% for k, v in (extra_opts.get('mysql-innodb-cluster') or {}).items() %}
+      {{ k }}: {{ v }}
+{% endfor %}
 
   rabbitmq-server:
     charm: ch:rabbitmq-server
     channel: {{ p.rabbitmq }}
+{% if 'rabbitmq-server' in revisions %}
+    revision: {{ revisions['rabbitmq-server'] }}
+{% endif %}
 
   ovn-central:
     charm: ch:ovn-central
     channel: {{ p.ovn }}
-{% if p.ovn_source %}
+{% if 'ovn-central' in revisions %}
+    revision: {{ revisions['ovn-central'] }}
+{% endif %}
+{% if p.ovn_source or extra_opts.get('ovn-central') %}
     options:
+{% if p.ovn_source %}
       source: {{ p.ovn_source }}
+{% endif %}
+{% for k, v in (extra_opts.get('ovn-central') or {}).items() %}
+      {{ k }}: {{ v }}
+{% endfor %}
 {% endif %}
   ovn-chassis:
     charm: ch:ovn-chassis
     channel: {{ p.ovn }}
+{% if 'ovn-chassis' in revisions %}
+    revision: {{ revisions['ovn-chassis'] }}
+{% endif %}
     options:
       ovn-bridge-mappings: physnet1:br-ex
+{% for k, v in (extra_opts.get('ovn-chassis') or {}).items() %}
+      {{ k }}: {{ v }}
+{% endfor %}
 
   nova-compute:
     charm: ch:nova-compute
     channel: {{ p.openstack }}
+{% if 'nova-compute' in revisions %}
+    revision: {{ revisions['nova-compute'] }}
+{% endif %}
     options:
       openstack-origin: *openstack-origin
       config-flags: default_ephemeral_format=ext4
       enable-live-migration: true
       enable-resize: true
       migration-auth-type: ssh
+{% for k, v in (extra_opts.get('nova-compute') or {}).items() %}
+      {{ k }}: {{ v }}
+{% endfor %}
 
   ceph-mon:
     charm: ch:ceph-mon
     channel: {{ p.ceph }}
+{% if 'ceph-mon' in revisions %}
+    revision: {{ revisions['ceph-mon'] }}
+{% endif %}
     options:
       expected-osd-count: 4
       monitor-count: 3
 {% if p.ceph_source %}
       source: {{ p.ceph_source }}
 {% endif %}
+{% for k, v in (extra_opts.get('ceph-mon') or {}).items() %}
+      {{ k }}: {{ v }}
+{% endfor %}
   ceph-osd:
     charm: ch:ceph-osd
     channel: {{ p.ceph }}
+{% if 'ceph-osd' in revisions %}
+    revision: {{ revisions['ceph-osd'] }}
+{% endif %}
     options:
       osd-devices: /dev/osd-block
       osd-encrypt: false
 {% if p.ceph_source %}
       source: {{ p.ceph_source }}
 {% endif %}
+{% for k, v in (extra_opts.get('ceph-osd') or {}).items() %}
+      {{ k }}: {{ v }}
+{% endfor %}
 
   ntp:
     charm: ch:ntp
     channel: stable
+{% if 'ntp' in revisions %}
+    revision: {{ revisions['ntp'] }}
+{% endif %}

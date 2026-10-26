@@ -1,0 +1,7 @@
+pve_yoga_openstack_series: focal
+pve_yoga_openstack_version: "ussuri"
+pve_yoga_env_number: 6
+
+pve_yoga_http_proxy: ""
+pve_yoga_https_proxy: ""
+
