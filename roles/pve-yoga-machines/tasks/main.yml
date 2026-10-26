@@ -227,6 +227,28 @@
   changed_when: false
   failed_when: "'OSD-MOUNT-OK' not in pve_yoga_machines_osd_mount.stdout"
 
+- name: Grant /dev/kvm to every compute CT
+  ansible.builtin.shell: |
+    set -euo pipefail
+    changed_any=""
+    for vmid in {{ pve_yoga_compute_ct_vmids | join(' ') }}; do
+      conf="$(pct config "$vmid")"
+      if printf '%s\n' "$conf" | grep -qE '^dev[0-9]+: */dev/kvm$'; then continue; fi
+      idx=""
+      for i in $(seq 1 31); do
+        printf '%s\n' "$conf" | grep -qE "^dev$i:" || { idx=$i; break; }
+      done
+      [ -n "$idx" ] || { echo "KVM-DEV-NO-SLOT $vmid" >&2; exit 1; }
+      pct set "$vmid" --dev"$idx" path=/dev/kvm >/dev/null
+      echo "KVM-DEV-ADDED $vmid dev$idx"
+      changed_any=1
+    done
+    [ -n "$changed_any" ] || echo "KVM-DEV-UNCHANGED"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_compute_ct_kvm_dev
+  changed_when: "'KVM-DEV-ADDED' in pve_yoga_compute_ct_kvm_dev.stdout"
+
 - name: Give every yoga workload CT its own SMBIOS system UUID
   ansible.builtin.include_role:
     name: pve-ct-system-uuid
@@ -260,6 +282,23 @@
   retries: 30
   delay: 5
   changed_when: false
+
+- name: Require /dev/kvm to be openable inside every running compute CT
+  ansible.builtin.shell: |
+    set -euo pipefail
+    bad=""
+    for vmid in {{ pve_yoga_compute_ct_vmids | join(' ') }}; do
+      pct status "$vmid" | grep -q 'status: running' || continue
+      pct exec "$vmid" -- dd if=/dev/kvm of=/dev/null bs=1 count=0 status=none 2>/dev/null \
+        || bad="$bad $vmid"
+    done
+    [ -z "$bad" ] || { echo "KVM-OPEN-FAILED:$bad" >&2; exit 1; }
+    echo "KVM-OPEN-OK"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_compute_ct_kvm_open
+  changed_when: false
+  failed_when: "'KVM-OPEN-OK' not in pve_yoga_compute_ct_kvm_open.stdout"
 
 - name: Restore sys-kernel-config.mount inside the yoga workload CTs
   ansible.builtin.shell: |

@@ -340,44 +340,11 @@
            ((pve_yoga_vault_status.stdout | from_json).applications.vault.units
             | dict2items | map(attribute='value') | first)['machine'] | int] }}
 
-- name: Probe the yoga Vault API briefly before touching its storage
-  ansible.builtin.command:
-    argv:
-      - curl
-      - -sk
-      - --max-time
-      - "5"
-      - "http://{{ pve_yoga_vault_address }}:8200/v1/sys/init"
-  register: pve_yoga_vault_api_probe
-  changed_when: false
-  failed_when: false
-  retries: 18
-  delay: 10
-  until: pve_yoga_vault_api_probe.rc == 0
-
-- name: Repair the co-located-leader grants when the Vault API is still not answering
-  ansible.builtin.include_tasks: vault-unlatch.yml
-  when: pve_yoga_vault_api_probe.rc != 0
-
-- name: Read the yoga Vault initialization state
-  ansible.builtin.shell: |
-    set -uo pipefail
-    out=$(curl -sk --max-time 5 "http://{{ pve_yoga_vault_address }}:8200/v1/sys/init") && rc=0 || rc=$?
-    if [ "$rc" -ne 0 ]; then
-      pct exec {{ pve_yoga_vault_vmid }} -- systemctl reset-failed vault.service >/dev/null 2>&1 || true
-      pct exec {{ pve_yoga_vault_vmid }} -- systemctl start vault.service >/dev/null 2>&1 || true
-      echo "VAULT-LATCH-CLEARED attempt failed, latch reset and service started" >&2
-    fi
-    printf '%s' "$out"
-    exit "$rc"
-  args:
-    executable: /bin/bash
-  register: pve_yoga_vault_init_state
-  changed_when: "'VAULT-LATCH-CLEARED' in (pve_yoga_vault_init_state.stderr | default(''))"
-  failed_when: false
-  retries: 60
-  delay: 10
-  until: pve_yoga_vault_init_state.rc == 0
+- name: Wait for the yoga Vault API, repairing the co-located-leader grants on every retry
+  ansible.builtin.include_tasks: vault-wait.yml
+  vars:
+    pve_yoga_vault_wait_attempt: 1
+    pve_yoga_vault_probe_retries: 18
 
 - name: Require the yoga Vault API to answer before touching its storage
   ansible.builtin.assert:
@@ -385,12 +352,16 @@
       - pve_yoga_vault_init_state.rc == 0
       - "'initialized' in (pve_yoga_vault_init_state.stdout | default('', true))"
     fail_msg: >-
-      the Vault API at http://{{ pve_yoga_vault_address }}:8200/v1/sys/init gave no parseable response within 3 + 10 minutes
-      (rc={{ pve_yoga_vault_init_state.rc }}). The usual cause is that vault's storage is not ready yet --
-      vault-mysql-router waits for the mysqlrouteruser grant that reconcile-mysql-grants fills in before it can bootstrap;
-      if it is active while vault.service still shows `Start request repeated too quickly` (the systemd start-limit latch),
-      break the latch by hand: `pct exec {{ pve_yoga_vault_vmid }} -- systemctl reset-failed vault.service` then start it.
-      re-run this playbook once that is confirmed (it is idempotent).
+      Vault API http://{{ pve_yoga_vault_address }}:8200/v1/sys/init produced no parseable response
+      after {{ pve_yoga_vault_wait_attempts | default(4) }} probe rounds (3 min for the first round,
+      90s per round afterwards, with reconcile-mysql-grants + latch repair re-run between rounds)
+      (rc={{ pve_yoga_vault_init_state.rc }}). The most common cause is that vault's storage is not
+      ready yet --
+      vault-mysql-router cannot bootstrap until reconcile-mysql-grants creates its mysqlrouteruser
+      grant; if the app is already active while vault.service still says
+      `Start request repeated too quickly` (systemd start-rate latch), clear the latch manually:
+      `pct exec {{ pve_yoga_vault_vmid }} -- systemctl reset-failed vault.service` then start it.
+      Re-run this playbook once confirmed (it is idempotent).
 
 - name: Initialize the yoga Vault when it is not yet initialized
   ansible.builtin.command:
@@ -704,3 +675,62 @@
 - name: Repair the cinder-ceph keyring the co-located nova-compute clobbers
   ansible.builtin.include_role:
     name: pve-yoga-cinder-keyring
+
+- name: Copy the nova client refresh helper to the PVE host
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/pve/scripts/yoga-restart-nova-clients.sh"
+    dest: /root/yoga-restart-nova-clients.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the nova client refresh helper into every workload CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ item.vmid }}"
+      - /root/yoga-restart-nova-clients.sh
+      - /root/yoga-restart-nova-clients.sh
+      - --perms
+      - "0700"
+  loop: "{{ pve_yoga_workload_cts }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  changed_when: false
+
+- name: Refresh the cached placement endpoint in the nova clients on the workload CTs
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ item.vmid }}"
+      - --
+      - /bin/bash
+      - /root/yoga-restart-nova-clients.sh
+  loop: "{{ pve_yoga_workload_cts }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  register: pve_yoga_nova_refresh_ct
+  changed_when: "'NOVA-REFRESHED' in pve_yoga_nova_refresh_ct.stdout"
+  failed_when: >-
+    pve_yoga_nova_refresh_ct.rc != 0
+    or 'NOVA-REFRESH-DONE' not in pve_yoga_nova_refresh_ct.stdout
+
+- name: Refresh the cached placement endpoint in the nova clients on the KVM workload
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ pve_yoga_juju_client_vmid }} -- install -d -o {{ pve_yoga_juju_client_user }} -g {{ pve_yoga_juju_client_user }} -m 0755 {{ pve_yoga_juju_stage_dir }}
+    pct push {{ pve_yoga_juju_client_vmid }} /root/yoga-restart-nova-clients.sh {{ pve_yoga_juju_stage_dir }}/yoga-restart-nova-clients.sh --perms 0700
+    pct exec {{ pve_yoga_juju_client_vmid }} -- chown {{ pve_yoga_juju_client_user }}:{{ pve_yoga_juju_client_user }} {{ pve_yoga_juju_stage_dir }}/yoga-restart-nova-clients.sh
+    pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c '
+      set -e
+      ip={{ pve_yoga_public_prefix }}.{{ pve_yoga_workload_kvm_vmid - pve_yoga_ip_offset }}
+      scp -o StrictHostKeyChecking=no -q {{ pve_yoga_juju_stage_dir }}/yoga-restart-nova-clients.sh ubuntu@$ip:/tmp/
+      ssh -o StrictHostKeyChecking=no -q ubuntu@$ip "sudo bash /tmp/yoga-restart-nova-clients.sh && rm -f /tmp/yoga-restart-nova-clients.sh"
+      rm -f {{ pve_yoga_juju_stage_dir }}/yoga-restart-nova-clients.sh
+    '
+  args:
+    executable: /bin/bash
+  register: pve_yoga_nova_refresh_kvm
+  changed_when: "'NOVA-REFRESHED' in pve_yoga_nova_refresh_kvm.stdout"
