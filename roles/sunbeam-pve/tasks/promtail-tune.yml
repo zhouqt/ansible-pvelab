@@ -1,0 +1,15 @@
+---
+- name: Load shared stage facts
+  ansible.builtin.include_tasks: _stage_guard.yml
+
+- name: Require explicit authorization for the workload logging fix
+  ansible.builtin.assert:
+    that:
+      - sunbeam_confirm_promtail_tune | bool
+    fail_msg: >-
+      This stage rewrites the promtail and logrotate configuration of the live
+      mysql-router pods, prunes their rotated-log archive and restarts
+      promtail. To confirm, pass -e sunbeam_confirm_promtail_tune=true.
+
+- name: Fix the workload logging of the mysql-router pods
+  ansible.builtin.include_tasks: logging-scope.yml

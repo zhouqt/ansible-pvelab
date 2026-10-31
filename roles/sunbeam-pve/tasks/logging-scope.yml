@@ -1,0 +1,28 @@
+---
+- name: Fix the workload logging of the mysql-router pods
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'tune-workload-logging.sh.j2') }}"
+  register: sunbeam_obs_logging_tune
+  changed_when: >-
+    'CONFIG-PATCHED' in (sunbeam_obs_logging_tune.stdout | default(''))
+    or 'POLICY-PATCHED' in (sunbeam_obs_logging_tune.stdout | default(''))
+    or 'TEMPLATE-PATCHED' in (sunbeam_obs_logging_tune.stdout | default(''))
+    or 'EXECUTOR-PATCHED' in (sunbeam_obs_logging_tune.stdout | default(''))
+    or 'EXECUTOR-SRC-PATCHED' in (sunbeam_obs_logging_tune.stdout | default(''))
+    or 'ARCHIVE-PRUNED' in (sunbeam_obs_logging_tune.stdout | default(''))
+  failed_when:
+    - (sunbeam_obs_logging_tune.rc | default(1) | int) != 0
+    - "'LOGGING-TUNE-SUMMARY' not in (sunbeam_obs_logging_tune.stdout | default(''))"
+
+- name: Report the workload logging result
+  ansible.builtin.debug:
+    msg: "{{ (sunbeam_obs_logging_tune.stdout_lines | default([]))
+            | select('search', 'LOGGING-TUNE|CONFIG-|POLICY-|TEMPLATE-|CHARM-SRC-|EXECUTOR|ARCHIVE')
+            | list | join(' | ') }}"

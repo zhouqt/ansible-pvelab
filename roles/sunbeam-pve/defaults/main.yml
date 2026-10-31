@@ -11,6 +11,8 @@ sunbeam_valid_stages:
   - tls
   - storage
   - observability
+  - logging-tune
+  - promtail-tune
   - flavors
   - verify
   - vm-volume-test
@@ -30,6 +32,8 @@ sunbeam_confirm_external_changes: false
 sunbeam_confirm_ceph_osd: false
 sunbeam_confirm_tls: false
 sunbeam_confirm_observability: false
+sunbeam_confirm_promtail_tune: false
+sunbeam_confirm_logging_tune: false
 sunbeam_confirm_teardown: false
 sunbeam_confirm_system_uuid: false
 sunbeam_system_uuid_apply_live: false
@@ -91,6 +95,9 @@ sunbeam_obs_enable_timeout: 5400
 sunbeam_obs_settle_timeout: 1800
 sunbeam_obs_settle_interval: 30
 sunbeam_obs_min_rawfile_headroom_gib: 5
+sunbeam_obs_logging_tune: true
+sunbeam_obs_logrotate_keep_files: 240
+sunbeam_obs_logrotate_maxage_days: 1
 
 sunbeam_bootstrap_timeout: 7200
 sunbeam_join_timeout: 5400

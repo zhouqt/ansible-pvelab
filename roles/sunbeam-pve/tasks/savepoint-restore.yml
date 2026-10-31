@@ -520,6 +520,10 @@
       {{ sunbeam_restore_settle_timeout }}s after the reconciliation. Last probe:
       {{ sunbeam_restore_settled.stdout }}
 
+- name: Re-apply the mysql-router workload logging fix
+  ansible.builtin.include_tasks: logging-scope.yml
+  when: sunbeam_obs_logging_tune | bool
+
 - name: Run the standard health verification
   ansible.builtin.include_tasks: verify.yml
   when: sunbeam_savepoint_run_verify | bool

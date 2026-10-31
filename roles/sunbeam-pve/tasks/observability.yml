@@ -156,6 +156,10 @@
               | map('split', '=')
               | list) }}
 
+- name: Fix the workload logging of the mysql-router pods
+  ansible.builtin.include_tasks: logging-scope.yml
+  when: sunbeam_obs_logging_tune | bool
+
 - name: Verify the hub Prometheus receives this environment's OpenStack metrics
   ansible.builtin.shell: |
     set -uo pipefail
