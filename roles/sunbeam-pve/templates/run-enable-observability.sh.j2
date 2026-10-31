@@ -1,0 +1,12 @@
+#!/bin/bash
+set -uo pipefail
+
+user={{ sunbeam_node_user }}
+log={{ sunbeam_node_log_dir }}/observability-enable.log
+mkdir -p {{ sunbeam_node_log_dir }}
+
+output="$(su - "$user" -c 'sunbeam enable observability external {{ sunbeam_obs_controller }} {{ sunbeam_obs_grafana_offer }} {{ sunbeam_obs_prometheus_offer }} {{ sunbeam_obs_loki_offer }}' 2>&1)"
+rc=$?
+printf '%s\n' "$output" | tee "$log"
+echo "enable observability rc=$rc (log: $log)"
+exit "$rc"

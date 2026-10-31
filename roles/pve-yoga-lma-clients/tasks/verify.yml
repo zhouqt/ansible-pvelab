@@ -1,0 +1,128 @@
+---
+
+- name: Verify the environment-side LMA wiring
+  ansible.builtin.shell: |
+    set -uo pipefail
+    status=$(mktemp); confs=$(mktemp)
+    {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
+      su - {{ pve_obs_hub_juju_client_user }} -c \
+      "{{ pve_lma_clients_juju_cmd }} status -m {{ pve_lma_clients_model }} --format json" > "$status"
+    {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
+      su - {{ pve_obs_hub_juju_client_user }} -c \
+      "{{ pve_lma_juju_cmd }} exec -m {{ pve_lma_model_ref }} --unit nagios/0 -- bash -c 'ls /etc/nagios3/conf.d/ | grep ^juju-host_'" > "$confs" 2>/dev/null || true
+    python3 - "$status" "$confs" <<'PY'
+    import json, re, sys
+
+    env = json.load(open(sys.argv[1]))
+    apps = env.get('applications') or {}
+
+    have = {re.sub(r'^unit-[^:]+:\s?', '', l).strip()
+            for l in open(sys.argv[2]) if l.strip()}
+
+    problems, expected, nrpe_units = [], [], []
+    for name, app in sorted(apps.items()):
+        if name == 'openstack-service-checks':
+            cur = (app.get('application-status') or {}).get('current')
+            if cur != 'active':
+                problems.append('osc=%s' % cur)
+        for ukey, unit in sorted((app.get('units') or {}).items()):
+            subs = unit.get('subordinates') or {}
+            nrpe_key = next((k for k in subs if k.startswith('nrpe/')), None)
+            if nrpe_key is None:
+                continue
+            st = (subs[nrpe_key].get('workload-status') or {}).get('current')
+            if st != 'active':
+                problems.append('%s/nrpe=%s' % (ukey, st))
+            want = 'juju-host_juju-%s.cfg' % ukey.replace('/', '-')
+            expected.append(want)
+            nrpe_units.append(ukey)
+
+    missing = [w for w in expected if w not in have]
+    if not expected:
+        problems.append('no-nrpe-units')
+    if missing:
+        problems.append('nagios-missing:%d/%d' % (len(missing), len(expected)))
+
+    print('NRPE-UNITS %d' % len(nrpe_units))
+    print('NAGIOS-HOST-FILES %d/%d' % (len(expected) - len(missing), len(expected)))
+    if missing:
+        print('MISSING ' + ', '.join(missing[:8]))
+    if problems:
+        print('PROBLEMS ' + ', '.join(problems))
+        sys.exit(1)
+    print('OK')
+    PY
+    rc=$?
+    rm -f "$status" "$confs"
+    exit "$rc"
+  args:
+    executable: /bin/bash
+  register: pve_lma_clients_verify
+  until: pve_lma_clients_verify.rc == 0
+  failed_when: pve_lma_clients_verify.rc != 0
+  retries: 30
+  delay: 20
+  changed_when: false
+
+- name: Show the environment-side wiring summary
+  ansible.builtin.debug:
+    msg: "{{ pve_lma_clients_verify.stdout_lines }}"
+
+- name: Require nrpe on the environment units to allow the hub nagios address
+  ansible.builtin.shell: |
+    set -uo pipefail
+    unit=$({{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
+      su - {{ pve_obs_hub_juju_client_user }} -c \
+      "{{ pve_lma_clients_juju_cmd }} status -m {{ pve_lma_clients_model }} --format json" \
+      | python3 -c "
+    import json,sys
+    apps=json.load(sys.stdin).get('applications') or {}
+    for name,app in sorted(apps.items()):
+        for ukey,unit in sorted((app.get('units') or {}).items()):
+            subs = unit.get('subordinates') or {}
+            if any(k.startswith('nrpe/') for k in subs):
+                print(ukey); raise SystemExit(0)
+    raise SystemExit(1)
+    ")
+    echo "sample unit: $unit"
+    {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
+      su - {{ pve_obs_hub_juju_client_user }} -c \
+      "{{ pve_lma_clients_juju_cmd }} exec -m {{ pve_lma_clients_model }} --unit $unit -- grep ^allowed_hosts /etc/nagios/nrpe.cfg"
+  args:
+    executable: /bin/bash
+  register: pve_lma_clients_allowed
+  until: pve_lma_nagios_ip in pve_lma_clients_allowed.stdout
+  failed_when: pve_lma_nagios_ip not in pve_lma_clients_allowed.stdout
+  retries: 20
+  delay: 15
+  changed_when: false
+
+- name: Run a real check_nrpe from the hub nagios to one environment unit
+  ansible.builtin.shell: |
+    set -uo pipefail
+    jrun() {
+      {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
+        su - {{ pve_obs_hub_juju_client_user }} -c "$1"
+    }
+    addr=$(jrun "{{ pve_lma_juju_cmd }} exec -m {{ pve_lma_model_ref }} --unit nagios/0 -- bash -c 'grep -h -m1 -E \"^[[:space:]]*address[[:space:]]\" /etc/nagios3/conf.d/juju-host_juju-*.cfg'" \
+      | sed -E 's/^unit-[^:]+: *//' | awk '{print $2}' | head -1)
+    echo "target address: $addr"
+    [ -n "$addr" ] || { echo "NO-HOST-DEFINITION" >&2; exit 1; }
+    jrun "{{ pve_lma_juju_cmd }} exec -m {{ pve_lma_model_ref }} --unit nagios/0 -- /usr/lib/nagios/plugins/check_nrpe -H $addr -c check_reboot"
+  args:
+    executable: /bin/bash
+  register: pve_lma_clients_nrpe_probe
+  until: "'OK' in pve_lma_clients_nrpe_probe.stdout"
+  failed_when: "'OK' not in pve_lma_clients_nrpe_probe.stdout"
+  retries: 10
+  delay: 15
+  changed_when: false
+
+- name: Report the environment-side acceptance evidence
+  ansible.builtin.debug:
+    msg:
+      - "model        : {{ pve_lma_clients_model }}"
+      - "nrpe units   : {{ pve_lma_clients_verify.stdout_lines | select('match', 'NRPE-UNITS') | first | default('?') }}"
+      - "nagios host defs: {{ pve_lma_clients_verify.stdout_lines | select('match', 'NAGIOS-HOST-FILES') | first | default('?') }}"
+      - "allowed_hosts: {{ pve_lma_clients_allowed.stdout_lines | last | default('') | trim }}"
+      - "check_nrpe   : {{ pve_lma_clients_nrpe_probe.stdout | trim }}"

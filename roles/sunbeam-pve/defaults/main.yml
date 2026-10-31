@@ -10,6 +10,7 @@ sunbeam_valid_stages:
   - configure
   - tls
   - storage
+  - observability
   - flavors
   - verify
   - vm-volume-test
@@ -28,6 +29,7 @@ sunbeam_confirm_cluster_join: false
 sunbeam_confirm_external_changes: false
 sunbeam_confirm_ceph_osd: false
 sunbeam_confirm_tls: false
+sunbeam_confirm_observability: false
 sunbeam_confirm_teardown: false
 sunbeam_confirm_system_uuid: false
 sunbeam_system_uuid_apply_live: false
@@ -83,6 +85,12 @@ sunbeam_force_node_prepare: false
 sunbeam_force_configure: false
 
 sunbeam_force_tls: false
+
+sunbeam_force_observability: false
+sunbeam_obs_enable_timeout: 5400
+sunbeam_obs_settle_timeout: 1800
+sunbeam_obs_settle_interval: 30
+sunbeam_obs_min_rawfile_headroom_gib: 5
 
 sunbeam_bootstrap_timeout: 7200
 sunbeam_join_timeout: 5400

@@ -1,0 +1,47 @@
+---
+
+- name: "Wait for {{ obs_wait_label | default(obs_wait_model_ref) }} to become active"
+  ansible.builtin.shell: |
+    set -uo pipefail
+    jrun() {
+      {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
+        su - {{ pve_obs_hub_juju_client_user }} -c "$1"
+    }
+    budget={{ obs_wait_budget | default(pve_obs_hub_settle_budget_seconds) }}
+    interval={{ obs_wait_interval | default(pve_obs_hub_settle_interval) }}
+    deadline=$(( $(date +%s) + budget ))
+    last="no status yet"
+    while :; do
+      out=$(jrun "{{ obs_wait_juju_cmd | default(pve_obs_hub_juju_cmd) }} status -m {{ obs_wait_model_ref }} --format json" 2>/dev/null) || out=""
+      if [ -n "$out" ]; then
+        report=$(printf '%s' "$out" | python3 -c "
+    import json, sys
+    want = [a for a in '{{ obs_wait_apps | default([], true) | join(',') }}'.split(',') if a]
+    def st(app):
+        return ((app.get('application-status') or app.get('status') or {}).get('current'))
+    doc = json.load(sys.stdin)
+    apps = dict(doc.get('applications') or {})
+    apps.update(doc.get('application-endpoints') or {})
+    bad = sorted('%s=%s' % (k, st(v)) for k, v in apps.items()
+                 if (not want or k in want) and st(v) != 'active')
+    missing = [w for w in want if w not in apps]
+    if apps and not bad and not missing:
+        print('ALL-ACTIVE')
+    else:
+        print('PENDING ' + ', '.join(bad + ['absent:' + m for m in missing]))
+    " 2>/dev/null) || report=""
+        if [ "$report" = "ALL-ACTIVE" ]; then
+          echo "{{ obs_wait_label | default(obs_wait_model_ref) }}: ALL-ACTIVE"
+          exit 0
+        fi
+        [ -n "$report" ] && last="$report"
+      fi
+      if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "TIMEOUT after ${budget}s: $last" >&2
+        exit 1
+      fi
+      sleep "$interval"
+    done
+  args:
+    executable: /bin/bash
+  changed_when: false

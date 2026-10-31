@@ -1,0 +1,122 @@
+#!/bin/bash
+set -uo pipefail
+
+USER={{ sunbeam_node_user }}
+CTRL={{ sunbeam_obs_controller }}
+CAAS={{ sunbeam_juju_openstack_model }}
+MACH={{ sunbeam_juju_machines_model }}
+
+jrun() { su - "$USER" -c "$1"; }
+
+feat="$(jrun 'sunbeam list-features' 2>/dev/null || true)"
+if printf '%s\n' "$feat" | grep -q '^│ observability\.external *│ *X'; then
+    echo "FEATURE=yes"
+else
+    echo "FEATURE=no"
+fi
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+jrun "juju status -m $CAAS --format json" 2>/dev/null \
+    | cat >"$tmpdir/caas.json" || echo '{}' >"$tmpdir/caas.json"
+jrun "juju status -m $MACH --format json" 2>/dev/null \
+    | cat >"$tmpdir/mach.json" || echo '{}' >"$tmpdir/mach.json"
+
+python3 - "$tmpdir/caas.json" "$tmpdir/mach.json" <<'PY'
+import json
+import sys
+
+ENDPOINTS = ("send-remote-write", "send-loki-logs", "grafana-dashboards-provider")
+COS_APPS = ("grafana", "loki", "prometheus")
+
+def load(path):
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+def status(doc, app):
+    entry = (doc.get("applications") or {}).get(app) or {}
+    return ((entry.get("application-status") or entry.get("status") or {})
+            .get("current")) or "absent"
+
+def wired(doc, app):
+    rels = ((doc.get("applications") or {}).get(app) or {}).get("relations") or {}
+    return sum(
+        1 for ep in ENDPOINTS
+        if any((r or {}).get("related-application") in COS_APPS
+               for r in rels.get(ep) or [])
+    )
+
+caas, mach = load(sys.argv[1]), load(sys.argv[2])
+facts = [
+    ("CAAS_OTEL", status(caas, "opentelemetry-collector")),
+    ("CAAS_OTEL_INFRA", status(caas, "opentelemetry-collector-infra")),
+    ("CAAS_OTEL_WIRED", wired(caas, "opentelemetry-collector")),
+    ("CAAS_INFRA_WIRED", wired(caas, "opentelemetry-collector-infra")),
+    ("MACHINES_OTEL", status(mach, "opentelemetry-collector")),
+    ("MACHINES_HW", status(mach, "hardware-observer")),
+    ("MACHINES_WIRED", wired(mach, "opentelemetry-collector")),
+]
+for key, value in facts:
+    print("%s=%s" % (key, value))
+
+values = dict(facts)
+ready = (
+    values["CAAS_OTEL"] == "active"
+    and values["CAAS_OTEL_INFRA"] == "active"
+    and values["CAAS_OTEL_WIRED"] == len(ENDPOINTS)
+    and values["CAAS_INFRA_WIRED"] == len(ENDPOINTS)
+    and values["MACHINES_OTEL"] == "active"
+    and values["MACHINES_HW"] == "active"
+    and values["MACHINES_WIRED"] == len(ENDPOINTS)
+)
+print("STACK=%s" % ("ready" if ready else "pending"))
+PY
+
+python3 - <<'PY'
+import glob
+import os
+
+DATA_DIR = "/var/snap/k8s/common/rawfile-storage"
+if not os.path.isdir(DATA_DIR):
+    print("RAWFILE=none")
+    raise SystemExit(0)
+stats = os.statvfs(DATA_DIR)
+avail = stats.f_bavail * stats.f_frsize
+holes = 0
+for vol_dir in glob.glob(os.path.join(DATA_DIR, "*")):
+    try:
+        st = os.stat(os.path.join(vol_dir, "disk.img"))
+    except OSError:
+        continue
+    holes += st.st_size - st.st_blocks * 512
+print("RAWFILE=ok")
+print("RAWFILE_AVAIL_GIB=%.2f" % (avail / 2 ** 30))
+print("RAWFILE_HOLES_GIB=%.2f" % (holes / 2 ** 30))
+print("RAWFILE_HEADROOM_GIB=%.2f" % ((avail - holes) / 2 ** 30))
+PY
+
+snap_user_data="/home/$USER/snap/openstack/$(basename "$(readlink -f /snap/openstack/current)")"
+acct="$snap_user_data/$CTRL.yaml"
+if [ -f "$acct" ]; then
+    echo "ACCOUNT_FILE=yes"
+    offers="$(su - "$USER" -c "juju find-offers $CTRL:" 2>/dev/null || true)"
+    missing=0
+    for want in {{ sunbeam_obs_grafana_offer }} \
+                {{ sunbeam_obs_prometheus_offer }} \
+                {{ sunbeam_obs_loki_offer }}; do
+        printf '%s\n' "$offers" | grep -qF "$want" || missing=$((missing + 1))
+    done
+    echo "HUB_OFFERS=$((3 - missing))"
+    if [ "$missing" -eq 0 ]; then
+        echo "ACCOUNT_LOGIN=ok"
+    else
+        echo "ACCOUNT_LOGIN=fail"
+    fi
+else
+    echo "ACCOUNT_FILE=no"
+    echo "HUB_OFFERS=0"
+    echo "ACCOUNT_LOGIN=absent"
+fi

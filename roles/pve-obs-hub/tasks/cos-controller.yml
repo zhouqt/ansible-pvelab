@@ -1,0 +1,151 @@
+---
+
+- name: Require the Juju 3.x client snap on CT {{ pve_obs_hub_juju_client_vmid }}
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - test
+      - -x
+      - "{{ pve_obs_hub_juju_bin }}"
+  register: pve_obs_hub_juju_client_bin
+  changed_when: false
+  failed_when: false
+
+- name: Fail when the shared Juju 3.x client is missing
+  ansible.builtin.assert:
+    that: pve_obs_hub_juju_client_bin.rc == 0
+    fail_msg: >-
+      {{ pve_obs_hub_juju_bin }} is not present on CT {{ pve_obs_hub_juju_client_vmid }}.
+      the hub reuses the reference environment's shared Juju store; run --tags openstack-pve-juju-ctrl to install it first.
+
+- name: Check the juju-db snap in the hub controller CT
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_cos_controller_vmid }}"
+      - --
+      - snap
+      - list
+      - juju-db
+  register: pve_obs_hub_juju_db_check
+  changed_when: false
+  failed_when: false
+
+- name: Install the pinned juju-db snap in the hub controller CT
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_cos_controller_vmid }}"
+      - --
+      - snap
+      - install
+      - juju-db
+      - "--channel={{ pve_yoga_juju_db_channel }}"
+  when: pve_obs_hub_juju_db_check.rc != 0
+
+- name: Read the registered Juju controllers
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - "{{ pve_obs_hub_juju_cmd }} controllers --format json"
+  register: pve_obs_hub_controller_list
+  changed_when: false
+
+- name: Require the Juju controller listing to be valid
+  ansible.builtin.assert:
+    that:
+      - pve_obs_hub_controller_list.rc == 0
+      - "'controllers' in (pve_obs_hub_controller_list.stdout | from_json)"
+    fail_msg: >-
+      cannot read the Juju controller list (the shared store may be corrupted, or the 2.9/3.x store formats are no longer compatible).
+      refusing to bootstrap while the state is unknown.
+
+- name: Seed the hub controller IP in the Juju client known_hosts
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ip={{ pve_obs_hub_cos_controller_ip }}
+    keyscan=$(ssh-keyscan -H "$ip" 2>/dev/null)
+    [[ -n "$keyscan" ]] || { echo "SSH did not become available on $ip" >&2; exit 1; }
+    printf '%s\n' "$keyscan" | {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
+      su - {{ pve_obs_hub_juju_client_user }} -c \
+      "install -d -m 0700 ~/.ssh; touch ~/.ssh/known_hosts; \
+       ssh-keygen -R \"$ip\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; \
+       ssh-keygen -R \"[$ip]:22\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; \
+       cat >> ~/.ssh/known_hosts"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when: pve_obs_hub_cos_controller not in
+        ((pve_obs_hub_controller_list.stdout | from_json).controllers | default([], true))
+
+- name: Bootstrap the hub Juju controller
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_obs_hub_juju_cmd }} bootstrap manual/ubuntu@{{ pve_obs_hub_cos_controller_ip }}
+        {{ pve_obs_hub_cos_controller }} --bootstrap-series=jammy
+        {% if pve_yoga_juju_agent_version | length > 0 %}--agent-version={{ pve_yoga_juju_agent_version }}{% endif %}
+  when: pve_obs_hub_cos_controller not in
+        ((pve_obs_hub_controller_list.stdout | from_json).controllers | default([], true))
+
+- name: Re-read the registered Juju controllers
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - "{{ pve_obs_hub_juju_cmd }} controllers --format json"
+  register: pve_obs_hub_controller_list_after
+  changed_when: false
+
+- name: Require the hub controller to be registered
+  ansible.builtin.assert:
+    that:
+      - pve_obs_hub_controller_list_after.rc == 0
+      - pve_obs_hub_cos_controller in
+        ((pve_obs_hub_controller_list_after.stdout | from_json).controllers | default([], true))
+    fail_msg: "controller {{ pve_obs_hub_cos_controller }} is not registered; refusing to continue."
+
+- name: Report the hub controller
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - "{{ pve_obs_hub_juju_cmd }} show-controller {{ pve_obs_hub_cos_controller }}"
+  register: pve_obs_hub_show_controller
+  changed_when: false
+
+- name: Show the hub controller details
+  ansible.builtin.debug:
+    msg: "{{ pve_obs_hub_show_controller.stdout_lines }}"

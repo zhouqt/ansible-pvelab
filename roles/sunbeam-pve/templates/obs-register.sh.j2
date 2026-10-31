@@ -1,0 +1,28 @@
+#!/bin/bash
+set -uo pipefail
+
+user={{ sunbeam_node_user }}
+ctrl={{ sunbeam_obs_controller }}
+rev="$(basename "$(readlink -f /snap/openstack/current)")"
+acct="/home/$user/snap/openstack/$rev/$ctrl.yaml"
+
+su - "$user" -c "juju unregister $ctrl --no-prompt" >/dev/null 2>&1 || true
+
+output="$(printf '%s\n%s\n\n' '{{ sunbeam_obs_account_password }}' '{{ sunbeam_obs_account_password }}' \
+    | su - "$user" -c "juju register {{ sunbeam_obs_register_token }}" 2>&1)"
+rc=$?
+
+su - "$user" -c "juju switch {{ sunbeam_obs_switch_back_controller }}" >/dev/null 2>&1 || true
+
+if [ "$rc" -eq 0 ]; then
+    umask 077
+    printf 'user: %s\npassword: %s\n' '{{ sunbeam_obs_account_user }}' \
+        '{{ sunbeam_obs_account_password }}' >"$acct"
+    chown "$user:$user" "$acct"
+    chmod 0660 "$acct"
+    echo "registered $ctrl as {{ sunbeam_obs_account_user }} -> $acct"
+else
+    echo "juju register failed (rc=$rc)"
+fi
+printf '%s\n' "$output" | sed -E 's/[A-Za-z0-9_-]{20,}/<redacted>/g' | tail -5
+exit "$rc"

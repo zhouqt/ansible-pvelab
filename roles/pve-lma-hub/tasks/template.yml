@@ -1,0 +1,37 @@
+---
+
+- name: Check whether the bionic template is already in the PVE template cache
+  ansible.builtin.stat:
+    path: "/var/lib/vz/template/cache/{{ pve_lma_bionic_template_name }}"
+  register: pve_lma_bionic_template
+
+- name: Push the bionic template builder to the PVE host
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/pve/scripts/build-bionic-template.sh"
+    dest: /root/build-bionic-template.sh
+    owner: root
+    group: root
+    mode: "0700"
+  when: not pve_lma_bionic_template.stat.exists
+
+- name: Build the bionic template (download + repack, ~2-4 min)
+  ansible.builtin.command:
+    argv:
+      - /root/build-bionic-template.sh
+      - "{{ pve_lma_bionic_template_name }}"
+  environment:
+    BIONIC_IMAGE_URL: "{{ pve_lma_bionic_image_url }}"
+  register: pve_lma_bionic_build
+  when: not pve_lma_bionic_template.stat.exists
+  changed_when: "'TEMPLATE-CREATED' in pve_lma_bionic_build.stdout"
+  failed_when: >-
+    pve_lma_bionic_build.rc | default(0) != 0
+    or 'TEMPLATE-CREATED' not in (pve_lma_bionic_build.stdout | default(''))
+    and 'TEMPLATE-PRESENT' not in (pve_lma_bionic_build.stdout | default(''))
+
+- name: Report the bionic template
+  ansible.builtin.debug:
+    msg: >-
+      {{ pve_lma_bionic_template_name }}:
+      {{ 'already present' if pve_lma_bionic_template.stat.exists
+         else (pve_lma_bionic_build.stdout | default('') | trim) }}

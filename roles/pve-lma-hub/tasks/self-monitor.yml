@@ -1,0 +1,67 @@
+---
+
+- name: Read the {{ pve_lma_model }} model status
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - "{{ pve_lma_juju_cmd }} status -m {{ pve_lma_model_ref }} --format json"
+  register: pve_lma_sm_status
+  changed_when: false
+
+- name: Remove a leftover nrpe application from the LMA model
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - "{{ pve_lma_juju_cmd }} remove-application nrpe -m {{ pve_lma_model_ref }}"
+  when: >-
+    'nrpe' in ((pve_lma_sm_status.stdout | from_json).applications | default({}, true))
+  register: pve_lma_sm_remove_nrpe
+  failed_when: >-
+    pve_lma_sm_remove_nrpe.rc != 0
+    and 'not found' not in (pve_lma_sm_remove_nrpe.stderr | default(''))
+  changed_when: pve_lma_sm_remove_nrpe.rc == 0
+
+- name: Render the hub self-monitoring host definitions
+  ansible.builtin.set_fact:
+    pve_lma_hub_hosts_cfg_b64: "{{ lookup('template', 'lma-hub-hosts.cfg.j2') | b64encode }}"
+
+- name: Render the hub host check installer on the PVE host
+  ansible.builtin.template:
+    src: lma-hub-hosts-check.sh.j2
+    dest: /root/pve-lma-hub-hosts-check.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Register the hub machines in Nagios
+  ansible.builtin.shell: |
+    set -euo pipefail
+    {{ pve_obs_hub_pct_bin }} push {{ pve_lma_juju_client_vmid }} /root/pve-lma-hub-hosts-check.sh \
+      {{ pve_obs_hub_stage_dir }}/pve-lma-hub-hosts-check.sh --perms 0755
+    {{ pve_obs_hub_pct_bin }} exec {{ pve_lma_juju_client_vmid }} -- \
+      su - {{ pve_lma_juju_client_user }} -c 'bash {{ pve_obs_hub_stage_dir }}/pve-lma-hub-hosts-check.sh'
+  args:
+    executable: /bin/bash
+  register: pve_lma_hub_hosts_cfg
+  changed_when: "'HUB-HOSTS-APPLIED' in pve_lma_hub_hosts_cfg.stdout"
+
+- name: Report the LMA hub self-monitoring
+  ansible.builtin.debug:
+    msg:
+      - "nagios host {{ pve_lma_nagios_ip }} : ping / ssh / tcp 80"
+      - "controller host {{ pve_lma_controller_ip }} : ping / ssh / tcp 17070"
+      - "registration result: {{ pve_lma_hub_hosts_cfg.stdout_lines | default([]) | last | default('') }}"

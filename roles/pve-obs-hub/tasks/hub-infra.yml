@@ -1,0 +1,17 @@
+---
+
+- name: Monitor the hub Kubernetes node
+  ansible.builtin.include_tasks: hub-infra-model.yml
+  vars:
+    obs_model: "{{ pve_obs_hub_infra_model }}"
+    obs_add_machine_ip: "{{ pve_obs_hub_k8s_ip }}"
+    obs_deploy_to: ""
+  when: pve_obs_hub_monitor_k8s_node | bool
+
+- name: Monitor the hub controller machine
+  ansible.builtin.include_tasks: hub-infra-model.yml
+  vars:
+    obs_model: controller
+    obs_add_machine_ip: ""
+    obs_deploy_to: "0"
+  when: pve_obs_hub_monitor_controller | bool

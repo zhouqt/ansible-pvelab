@@ -1,0 +1,133 @@
+---
+
+- name: Require every unit of the LMA model to be active
+  ansible.builtin.shell: |
+    set -uo pipefail
+    tmp=$(mktemp)
+    {{ pve_obs_hub_pct_bin }} exec {{ pve_lma_juju_client_vmid }} -- \
+      su - {{ pve_lma_juju_client_user }} -c \
+      "{{ pve_lma_juju_cmd }} status -m {{ pve_lma_model_ref }} --format json" >"$tmp"
+    python3 - "$tmp" <<'PY'
+    import json, sys
+    apps = json.load(open(sys.argv[1])).get('applications', {})
+    bad = []
+    def check(owner, key, unit):
+        cur = (unit.get('workload-status') or {}).get('current')
+        if cur != 'active':
+            bad.append('%s:%s=%s' % (owner, key, cur))
+    for app_name, app in apps.items():
+        for unit_key, unit in (app.get('units') or {}).items():
+            check(app_name, unit_key, unit)
+            for sub_name, sub_unit in (unit.get('subordinates') or {}).items():
+                check(app_name, sub_name, sub_unit)
+    if bad:
+        print('BAD: ' + ', '.join(bad))
+        sys.exit(1)
+    print('ALL-UNITS-ACTIVE %d apps' % len(apps))
+    PY
+    rc=$?
+    rm -f "$tmp"
+    exit "$rc"
+  args:
+    executable: /bin/bash
+  register: pve_lma_units
+  until: pve_lma_units.rc == 0
+  retries: "{{ (pve_lma_settle_budget_seconds // pve_lma_settle_interval) | int }}"
+  delay: "{{ pve_lma_settle_interval }}"
+  failed_when: pve_lma_units.rc != 0
+  changed_when: false
+
+- name: Show the LMA unit inventory
+  ansible.builtin.debug:
+    msg: "{{ pve_lma_units.stdout_lines }}"
+
+- name: Require the nagios monitors offer to be published
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - "{{ pve_lma_juju_cmd }} offers -m {{ pve_lma_model_ref }} --format json"
+  register: pve_lma_verify_offers
+  changed_when: false
+  failed_when: false
+
+- name: Fail when the nagios offer is missing
+  ansible.builtin.assert:
+    that: "'nagios' in (pve_lma_verify_offers.stdout | from_json)"
+    fail_msg: >-
+      the offer nagios:monitors is not published, so env6 cannot consume it (offers =
+      {{ pve_lma_verify_offers.stdout }}).
+
+- name: Probe the Nagios web interface from the host network
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/curl
+      - -s
+      - -o
+      - /dev/null
+      - -w
+      - "%{http_code}"
+      - --max-time
+      - "20"
+      - "http://{{ pve_lma_nagios_ip }}/nagios3/"
+  register: pve_lma_nagios_probe
+  until: pve_lma_nagios_probe.stdout | trim in ['200', '301', '302', '401']
+  failed_when: pve_lma_nagios_probe.stdout | trim not in ['200', '301', '302', '401']
+  retries: 30
+  delay: 10
+  changed_when: false
+
+- name: Require both hub host definitions to be loaded by the running Nagios
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_lma_juju_cmd }} exec -m {{ pve_lma_model_ref }} --unit nagios/0 --
+        bash -c 'grep -q pve-lma-nagios /var/cache/nagios3/objects.cache
+        && grep -q pve-lma-ctrl /var/cache/nagios3/objects.cache'
+  register: pve_lma_hub_objects
+  until: pve_lma_hub_objects.rc == 0
+  failed_when: pve_lma_hub_objects.rc != 0
+  retries: 20
+  delay: 10
+  changed_when: false
+
+- name: Read the Nagios admin password
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_lma_juju_cmd }} exec -m {{ pve_lma_model_ref }} --unit nagios/0 --
+        cat /var/lib/juju/nagios.passwd
+  register: pve_lma_nagios_passwd
+  changed_when: false
+  failed_when: false
+
+- name: Report the P1 hub acceptance evidence
+  ansible.builtin.debug:
+    msg:
+      - "LMA model      : {{ pve_lma_model_ref }}"
+      - "Nagios         : http://{{ pve_lma_nagios_ip }}/nagios3/  (HTTP {{ pve_lma_nagios_probe.stdout | trim }})"
+      - "Nagios account : nagiosadmin / {{ pve_lma_nagios_passwd.stdout | default('') | trim | regex_replace('^.*:\\s*', '') }}"
+      - "offer          : nagios:monitors (env6 consumes it with juju consume {{ pve_lma_controller_name }}:admin/{{ pve_lma_model }}.nagios)"
+      - "hub self-monitoring: pve-lma-nagios {{ pve_lma_nagios_ip }} and pve-lma-ctrl {{ pve_lma_controller_ip }} are both in objects.cache"

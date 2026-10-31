@@ -146,6 +146,7 @@ sunbeam_confirm_cluster_join: false
 sunbeam_confirm_external_changes: false
 sunbeam_confirm_ceph_osd: false
 sunbeam_confirm_tls: false
+sunbeam_confirm_observability: false
 
 sunbeam_allow_unreadable_cluster_state: false
 sunbeam_bootstrap_repair_incomplete: true
@@ -162,6 +163,27 @@ sunbeam_savepoint_restore: false
 sunbeam_savepoint_include_osd: true
 sunbeam_savepoint_repair_network: true
 sunbeam_savepoint_verify_fip_ping: true
+
+sunbeam_obs_controller: "{{ pve_obs_hub_cos_controller }}"
+sunbeam_obs_account_user: sunbeam-obs
+sunbeam_obs_switch_back_controller: sunbeam-controller
+sunbeam_obs_hub_juju_client_vmid: "{{ pve_obs_hub_juju_client_vmid }}"
+sunbeam_obs_hub_juju_client_user: "{{ pve_obs_hub_juju_client_user }}"
+sunbeam_obs_hub_juju_cmd: "JUJU_DATA={{ pve_obs_hub_juju_data }} {{ pve_obs_hub_juju_bin }}"
+sunbeam_obs_grafana_offer: "admin/{{ pve_obs_hub_cos_model }}.grafana"
+sunbeam_obs_prometheus_offer: "admin/{{ pve_obs_hub_cos_model }}.prometheus"
+sunbeam_obs_loki_offer: "admin/{{ pve_obs_hub_cos_model }}.loki"
+sunbeam_obs_hub_vip: "{{ pve_obs_hub_lb_pool_addresses[0] | regex_replace('/.*$', '') }}"
+sunbeam_obs_extra_integrations:
+  - {model: "{{ sunbeam_juju_openstack_model }}", app: opentelemetry-collector,      endpoint: send-remote-write,           offer: "{{ sunbeam_obs_prometheus_offer }}"}
+  - {model: "{{ sunbeam_juju_openstack_model }}", app: opentelemetry-collector,      endpoint: send-loki-logs,              offer: "{{ sunbeam_obs_loki_offer }}"}
+  - {model: "{{ sunbeam_juju_openstack_model }}", app: opentelemetry-collector,      endpoint: grafana-dashboards-provider, offer: "{{ sunbeam_obs_grafana_offer }}"}
+  - {model: "{{ sunbeam_juju_openstack_model }}", app: opentelemetry-collector-infra, endpoint: send-remote-write,          offer: "{{ sunbeam_obs_prometheus_offer }}"}
+  - {model: "{{ sunbeam_juju_openstack_model }}", app: opentelemetry-collector-infra, endpoint: send-loki-logs,             offer: "{{ sunbeam_obs_loki_offer }}"}
+  - {model: "{{ sunbeam_juju_openstack_model }}", app: opentelemetry-collector-infra, endpoint: grafana-dashboards-provider, offer: "{{ sunbeam_obs_grafana_offer }}"}
+  - {model: "{{ sunbeam_juju_machines_model }}", app: opentelemetry-collector,      endpoint: send-remote-write,           offer: "{{ sunbeam_obs_prometheus_offer }}"}
+  - {model: "{{ sunbeam_juju_machines_model }}", app: opentelemetry-collector,      endpoint: send-loki-logs,              offer: "{{ sunbeam_obs_loki_offer }}"}
+  - {model: "{{ sunbeam_juju_machines_model }}", app: opentelemetry-collector,      endpoint: grafana-dashboards-provider, offer: "{{ sunbeam_obs_grafana_offer }}"}
 
 sunbeam_nodes: >-
   {%- set ns = namespace(out=[]) -%}

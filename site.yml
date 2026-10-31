@@ -721,3 +721,27 @@
   become: false
   tags: [never, openstack-pve-resources]
   roles: [pve-yoga-resources]
+
+- name: Deploy the PVE observability hub (COS Lite on k8s snap)
+  hosts: pve
+  become: false
+  tags: [never, pve-obs-hub]
+  roles: [pve-obs-hub]
+
+- name: Deploy the PVE LMA hub (Juju 2.9 controller + bionic nagios)
+  hosts: pve
+  become: false
+  tags: [never, pve-lma-hub]
+  roles: [pve-lma-hub]
+
+- name: Wire a focal environment into the PVE LMA hub
+  hosts: pve
+  become: false
+  tags: [never, openstack-pve-lma-clients]
+  roles: [pve-yoga-lma-clients]
+
+- name: Wire a jammy or noble environment into the PVE COS hub
+  hosts: pve
+  become: false
+  tags: [never, openstack-pve-observability]
+  roles: [pve-yoga-observability]

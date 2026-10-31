@@ -1,0 +1,426 @@
+---
+
+- name: Read the kubeconfig from CT {{ pve_obs_hub_k8s_vmid }}
+  ansible.builtin.shell: |
+    set -euo pipefail
+    {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_k8s_vmid }} -- cat /etc/kubernetes/admin.conf \
+      | sed -E 's#^(\s*server:) https://[^ ]+#\1 https://{{ pve_obs_hub_k8s_ip }}:6443#' \
+      > /root/obs-hub-k8s.conf
+    chmod 0600 /root/obs-hub-k8s.conf
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Require the kubeconfig to point at the hub node address
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -c
+      - "server: https://{{ pve_obs_hub_k8s_ip }}:6443"
+      - /root/obs-hub-k8s.conf
+  register: pve_obs_hub_kubeconfig_server
+  changed_when: false
+  failed_when: false
+
+- name: Fail when the kubeconfig server address is not the hub IP
+  ansible.builtin.assert:
+    that: pve_obs_hub_kubeconfig_server.rc == 0
+    fail_msg: >-
+      the server in /etc/kubernetes/admin.conf is not https://{{ pve_obs_hub_k8s_ip }}:6443.
+      the k8s snap issues certificates for the node address by default; if they do not match, check
+      `k8s kubectl config view`; do not pipe the kubeconfig straight into add-k8s.
+
+- name: Ensure the hub staging directory exists on the Juju client CT
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - install
+      - -d
+      - -o
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -g
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -m
+      - "0755"
+      - "{{ pve_obs_hub_stage_dir }}"
+  changed_when: false
+
+- name: Push the kubeconfig to the Juju client CT
+  ansible.builtin.shell: |
+    set -euo pipefail
+    src=/root/obs-hub-k8s.conf
+    dst={{ pve_obs_hub_stage_dir }}/hub-k8s.conf
+    want=$(sha256sum "$src" | awk '{print $1}')
+    have=$({{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- sha256sum "$dst" 2>/dev/null | awk '{print $1}') || have=""
+    if [ "$want" = "$have" ]; then echo "KUBECONFIG-UNCHANGED"; exit 0; fi
+    {{ pve_obs_hub_pct_bin }} push {{ pve_obs_hub_juju_client_vmid }} "$src" "$dst" --perms 0600
+    echo "KUBECONFIG-PUSHED"
+  args:
+    executable: /bin/bash
+  register: pve_obs_hub_kubeconfig_push
+  changed_when: "'KUBECONFIG-PUSHED' in pve_obs_hub_kubeconfig_push.stdout"
+
+- name: Hand the kubeconfig to the Juju client user
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - chown
+      - "{{ pve_obs_hub_juju_client_user }}:{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_hub_stage_dir }}/hub-k8s.conf"
+  changed_when: false
+
+- name: Read the clouds known to the hub controller
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - "{{ pve_obs_hub_juju_cmd }} clouds --controller {{ pve_obs_hub_cos_controller }} --format json"
+  register: pve_obs_hub_clouds
+  changed_when: false
+  failed_when: false
+
+- name: Register the k8s cloud with the hub controller
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - >-
+        KUBECONFIG={{ pve_obs_hub_stage_dir }}/hub-k8s.conf
+        {{ pve_obs_hub_juju_cmd }} add-k8s {{ pve_obs_hub_k8s_cloud }}
+        --controller {{ pve_obs_hub_cos_controller }}
+        --storage {{ pve_obs_hub_storage_class }}
+  when: >-
+    pve_obs_hub_k8s_cloud not in
+    ((pve_obs_hub_clouds.stdout | from_json) if pve_obs_hub_clouds.rc == 0 else {})
+
+- name: Require the k8s cloud to be registered
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - "{{ pve_obs_hub_juju_cmd }} clouds --controller {{ pve_obs_hub_cos_controller }} --format json"
+  register: pve_obs_hub_clouds_after
+  changed_when: false
+
+- name: Fail when the k8s cloud is still missing
+  ansible.builtin.assert:
+    that: pve_obs_hub_k8s_cloud in (pve_obs_hub_clouds_after.stdout | from_json)
+    fail_msg: "cloud {{ pve_obs_hub_k8s_cloud }} is not registered with {{ pve_obs_hub_cos_controller }}; add-k8s failed."
+
+- name: Point the hub models at the lab HTTP proxy
+  when: pve_obs_hub_http_proxy | length > 0
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_obs_hub_juju_cmd }} model-defaults -c {{ pve_obs_hub_cos_controller }}
+        --cloud {{ pve_obs_hub_k8s_cloud }}
+        http-proxy={{ pve_obs_hub_http_proxy }} https-proxy={{ pve_obs_hub_http_proxy }}
+        no-proxy={{ pve_obs_hub_no_proxy }}
+  register: pve_obs_hub_model_defaults
+  changed_when: false
+
+- name: Read the models of the hub controller
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - "{{ pve_obs_hub_juju_cmd }} models --controller {{ pve_obs_hub_cos_controller }} --format json"
+  register: pve_obs_hub_models
+  changed_when: false
+  failed_when: false
+
+- name: Create the cos-lite model on the k8s cloud
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_obs_hub_juju_cmd }} add-model --controller {{ pve_obs_hub_cos_controller }}
+        {{ pve_obs_hub_cos_model }} {{ pve_obs_hub_k8s_cloud }}
+  when: >-
+    (((pve_obs_hub_models.stdout | from_json).models | default([], true))
+     | selectattr('short-name', 'equalto', pve_obs_hub_cos_model) | list | length) == 0
+
+- name: Point the cos-lite model itself at the lab HTTP proxy
+  when: pve_obs_hub_http_proxy | length > 0
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_obs_hub_juju_cmd }} model-config -m {{ pve_obs_hub_cos_model_ref }}
+        http-proxy={{ pve_obs_hub_http_proxy }} https-proxy={{ pve_obs_hub_http_proxy }}
+        no-proxy={{ pve_obs_hub_no_proxy }}
+  register: pve_obs_hub_cos_model_proxy
+  changed_when: false
+
+- name: Push the pinned COS Lite bundle to the Juju client CT
+  ansible.builtin.copy:
+    src: "{{ pve_obs_hub_bundle }}"
+    dest: /root/cos-lite-hub.yaml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Copy the bundle into the client CT staging directory
+  ansible.builtin.shell: |
+    set -euo pipefail
+    src=/root/cos-lite-hub.yaml
+    dst={{ pve_obs_hub_stage_dir }}/cos-lite-hub.yaml
+    want=$(sha256sum "$src" | awk '{print $1}')
+    have=$({{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- sha256sum "$dst" 2>/dev/null | awk '{print $1}') || have=""
+    if [ "$want" = "$have" ]; then echo "BUNDLE-UNCHANGED"; exit 0; fi
+    {{ pve_obs_hub_pct_bin }} push {{ pve_obs_hub_juju_client_vmid }} "$src" "$dst" --perms 0644
+    echo "BUNDLE-PUSHED"
+  args:
+    executable: /bin/bash
+  register: pve_obs_hub_bundle_push
+  changed_when: "'BUNDLE-PUSHED' in pve_obs_hub_bundle_push.stdout"
+
+- name: Hand the bundle to the Juju client user
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - chown
+      - "{{ pve_obs_hub_juju_client_user }}:{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_hub_stage_dir }}/cos-lite-hub.yaml"
+  changed_when: false
+
+- name: Read the applications already present in the cos-lite model
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_obs_hub_juju_cmd }} status -m {{ pve_obs_hub_cos_model_ref }}
+        --format json
+  register: pve_obs_hub_cos_status
+  changed_when: false
+  failed_when: false
+
+- name: Deploy the COS Lite bundle
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_obs_hub_juju_cmd }} deploy {{ pve_obs_hub_stage_dir }}/cos-lite-hub.yaml
+        --trust -m {{ pve_obs_hub_cos_model_ref }}
+  when: >-
+    pve_obs_hub_cos_status.rc != 0
+    or ((pve_obs_hub_cos_status.stdout | from_json).applications | default({}, true) | length) == 0
+
+- name: Wait for MetalLB to hand {{ pve_obs_hub_lb_ip }} to traefik-lb
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_k8s_vmid }}"
+      - --
+      - "{{ pve_obs_hub_k8s_bin }}"
+      - kubectl
+      - -n
+      - "{{ pve_obs_hub_cos_model }}"
+      - get
+      - svc
+      - traefik-lb
+      - -o
+      - jsonpath={.status.loadBalancer.ingress[0].ip}
+  register: pve_obs_hub_lb_ip_out
+  until: pve_obs_hub_lb_ip_out.stdout | trim == pve_obs_hub_lb_ip
+  failed_when: pve_obs_hub_lb_ip_out.stdout | trim != pve_obs_hub_lb_ip
+  retries: 60
+  delay: 10
+  changed_when: false
+
+- name: Require traefik to publish the VIP as its gateway address
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_obs_hub_juju_cmd }} status -m {{ pve_obs_hub_cos_model_ref }} traefik
+  register: pve_obs_hub_traefik_status
+  until: pve_obs_hub_lb_ip in pve_obs_hub_traefik_status.stdout
+  failed_when: pve_obs_hub_lb_ip not in pve_obs_hub_traefik_status.stdout
+  retries: 60
+  delay: 10
+  changed_when: false
+
+- name: Wait for every COS Lite application to settle
+  when: not (pve_obs_hub_skip_wait | bool)
+  ansible.builtin.include_tasks: wait-model-active.yml
+  vars:
+    obs_wait_model_ref: "{{ pve_obs_hub_cos_model_ref }}"
+    obs_wait_label: "COS Lite ({{ pve_obs_hub_cos_model }})"
+
+- name: Read the offers published so far
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_obs_hub_juju_cmd }} offers -m {{ pve_obs_hub_cos_model_ref }}
+        --format json
+  register: pve_obs_hub_offers_before
+  changed_when: false
+
+- name: Publish the COS offers env consumers attach to
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_obs_hub_juju_cmd }} offer -c {{ pve_obs_hub_cos_controller }}
+        {{ pve_obs_hub_cos_model }}.{{ item.app }}:{{ item.endpoint }}
+  loop: "{{ pve_obs_hub_offers_declared }}"
+  loop_control:
+    label: "{{ item.app }}:{{ item.endpoint }}"
+  when: >-
+    item.app not in ((pve_obs_hub_offers_before.stdout | default('{}', true) | from_json)
+                     | default({}, true))
+  register: pve_obs_hub_offer_create
+  failed_when: >-
+    pve_obs_hub_offer_create.rc | default(0) != 0
+    and 'already exists' not in (pve_obs_hub_offer_create.stderr | default(''))
+  changed_when: true
+
+- name: Read the published offers
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_obs_hub_juju_cmd }} offers -m {{ pve_obs_hub_cos_model_ref }}
+        --format json
+  register: pve_obs_hub_offers_out
+  changed_when: false
+
+- name: Require every declared offer to be published
+  ansible.builtin.assert:
+    that: >-
+      (item.app in (pve_obs_hub_offers_out.stdout | from_json))
+      and (item.endpoint in
+           ((pve_obs_hub_offers_out.stdout | from_json)[item.app].endpoints | default({}, true)))
+    fail_msg: >-
+      the offer {{ item.app }}:{{ item.endpoint }} is not published (offers =
+      {{ pve_obs_hub_offers_out.stdout }}).
+  loop: "{{ pve_obs_hub_offers_declared }}"
+  loop_control:
+    label: "{{ item.app }}:{{ item.endpoint }}"
+
+- name: Read the traefik service from the k8s node
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_k8s_vmid }}"
+      - --
+      - "{{ pve_obs_hub_k8s_bin }}"
+      - kubectl
+      - get
+      - svc
+      - -n
+      - "{{ pve_obs_hub_cos_model }}"
+      - -o
+      - wide
+  register: pve_obs_hub_traefik_svc
+  changed_when: false
+  failed_when: false
+
+- name: Show the traefik service (NodePort lands on {{ pve_obs_hub_k8s_ip }})
+  ansible.builtin.debug:
+    msg: "{{ pve_obs_hub_traefik_svc.stdout_lines | default(['<no services yet>']) }}"
+
+- name: Report the published offers
+  ansible.builtin.debug:
+    msg: "{{ pve_obs_hub_offers_out.stdout_lines }}"

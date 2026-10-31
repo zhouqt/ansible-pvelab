@@ -1,0 +1,58 @@
+#!/bin/bash
+set -uo pipefail
+export JUJU_DATA={{ pve_lma_juju_data }}
+JUJU={{ pve_lma_juju_bin }}
+MODEL={{ pve_lma_model_ref }}
+UNIT=nagios/0
+CFG=/etc/nagios3/conf.d/zz-pve-lma-hub-hosts.cfg
+CACHE=/var/cache/nagios3/objects.cache
+B64='{{ pve_lma_hub_hosts_cfg_b64 }}'
+want=$(printf '%s' "$B64" | base64 -d | sha256sum | awk '{print $1}')
+
+jrun() { $JUJU exec -m "$MODEL" --unit "$UNIT" -- "$@"; }
+
+have=$(jrun bash -c "sha256sum $CFG 2>/dev/null | cut -d' ' -f1" 2>/dev/null) || have=""
+have=$(printf '%s' "$have" | grep -oE '[0-9a-f]{64}' | head -1)
+
+loaded() {
+  jrun bash -c "grep -q pve-lma-nagios $CACHE && grep -q pve-lma-ctrl $CACHE" >/dev/null 2>&1
+}
+
+if [ "$have" = "$want" ] && loaded; then
+  echo "HUB-HOSTS-UNCHANGED"
+  exit 0
+fi
+
+if ! jrun test -x /usr/lib/nagios/plugins/check_ping >/dev/null 2>&1; then
+  echo "installing nagios-plugins-basic in $UNIT"
+  jrun bash -c 'DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nagios-plugins-basic >/dev/null' \
+    || { echo "PLUGIN-INSTALL-FAILED" >&2; exit 1; }
+fi
+
+if [ "$have" != "$want" ]; then
+  jrun bash -c "printf '%s' '$B64' | base64 -d > /tmp/pve-lma-hub-hosts.cfg && \
+    install -m 0644 /tmp/pve-lma-hub-hosts.cfg $CFG && rm -f /tmp/pve-lma-hub-hosts.cfg" \
+    || { echo "CFG-WRITE-FAILED" >&2; exit 1; }
+fi
+
+chk=$(jrun nagios3 -v /etc/nagios3/nagios.cfg 2>&1) || true
+if ! printf '%s' "$chk" | grep -qE 'Total Errors:[[:space:]]*0[[:space:]]*$'; then
+  echo "NAGIOS-CONFIG-INVALID" >&2
+  printf '%s\n' "$chk" | tail -30 >&2
+  exit 1
+fi
+
+jrun service nagios3 reload >/dev/null 2>&1 || jrun service nagios3 restart >/dev/null 2>&1 || true
+
+for _ in $(seq 1 30); do
+  if loaded; then
+    echo "HUB-HOSTS-APPLIED"
+    exit 0
+  fi
+  sleep 2
+done
+
+echo "OBJECTS-CACHE-NOT-UPDATED" >&2
+jrun bash -c "grep -cE 'host_name' $CACHE; ls -l $CFG" >&2 || true
+exit 1

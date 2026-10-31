@@ -1,0 +1,142 @@
+---
+
+- name: Verify the environment-side COS wiring
+  ansible.builtin.shell: |
+    set -uo pipefail
+    status=$(mktemp)
+    {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
+      su - {{ pve_obs_hub_juju_client_user }} -c \
+      "{{ pve_yoga_obs_juju_cmd }} status -m {{ pve_yoga_obs_model }} --format json" > "$status"
+    python3 - "$status" "{{ pve_yoga_obs_enable_nrpe | bool }}" \
+                     "{{ pve_yoga_obs_enable_openstack_exporter | bool }}" <<'PY'
+    import json, sys
+
+    doc = json.load(open(sys.argv[1]))
+    want_nrpe = sys.argv[2] == 'True'
+    want_exporter = sys.argv[3] == 'True'
+
+    apps = doc.get('applications') or {}
+    saas = doc.get('application-endpoints') or {}
+
+    def st(entry):
+        return ((entry.get('application-status') or entry.get('status') or {})
+                .get('current')) or 'absent'
+
+    problems = []
+    expected = []
+    if want_nrpe:
+        expected += ['cos-proxy']
+    if want_exporter:
+        expected += ['openstack-exporter']
+    for name in expected:
+        cur = st(apps.get(name) or {})
+        if cur != 'active':
+            problems.append('%s=%s' % (name, cur))
+
+    subs_ok = subs_total = 0
+    prefixes = []
+    if want_nrpe:
+        prefixes.append('nrpe/')
+    prefixes.append('grafana-agent/')
+    for app in apps.values():
+        for unit in (app.get('units') or {}).values():
+            for key, sub in (unit.get('subordinates') or {}).items():
+                if not any(key.startswith(p) for p in prefixes):
+                    continue
+                subs_total += 1
+                if st(sub) == 'active':
+                    subs_ok += 1
+                else:
+                    problems.append('%s=%s' % (key, st(sub)))
+
+    missing_saas = [n for n in ('prometheus', 'loki', 'grafana') if n not in saas]
+    if missing_saas:
+        problems.append('saas-absent:' + ','.join(missing_saas))
+
+    print('SUBORDINATES %d/%d active' % (subs_ok, subs_total))
+    print('SAAS %s' % (','.join(sorted(saas)) or '-'))
+    if subs_total == 0:
+        problems.append('no-subordinates')
+    if problems:
+        print('PROBLEMS ' + '; '.join(problems))
+        raise SystemExit(1)
+    print('LOCAL-OK')
+    PY
+  args:
+    executable: /bin/bash
+  register: pve_yoga_obs_local
+  changed_when: false
+
+- name: Wait for this environment's data to reach the hub
+  ansible.builtin.shell: |
+    set -uo pipefail
+    base='http://{{ pve_obs_hub_vip }}'
+    uuid='{{ pve_yoga_obs_model_uuid | default('', true) }}'
+    prom="${base}/cos-lite-prometheus-0/api/v1/query"
+    count() {
+      curl -sf --get --data-urlencode "$1" "$prom" 2>/dev/null | python3 -c '
+    import json, sys
+    try:
+        r = json.load(sys.stdin)["data"]["result"]
+        print(int(r[0]["value"][1]) if r else 0)
+    except Exception:
+        print(0)'
+    }
+    if [ -n "$uuid" ]; then
+      own=$(count "query=count({juju_model_uuid=\"$uuid\"})")
+    else
+      own=unknown
+    fi
+    api=$(count 'query=count({__name__=~"openstack_.*"})')
+    loki=$(curl -sf "${base}/cos-lite-loki-0/loki/api/v1/label/juju_model_uuid/values" 2>/dev/null \
+           | python3 -c '
+    import json, sys
+    try:
+        print(" ".join(json.load(sys.stdin)["data"]))
+    except Exception:
+        pass')
+    if [ -n "$uuid" ] && printf '%s\n' "$loki" | tr ' ' '\n' | grep -qx "$uuid"; then
+      loki_hit=yes
+    else
+      loki_hit=no
+    fi
+    echo "PROM-UUID-SERIES $own"
+    echo "PROM-OPENSTACK-SERIES $api"
+    echo "LOKI-UUID $loki_hit"
+    echo "LOKI-UUIDS ${loki:--}"
+    if [ "$api" -gt 0 ] && { [ -z "$uuid" ] || [ "$loki_hit" = yes ]; }; then
+      echo "READY yes"
+    else
+      echo "READY no"
+    fi
+  args:
+    executable: /bin/bash
+  register: pve_yoga_obs_data
+  until: "'READY yes' in (pve_yoga_obs_data.stdout | default(''))"
+  retries: "{{ (pve_yoga_obs_verify_budget / pve_yoga_obs_verify_interval) | int }}"
+  delay: "{{ pve_yoga_obs_verify_interval }}"
+  failed_when: false
+  changed_when: false
+
+- name: Report the COS verification
+  ansible.builtin.debug:
+    msg:
+      - "env side status : {{ 'OK' if pve_yoga_obs_local.rc | default(1) == 0 else 'FAILED' }}"
+      - "env side details: {{ pve_yoga_obs_local.stdout_lines | default([]) | join(' | ') }}"
+      - "hub side data   : {{ pve_yoga_obs_data.stdout_lines | default([]) | join(' | ') }}"
+
+- name: Warn when the model uuid is unknown
+  ansible.builtin.debug:
+    msg: >-
+      models.yaml has no admin/{{ pve_yoga_model_name }} entry for {{ pve_yoga_controller_name }},
+      all that is left is the weak test "does the hub have openstack_* series". Run
+      `juju status -m {{ pve_yoga_obs_model }}` to refresh the store, then re-run this role to get the strong check back.
+  when: pve_yoga_obs_model_uuid | default('', true) == ''
+
+- name: Require the environment side to be wired
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_obs_local.rc | default(1) == 0
+    fail_msg: >-
+      not all COS clients on the env side are active:
+      {{ pve_yoga_obs_local.stdout_lines | default([]) | join(' | ') }}

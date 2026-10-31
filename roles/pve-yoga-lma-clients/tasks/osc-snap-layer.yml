@@ -1,0 +1,98 @@
+---
+
+- name: Read the openstack-service-checks unit state
+  ansible.builtin.shell: |
+    set -uo pipefail
+    out=$({{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
+      su - {{ pve_obs_hub_juju_client_user }} -c \
+      "{{ pve_lma_clients_juju_cmd }} status -m {{ pve_lma_clients_model }} --format json" 2>/dev/null) || out='{}'
+    printf '%s' "$out" | python3 -c '
+    import json, sys
+    try:
+        apps = json.load(sys.stdin).get("applications") or {}
+    except ValueError:
+        apps = {}
+    units = ((apps.get("openstack-service-checks") or {}).get("units")) or {}
+    if not units:
+        print(json.dumps({"unit": None, "status": None, "message": ""}))
+    else:
+        ukey, unit = sorted(units.items())[0]
+        wl = unit.get("workload-status") or {}
+        print(json.dumps({"unit": ukey,
+                          "status": wl.get("current"),
+                          "message": (wl.get("message") or "").strip()}))
+    '
+  args:
+    executable: /bin/bash
+  register: pve_lma_clients_osc_state_raw
+  until: >-
+    (pve_lma_clients_osc_state_raw.stdout | from_json).unit is not none
+    and (pve_lma_clients_osc_state_raw.stdout | from_json).status in ['active', 'error', 'blocked']
+  retries: 60
+  delay: 10
+  changed_when: false
+
+- name: Keep the parsed openstack-service-checks unit state
+  ansible.builtin.set_fact:
+    pve_lma_clients_osc_state: "{{ pve_lma_clients_osc_state_raw.stdout | from_json }}"
+
+- name: Report the openstack-service-checks unit state
+  ansible.builtin.debug:
+    msg: "{{ pve_lma_clients_osc_state.unit }}: {{ pve_lma_clients_osc_state.status }} {{ pve_lma_clients_osc_state.message }}"
+
+- name: Let the snap layer skip re-installing its bundled snapd
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_lma_clients_juju_cmd }} exec -m {{ pve_lma_clients_model }}
+        --unit {{ pve_lma_clients_osc_state.unit }} --
+        bash -c 'echo {{ lookup('file', 'osc-snap-layer-flags.py') | b64encode }}
+        | base64 -d > /tmp/pve-osc-snap-layer-flags.py
+        && PY=$(dirname $JUJU_CHARM_DIR)/.venv/bin/python
+        && [ -x "$PY" ] || PY=python3
+        && $PY /tmp/pve-osc-snap-layer-flags.py'
+  when:
+    - pve_lma_clients_osc_snapd_workaround | bool
+    - pve_lma_clients_osc_state.status == 'error'
+  register: pve_lma_clients_osc_flags
+  changed_when: "'FLAG-APPLIED' in pve_lma_clients_osc_flags.stdout"
+
+- name: Re-run the failed install hook on openstack-service-checks
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_hub_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_lma_clients_juju_cmd }} resolved -m {{ pve_lma_clients_model }}
+        {{ pve_lma_clients_osc_state.unit }}
+  when:
+    - pve_lma_clients_osc_snapd_workaround | bool
+    - pve_lma_clients_osc_state.status == 'error'
+    - pve_lma_clients_osc_flags.rc | default(1) == 0
+  register: pve_lma_clients_osc_resolve
+  failed_when: >-
+    pve_lma_clients_osc_resolve.rc != 0
+    and 'not in an error state' not in ((pve_lma_clients_osc_resolve.stderr | default(''))
+                                        ~ (pve_lma_clients_osc_resolve.stdout | default('')))
+  changed_when: pve_lma_clients_osc_resolve.rc == 0
+
+- name: Show the snap-layer evidence
+  ansible.builtin.debug:
+    msg:
+      - "unit   : {{ pve_lma_clients_osc_state.unit }}({{ pve_lma_clients_osc_state.status }})"
+      - "snapd  : {{ pve_lma_clients_osc_flags.stdout_lines | default([]) | join(' | ') }}"
+  when: pve_lma_clients_osc_flags is not skipped

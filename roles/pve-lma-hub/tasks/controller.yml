@@ -1,0 +1,177 @@
+---
+
+- name: Read the controllers known to the Juju 2.9 client
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - "{{ pve_lma_juju_cmd }} controllers --format json"
+  register: pve_lma_controllers
+  changed_when: false
+
+- name: Require the 2.9 client to read its controller store
+  ansible.builtin.assert:
+    that:
+      - pve_lma_controllers.rc == 0
+      - "'controllers' in (pve_lma_controllers.stdout | from_json)"
+    fail_msg: >-
+      cannot read the controller list of the 2.9 client ({{ pve_lma_controllers.stderr | default('') | trim }}).
+      do not bootstrap again while the shared store is broken.
+
+- name: Check for the juju-db snap on the controller CT
+  ansible.builtin.command: "{{ pve_obs_hub_pct_bin }} exec {{ pve_lma_controller_vmid }} -- snap list juju-db"
+  register: pve_lma_juju_db_check
+  changed_when: false
+  failed_when: false
+  when: pve_lma_controller_name not in ((pve_lma_controllers.stdout | from_json).controllers | default([], true))
+
+- name: Install the juju-db snap required by a 2.9 manual bootstrap
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_controller_vmid }}"
+      - --
+      - snap
+      - install
+      - juju-db
+      - "--channel={{ pve_lma_juju_db_channel }}"
+  when:
+    - pve_lma_controller_name not in ((pve_lma_controllers.stdout | from_json).controllers | default([], true))
+    - pve_lma_juju_db_check.rc | default(1) != 0
+
+- name: Seed the controller IP in the Juju client known_hosts
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ip={{ pve_lma_controller_ip }}
+    keyscan=$(ssh-keyscan -H "$ip" 2>/dev/null)
+    [[ -n "$keyscan" ]] || { echo "SSH did not become available on controller $ip" >&2; exit 1; }
+    printf '%s\n' "$keyscan" | {{ pve_obs_hub_pct_bin }} exec {{ pve_lma_juju_client_vmid }} -- \
+      su - {{ pve_lma_juju_client_user }} -c \
+      "install -d -m 0700 ~/.ssh; touch ~/.ssh/known_hosts; \
+       ssh-keygen -R \"$ip\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; \
+       ssh-keygen -R \"[$ip]:22\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; \
+       cat >> ~/.ssh/known_hosts"
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Bootstrap the Juju 2.9 manual controller
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_lma_juju_cmd }} bootstrap manual/ubuntu@{{ pve_lma_controller_ip }}
+        {{ pve_lma_controller_name }} --bootstrap-series={{ pve_lma_bootstrap_series }}
+        {% if pve_obs_hub_http_proxy | length > 0 %}
+        --config http-proxy={{ pve_obs_hub_http_proxy }}
+        --config https-proxy={{ pve_obs_hub_http_proxy }}
+        --config no-proxy={{ pve_obs_hub_no_proxy }}
+        {% endif %}
+  when: pve_lma_controller_name not in ((pve_lma_controllers.stdout | from_json).controllers | default([], true))
+
+- name: Refresh the controller list after bootstrap
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - "{{ pve_lma_juju_cmd }} controllers --format json"
+  register: pve_lma_controllers_after
+  changed_when: false
+
+- name: Require the 2.9 controller to be registered
+  ansible.builtin.assert:
+    that:
+      - pve_lma_controller_name in ((pve_lma_controllers_after.stdout | from_json).controllers | default([], true))
+    fail_msg: >-
+      {{ pve_lma_controller_name }} is not registered (controllers =
+      {{ pve_lma_controllers_after.stdout }}).
+
+- name: Read the models of the 2.9 controller
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - "{{ pve_lma_juju_cmd }} models --controller {{ pve_lma_controller_name }} --format json"
+  register: pve_lma_models
+  changed_when: false
+
+- name: Create the {{ pve_lma_model }} model
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_lma_juju_cmd }} add-model --controller {{ pve_lma_controller_name }}
+        {{ pve_lma_model }} {{ pve_obs_hub_manual_cloud }} --config enable-os-upgrade=false
+  when: >-
+    (((pve_lma_models.stdout | from_json).models | default([], true))
+     | selectattr('short-name', 'equalto', pve_lma_model) | list | length) == 0
+
+- name: Point the model at the lab HTTP proxy
+  when: pve_obs_hub_http_proxy | length > 0
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_lma_juju_cmd }} model-config -m {{ pve_lma_model_ref }}
+        http-proxy={{ pve_obs_hub_http_proxy }} https-proxy={{ pve_obs_hub_http_proxy }}
+        no-proxy={{ pve_obs_hub_no_proxy }}
+  changed_when: false
+
+- name: Report the 2.9 controller
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - "{{ pve_lma_juju_cmd }} show-controller {{ pve_lma_controller_name }} --format json"
+  register: pve_lma_show_controller
+  changed_when: false
+
+- name: Show the 2.9 controller details
+  ansible.builtin.debug:
+    msg: "{{ pve_lma_show_controller.stdout_lines }}"

@@ -1,0 +1,5 @@
+---
+
+pve_lma_skip_wait: false
+
+pve_obs_hub_pct_bin: /usr/sbin/pct

@@ -1,0 +1,19 @@
+---
+pve_obs_hub_pct_bin: /usr/sbin/pct
+
+pve_yoga_obs_series: [jammy, noble]
+
+pve_yoga_obs_place_on: keystone
+
+pve_yoga_obs_nrpe_channel: "{{ pve_obs_hub_nrpe_channel }}"
+pve_yoga_obs_cos_proxy_channel: "{{ pve_obs_hub_cos_proxy_channel }}"
+pve_yoga_obs_grafana_agent_channel: "{{ pve_obs_hub_grafana_agent_channel }}"
+pve_yoga_obs_openstack_exporter_channel: latest/stable
+
+pve_yoga_obs_enable_nrpe: true
+pve_yoga_obs_enable_openstack_exporter: true
+
+pve_yoga_obs_skip_wait: false
+
+pve_yoga_obs_verify_budget: 900
+pve_yoga_obs_verify_interval: 15
