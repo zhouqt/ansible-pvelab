@@ -213,3 +213,4 @@
 - name: Hand off to the recovery role for MySQL GR rebuild and Vault unseal
   ansible.builtin.include_role:
     name: pve-yoga-recovery
+  when: pve_yoga_savepoint_restore_run_recovery | bool

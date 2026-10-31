@@ -553,6 +553,12 @@ pve_yoga_savepoint_take: false
 pve_yoga_savepoint_restore: false
 pve_yoga_savepoint_name: ""
 pve_yoga_savepoint_include_osd: true
+pve_yoga_savepoint_restore_run_recovery: true
+pve_yoga_seed_restore: false
+pve_yoga_seed_restore_name: "seed"
+pve_yoga_seed_restore_client_store: true
+pve_yoga_seed_restore_admin_donor: ""
+pve_yoga_seed_restore_probe_timeout: 300
 pve_yoga_credentials_dir: "{{ playbook_dir }}/credentials"
 pve_yoga_keystone_admin_password_file: "{{ pve_yoga_credentials_dir }}/{{ pve_yoga_env_slug }}-keystone-admin-password.txt"
 pve_yoga_vault_init_file: "{{ pve_yoga_credentials_dir }}/{{ pve_yoga_env_slug }}-vault-init.json"

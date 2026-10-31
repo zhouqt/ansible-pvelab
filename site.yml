@@ -710,6 +710,12 @@
   tags: [never, openstack-pve-savepoint-restore]
   roles: [pve-yoga-savepoint-restore]
 
+- name: Rebuild a torn-down PVE yoga environment from seed snapshots
+  hosts: pve
+  become: false
+  tags: [never, openstack-pve-seed-restore]
+  roles: [pve-yoga-seed-restore]
+
 - name: Tear down the PVE yoga environment
   hosts: pve
   become: false
