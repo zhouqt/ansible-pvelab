@@ -1,0 +1,128 @@
+---
+
+- name: Collect the ceph-mon units to probe
+  ansible.builtin.set_fact:
+    pve_yoga_ceph_mon_units: >-
+      {{ ((mon_app | first).value.units | list) if mon_app | length > 0 else [] }}
+  vars:
+    mon_app: >-
+      {{ (pve_yoga_recovery_status.stdout | from_json).applications | default({})
+         | dict2items | selectattr('key', 'equalto', 'ceph-mon') | list }}
+
+- name: Probe the Ceph monitor quorum from every ceph-mon unit
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} ssh -m {{ pve_yoga_model }} {{ item }} -- sudo ceph -s --format json"
+  loop: "{{ pve_yoga_ceph_mon_units }}"
+  loop_control:
+    label: "{{ item }}"
+  register: pve_yoga_ceph_probes
+  changed_when: false
+  failed_when: false
+  when: pve_yoga_ceph_mon_units | length > 0
+
+- name: Pick the first ceph-mon probe that answered
+  ansible.builtin.set_fact:
+    pve_yoga_ceph_probe: >-
+      {{ (pve_yoga_ceph_probes.results | default([])
+          | selectattr('rc', 'defined') | selectattr('rc', 'equalto', 0) | list
+          | first) | default({}, true) }}
+  when: pve_yoga_ceph_mon_units | length > 0
+
+- name: Read the Ceph monmap from the unit that answered
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} ssh -m {{ pve_yoga_model }} {{ pve_yoga_ceph_probe.item }} -- sudo ceph mon dump --format json"
+  register: pve_yoga_ceph_monmap
+  changed_when: false
+  failed_when: false
+  when: pve_yoga_ceph_probe.stdout is defined
+
+- name: Summarise the Ceph monitor health
+  ansible.builtin.set_fact:
+    pve_yoga_ceph_mon_summary: >-
+      {{ {'total': s.monmap.num_mons | int,
+          'quorum': s.quorum | length,
+          'quorum_names': s.quorum_names,
+          'missing': (monmap.mons | map(attribute='name')
+                      | reject('in', s.quorum_names) | list)
+                     if monmap.mons is defined else [],
+          'health': s.health.status | default('UNKNOWN')} }}
+  vars:
+    s: "{{ pve_yoga_ceph_probe.stdout | from_json }}"
+    monmap: >-
+      {{ (pve_yoga_ceph_monmap.stdout | from_json)
+         if pve_yoga_ceph_monmap.stdout is defined else {} }}
+  when: pve_yoga_ceph_probe.stdout is defined
+
+- name: Report the Ceph monitor state
+  ansible.builtin.debug:
+    msg: >-
+      CEPH-MON health={{ pve_yoga_ceph_mon_summary.health }}
+      quorum={{ pve_yoga_ceph_mon_summary.quorum }}/{{ pve_yoga_ceph_mon_summary.total }}
+      ({{ pve_yoga_ceph_mon_summary.quorum_names | join(',') }})
+      missing={{ pve_yoga_ceph_mon_summary.missing | join(',') or '-' }}
+  when: pve_yoga_ceph_mon_summary is defined
+
+- name: Warn that no ceph-mon unit answered the probe
+  ansible.builtin.debug:
+    msg: |
+      ★★ no ceph-mon unit can answer `ceph -s` (all {{ pve_yoga_ceph_mon_units | length }} failed).
+      the cluster may really have lost quorum, or the whole model may be unreachable -- confirm `ceph -s` by hand.
+  when: pve_yoga_ceph_mon_units | length > 0 and pve_yoga_ceph_probe.stdout is not defined
+
+- name: Require Ceph monitor quorum after recovery
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_ceph_mon_summary.quorum >= (pve_yoga_ceph_mon_summary.total // 2 + 1)
+    fail_msg: >-
+      Ceph lost mon quorum: {{ pve_yoga_ceph_mon_summary.quorum }}/{{ pve_yoga_ceph_mon_summary.total }}
+      in quorum ({{ pve_yoga_ceph_mon_summary.quorum_names | join(',') }}),
+      health={{ pve_yoga_ceph_mon_summary.health }}. Fix the mons by hand before continuing.
+  when: pve_yoga_ceph_mon_summary is defined
+
+- name: Warn about ceph-mon daemons that dropped out of quorum
+  ansible.builtin.debug:
+    msg: |
+      ★★ Ceph has a lagging mon: {{ pve_yoga_ceph_mon_summary.missing | join(', ') or '(mon dump unavailable, could not list names)' }}
+         quorum={{ pve_yoga_ceph_mon_summary.quorum }}/{{ pve_yoga_ceph_mon_summary.total }}
+         health={{ pve_yoga_ceph_mon_summary.health }}
+      the cluster is still usable (a majority remains), but losing one more mon means losing quorum;
+      and `juju status` only marks that unit blocked, so end-to-end testing never notices.
+
+      fixing it (destructive, this role never does it automatically; the full explanation is in
+      see "the sixth pitfall after a restore" in docs/pve-yoga-savepoint-workflow.md section 2.3):
+        run this inside the lagging unit ($H = the mon name above, usually the guest hostname):
+          H=<mon name>; D=/var/lib/ceph/mon/ceph-$H
+          sudo ceph mon getmap -o /tmp/monmap.bin
+          sudo install -o ceph -g ceph -m 600 $D/keyring    /tmp/mon.keyring
+          sudo install -o ceph -g ceph -m 600 $D/kv_backend /tmp/mon.kv_backend
+          sudo mv $D $D.broken-$(date +%Y%m%d)
+          sudo install -d -o ceph -g ceph -m 755 $D
+          sudo ceph-mon --mkfs -i $H --keyring /tmp/mon.keyring --monmap /tmp/monmap.bin
+          sudo install -o ceph -g ceph -m 600 /tmp/mon.keyring    $D/keyring
+          sudo install -o ceph -g ceph -m 600 /tmp/mon.kv_backend $D/kv_backend
+          sudo touch $D/done $D/systemd
+          sudo chown -R ceph:ceph $D
+          sudo systemctl reset-failed ceph-mon@$H.service
+          sudo systemctl start ceph-mon@$H.service
+          sudo ceph -s | head -6
+          sudo ceph crash archive-all
+  when: pve_yoga_ceph_mon_summary is defined
+        and pve_yoga_ceph_mon_summary.quorum < pve_yoga_ceph_mon_summary.total

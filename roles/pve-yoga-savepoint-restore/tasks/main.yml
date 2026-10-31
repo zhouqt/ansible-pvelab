@@ -125,6 +125,16 @@
     set -euo pipefail
     origin="{{ item }}"
     base="{{ pve_yoga_savepoint_prefix }}-osd{{ idx }}"
+    dev=$(readlink -f "/dev/pve-thin-pool/$origin")
+    for holder in /sys/block/"$(basename "$dev")"/holders/*; do
+      [ -e "$holder" ] || continue
+      hname=$(basename "$holder")
+      dmname=$(cat "/sys/block/$hname/dm/name")
+      echo "RESTORE-OSD-DM-REMOVE $origin dm=$dmname"
+      dmsetup remove "$dmname" || { echo "RESTORE-FAIL cannot remove dm device $dmname of $origin" >&2; exit 1; }
+    done
+    leftover=$(ls /sys/block/"$(basename "$dev")"/holders 2>/dev/null | tr '\n' ' ')
+    [ -z "$leftover" ] || { echo "RESTORE-FAIL $origin is still held by dm devices: $leftover" >&2; exit 1; }
     lvremove --yes "pve-thin-pool/$origin"
     lvcreate --yes --snapshot --name "$origin" "pve-thin-pool/$base"
     lvchange -ay -K "pve-thin-pool/$origin"

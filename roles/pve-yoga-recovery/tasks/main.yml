@@ -83,6 +83,9 @@
       - "{{ pve_yoga_juju_cmd }} wait-for application ceph-osd --timeout 30m -m {{ pve_yoga_model }}"
   changed_when: false
 
+- name: Check the Ceph monitor quorum and report daemons that dropped out
+  ansible.builtin.include_tasks: ceph-mon-check.yml
+
 - name: Repair the cinder-ceph keyring the co-located nova-compute clobbers
   ansible.builtin.include_role:
     name: pve-yoga-cinder-keyring
