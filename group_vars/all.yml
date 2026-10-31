@@ -644,7 +644,8 @@ pve_obs_hub_vip: "{{ pve_obs_hub_lb_pool_addresses[0] | regex_replace('/.*$', ''
 pve_obs_hub_http_proxy: "http://192.168.11.1:12345"
 pve_obs_hub_k8s_service_cidr: "10.152.183.0/24"
 pve_obs_hub_k8s_api_ip: "10.152.183.1"
-pve_obs_hub_no_proxy: "127.0.0.1,localhost,::1,{{ pve_obs_hub_k8s_api_ip }},{{ pve_obs_hub_k8s_service_cidr }},192.168.0.0/16,10.0.0.0/8"
+pve_obs_hub_k8s_cluster_domain: "cluster.local"
+pve_obs_hub_no_proxy: "127.0.0.1,localhost,::1,{{ pve_obs_hub_k8s_api_ip }},{{ pve_obs_hub_k8s_service_cidr }},192.168.0.0/16,10.0.0.0/8,.{{ pve_obs_hub_k8s_cluster_domain }},{{ pve_obs_hub_vip }}"
 pve_obs_hub_cos_model: cos-lite
 pve_obs_hub_cos_model_ref: "{{ pve_obs_hub_cos_controller }}:admin/{{ pve_obs_hub_cos_model }}"
 pve_obs_hub_bundle: "{{ playbook_dir }}/bundles/cos-lite-hub.yaml"
