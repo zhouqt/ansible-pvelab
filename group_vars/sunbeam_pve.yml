@@ -91,6 +91,7 @@ sunbeam_proxy_enabled: false
 sunbeam_proxy_allow_unreachable: false
 sunbeam_proxy_url: http://192.168.11.2:12345
 sunbeam_snapd_store_proxy_url: http://192.168.11.1:12345
+sunbeam_containerd_registry_proxy_url: http://192.168.11.1:12345
 sunbeam_proxy_no_proxy_tail:
   - 10.1.0.0/16
   - 10.140.97.0/24

@@ -1,0 +1,7 @@
+[Service]
+Environment=HTTP_PROXY={{ sunbeam_containerd_registry_proxy_url }}
+Environment=HTTPS_PROXY={{ sunbeam_containerd_registry_proxy_url }}
+Environment=http_proxy={{ sunbeam_containerd_registry_proxy_url }}
+Environment=https_proxy={{ sunbeam_containerd_registry_proxy_url }}
+Environment=NO_PROXY={{ sunbeam_proxy_no_proxy_effective }}
+Environment=no_proxy={{ sunbeam_proxy_no_proxy_effective }}

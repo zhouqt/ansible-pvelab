@@ -53,6 +53,8 @@ sunbeam_proxy_allow_unreachable: false
 
 sunbeam_snapd_store_proxy_url: ""
 
+sunbeam_containerd_registry_proxy_url: ""
+
 sunbeam_thinpool_max_data_percent: 90
 sunbeam_ct_rootfs_warn_percent: 85
 
@@ -80,7 +82,7 @@ sunbeam_restore_first_window: 60
 sunbeam_savepoint_run_verify: true
 sunbeam_restore_juju_recovery_rounds: 10
 sunbeam_restore_juju_recovery_delay: 20
-sunbeam_restore_settle_timeout: 300
+sunbeam_restore_settle_timeout: 600
 sunbeam_restore_gateway_timeout: 360
 sunbeam_restore_gateway_poll_interval: 10
 

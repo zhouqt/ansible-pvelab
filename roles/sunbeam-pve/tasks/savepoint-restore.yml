@@ -475,6 +475,9 @@
 - name: Restore snapd's store proxy (rolled back with the rootfs)
   ansible.builtin.include_tasks: _snapd_store_proxy.yml
 
+- name: Restore containerd's registry proxy (rolled back with the rootfs)
+  ansible.builtin.include_tasks: _containerd_registry_proxy.yml
+
 - name: Build post-restore Juju and gateway reconciliation inputs
   ansible.builtin.set_fact:
     sunbeam_restore_reconcile_config:

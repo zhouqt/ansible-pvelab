@@ -246,6 +246,9 @@
     fail_msg: >-
       Tenant network {{ sunbeam_tenant_network_name }} was not found in OpenStack (demo setup incomplete?).
 
+- name: Point containerd's image pulls at the registry proxy
+  ansible.builtin.include_tasks: _containerd_registry_proxy.yml
+
 - name: Report deployment configuration result
   ansible.builtin.debug:
     msg: >-
