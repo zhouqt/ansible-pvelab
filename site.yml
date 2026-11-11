@@ -334,8 +334,6 @@
       shell: |
         bash -c 'source {{ k8s_openstack_rc }} >/dev/null 2>&1 && \
           openstack quota set {{ admin_project_id.stdout }} \
-            --secgroups {{ os_quota_secgroups | default(50) }} \
-            --secgroup-rules {{ os_quota_secgroup_rules | default(500) }} \
             --instances {{ os_quota_instances | default(30) }} \
             --cores {{ os_quota_cores | default(40) }} \
             --ram {{ os_quota_ram | default(102400) }}'
@@ -343,12 +341,26 @@
 
     - name: Increase network quotas for K8s deployment
       shell: |
-        bash -c 'source {{ k8s_openstack_rc }} >/dev/null 2>&1 && \
-          openstack quota set {{ admin_project_id.stdout }} \
-            --floating-ips {{ os_quota_floating_ips | default(50) }} \
-            --ports {{ os_quota_ports | default(200) }}'
+        set -o pipefail
+        source {{ k8s_openstack_rc }} >/dev/null 2>&1
+        TOKEN=$(openstack token issue -f value -c id)
+        NEUTRON=$(openstack endpoint list --service network --interface public -f value -c URL)
+        REQ=(curl -sS -f -X PUT "$NEUTRON/quotas/{{ admin_project_id.stdout }}"
+             -H "X-Auth-Token: $TOKEN" -H "Content-Type: application/json")
+        [ -n "${OS_CACERT:-}" ] && REQ+=(--cacert "$OS_CACERT")
+        "${REQ[@]}" -d '{"quota": {"security_group": {{ os_quota_secgroups | default(50) }}, "security_group_rule": {{ os_quota_secgroup_rules | default(500) }}, "floatingip": {{ os_quota_floating_ips | default(50) }}, "port": {{ os_quota_ports | default(200) }}}}'
+      register: k8s_network_quota_set
       changed_when: false
-      ignore_errors: true
+      failed_when: false
+
+    - name: Warn when the network quotas could not be raised
+      debug:
+        msg: >-
+          WARNING: could not update neutron quotas (rc={{ k8s_network_quota_set.rc }}):
+          {{ k8s_network_quota_set.stderr | default('') | trim }}.
+          Juju creates one security group per machine, so a low secgroups quota
+          makes provisioning fail with "failed to create a security group".
+      when: k8s_network_quota_set.rc | default(0) != 0
 
 - name: Add LXD OpenStack Cloud to Juju and Bootstrap K8s Controller
   hosts: localhost

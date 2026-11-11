@@ -99,19 +99,38 @@
   register: admin_project_id
   changed_when: false
 
-- name: Increase OpenStack quotas for K8s deployment
+- name: Increase compute quotas for K8s deployment
   shell: |
     bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && \
       openstack quota set \
-        --secgroups {{ os_quota_secgroups }} \
-        --secgroup-rules {{ os_quota_secgroup_rules }} \
         --instances {{ os_quota_instances }} \
         --cores {{ os_quota_cores }} \
         --ram {{ os_quota_ram }} \
-        --floating-ips {{ os_quota_floating_ips }} \
-        --ports {{ os_quota_ports }} \
         {{ admin_project_id.stdout }}'
   changed_when: true
+
+- name: Increase network quotas for K8s deployment
+  shell: |
+    set -o pipefail
+    source {{ openstack_rc_file }} >/dev/null 2>&1
+    TOKEN=$(openstack token issue -f value -c id)
+    NEUTRON=$(openstack endpoint list --service network --interface public -f value -c URL)
+    REQ=(curl -sS -f -X PUT "$NEUTRON/quotas/{{ admin_project_id.stdout }}"
+         -H "X-Auth-Token: $TOKEN" -H "Content-Type: application/json")
+    [ -n "${OS_CACERT:-}" ] && REQ+=(--cacert "$OS_CACERT")
+    "${REQ[@]}" -d '{"quota": {"security_group": {{ os_quota_secgroups }}, "security_group_rule": {{ os_quota_secgroup_rules }}, "floatingip": {{ os_quota_floating_ips }}, "port": {{ os_quota_ports }}}}'
+  register: os_network_quota_set
+  changed_when: true
+  failed_when: false
+
+- name: Warn when the network quotas could not be raised
+  debug:
+    msg: >-
+      WARNING: could not update neutron quotas (rc={{ os_network_quota_set.rc }}):
+      {{ os_network_quota_set.stderr | default('') | trim }}.
+      Juju creates one security group per machine, so a low secgroups quota makes
+      provisioning fail with "failed to create a security group".
+  when: os_network_quota_set.rc | default(0) != 0
 
 - name: Configure nova-compute allocation ratios
   shell: |
