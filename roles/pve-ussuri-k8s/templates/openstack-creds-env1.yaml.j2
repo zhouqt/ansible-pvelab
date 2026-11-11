@@ -1,0 +1,9 @@
+credentials:
+  {{ pve_ussuri_k8s_cloud_name }}:
+    {{ pve_ussuri_k8s_credential_name }}:
+      auth-type: userpass
+      username: {{ pve_ussuri_k8s_admin_username | to_json }}
+      password: {{ pve_ussuri_k8s_admin_password | to_json }}
+      user-domain-name: {{ pve_ussuri_k8s_admin_domain | to_json }}
+      tenant-name: {{ pve_ussuri_k8s_admin_project | to_json }}
+      project-domain-name: {{ pve_ussuri_k8s_admin_domain | to_json }}

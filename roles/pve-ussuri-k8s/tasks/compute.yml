@@ -1,0 +1,262 @@
+---
+
+- name: Check the k8s aggregate in OpenStack
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ pve_ussuri_k8s_openstack_wrapper }}"
+      - openstack
+      - aggregate
+      - show
+      - "{{ pve_ussuri_k8s_aggregate }}"
+      - -f
+      - json
+  delegate_to: localhost
+  register: pve_ussuri_k8s_aggregate_show
+  changed_when: false
+  failed_when: false
+
+- name: Create the k8s aggregate
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ pve_ussuri_k8s_openstack_wrapper }}"
+      - openstack
+      - aggregate
+      - create
+      - "{{ pve_ussuri_k8s_aggregate }}"
+      - --zone
+      - "{{ pve_ussuri_k8s_aggregate }}"
+  delegate_to: localhost
+  when: pve_ussuri_k8s_aggregate_show.rc != 0
+  changed_when: true
+
+- name: Read the k8s aggregate
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ pve_ussuri_k8s_openstack_wrapper }}"
+      - openstack
+      - aggregate
+      - show
+      - "{{ pve_ussuri_k8s_aggregate }}"
+      - -f
+      - json
+  delegate_to: localhost
+  register: pve_ussuri_k8s_aggregate
+  changed_when: false
+
+- name: Require the aggregate to carry the zone
+  ansible.builtin.assert:
+    that:
+      - (pve_ussuri_k8s_aggregate.stdout | from_json).availability_zone == pve_ussuri_k8s_aggregate
+    fail_msg: >-
+      Aggregate {{ pve_ussuri_k8s_aggregate }} exists with availability zone
+      {{ (pve_ussuri_k8s_aggregate.stdout | from_json).availability_zone }}; the
+      k8s constraints use zones={{ pve_ussuri_k8s_aggregate }} and would never match.
+      Delete and recreate the aggregate with `--zone {{ pve_ussuri_k8s_aggregate }}`.
+
+- name: Add the k8s compute host to the aggregate
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ pve_ussuri_k8s_openstack_wrapper }}"
+      - openstack
+      - aggregate
+      - add
+      - host
+      - "{{ pve_ussuri_k8s_aggregate }}"
+      - "{{ pve_ussuri_k8s_hostname }}"
+  delegate_to: localhost
+  when: >-
+    ((pve_ussuri_k8s_aggregate.stdout | from_json).hosts | default([]))
+    is not contains pve_ussuri_k8s_hostname
+  changed_when: true
+
+- name: Install the Juju status query helper on the PVE host
+  ansible.builtin.copy:
+    src: juju_status_query.py
+    dest: /root/pve-ussuri-k8s-juju-status-query.py
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Read the env status from the Juju 2.9 client
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
+      "{{ pve_ussuri_k8s_juju29_bin }} status -m {{ pve_ussuri_k8s_openstack_controller }}:{{ pve_ussuri_k8s_openstack_model }} --format json 2>&1 | cat" \
+      > /tmp/pve-ussuri-k8s-env-status.json
+    grep -q "\"{{ pve_ussuri_k8s_compute_app }}\": {" /tmp/pve-ussuri-k8s-env-status.json \
+      && echo APP-OK || echo APP-MISSING
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_k8s_env_app
+  changed_when: false
+
+- name: Require the compute application to be deployed in the env model
+  ansible.builtin.assert:
+    that:
+      - "'APP-OK' in pve_ussuri_k8s_env_app.stdout"
+    fail_msg: >-
+      Application {{ pve_ussuri_k8s_compute_app }} is not in
+      {{ pve_ussuri_k8s_openstack_controller }}:{{ pve_ussuri_k8s_openstack_model }};
+      this stage only adds a unit to an application that already exists.
+
+- name: Find the Juju machine that already is {{ pve_ussuri_k8s_ip }}
+  ansible.builtin.shell: |
+    set -euo pipefail
+    python3 /root/pve-ussuri-k8s-juju-status-query.py machine-ip --ip {{ pve_ussuri_k8s_ip }} \
+      < /tmp/pve-ussuri-k8s-env-status.json
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_k8s_machine_probe
+  changed_when: false
+
+- name: Drop stale host keys of the container from the client's known_hosts
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
+      "touch ~/.ssh/known_hosts && ssh-keygen -R {{ pve_ussuri_k8s_ip }} -f ~/.ssh/known_hosts >/dev/null 2>&1 || true"
+    echo "KNOWN-HOSTS-CLEANED"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when: "'MACHINE NONE' in pve_ussuri_k8s_machine_probe.stdout"
+
+- name: Authorize the container's current host key in the client's known_hosts
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
+      "ssh-keyscan -T 10 {{ pve_ussuri_k8s_ip }} 2>/dev/null | tee -a ~/.ssh/known_hosts >/dev/null"
+    echo "KNOWN-HOSTS-SEEDED"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when: "'MACHINE NONE' in pve_ussuri_k8s_machine_probe.stdout"
+
+- name: Add the container as a Juju machine
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
+      "{{ pve_ussuri_k8s_juju29_bin }} add-machine -m {{ pve_ussuri_k8s_openstack_controller }}:{{ pve_ussuri_k8s_openstack_model }} ssh:{{ pve_ussuri_k8s_juju_client_user }}@{{ pve_ussuri_k8s_ip }} --series {{ pve_ussuri_k8s_compute_series }} 2>&1 | cat"
+  args:
+    executable: /bin/bash
+  when: "'MACHINE NONE' in pve_ussuri_k8s_machine_probe.stdout"
+  changed_when: true
+
+- name: Wait for the new machine to appear in the env status
+  ansible.builtin.shell: |
+    set -euo pipefail
+    for attempt in $(seq 1 30); do
+      pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
+        "{{ pve_ussuri_k8s_juju29_bin }} status -m {{ pve_ussuri_k8s_openstack_controller }}:{{ pve_ussuri_k8s_openstack_model }} --format json 2>&1 | cat" \
+        > /tmp/pve-ussuri-k8s-env-status.json
+      verdict="$(python3 /root/pve-ussuri-k8s-juju-status-query.py machine-ip --ip {{ pve_ussuri_k8s_ip }} \
+        < /tmp/pve-ussuri-k8s-env-status.json)"
+      case "$verdict" in
+        MACHINE\ NONE) sleep 10 ;;
+        *) echo "$verdict"; exit 0 ;;
+      esac
+    done
+    echo "MACHINE NONE"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_k8s_machine_after
+  changed_when: false
+  when: "'MACHINE NONE' in pve_ussuri_k8s_machine_probe.stdout"
+
+- name: Resolve the machine id
+  ansible.builtin.set_fact:
+    pve_ussuri_k8s_machine_id: >-
+      {{ (pve_ussuri_k8s_machine_after.stdout | default(pve_ussuri_k8s_machine_probe.stdout))
+         | regex_replace('^MACHINE\s+', '') | trim }}
+
+- name: Require the Juju machine id to be known
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_k8s_machine_id is match('^\d+$')
+    fail_msg: >-
+      No Juju machine in {{ pve_ussuri_k8s_openstack_controller }}:{{ pve_ussuri_k8s_openstack_model }}
+      answers to {{ pve_ussuri_k8s_ip }} after `juju add-machine ssh:`; check
+      `juju debug-log --include-machine <n>` and the CT 1000 key on the container.
+
+- name: Check whether the compute application has a unit on machine {{ pve_ussuri_k8s_machine_id }}
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
+      "{{ pve_ussuri_k8s_juju29_bin }} status -m {{ pve_ussuri_k8s_openstack_controller }}:{{ pve_ussuri_k8s_openstack_model }} --format json 2>&1 | cat" \
+      > /tmp/pve-ussuri-k8s-env-status.json
+    python3 /root/pve-ussuri-k8s-juju-status-query.py unit-on \
+      --app {{ pve_ussuri_k8s_compute_app }} --machine {{ pve_ussuri_k8s_machine_id }} \
+      < /tmp/pve-ussuri-k8s-env-status.json
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_k8s_unit_probe
+  changed_when: false
+
+- name: Add a compute unit on the container
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
+      "{{ pve_ussuri_k8s_juju29_bin }} add-unit -m {{ pve_ussuri_k8s_openstack_controller }}:{{ pve_ussuri_k8s_openstack_model }} {{ pve_ussuri_k8s_compute_app }} --to {{ pve_ussuri_k8s_machine_id }} 2>&1 | cat"
+  args:
+    executable: /bin/bash
+  when: "'NOUNIT' in pve_ussuri_k8s_unit_probe.stdout"
+  changed_when: true
+
+- name: Wait for the compute unit on the container to become active
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
+      "{{ pve_ussuri_k8s_juju29_bin }} status -m {{ pve_ussuri_k8s_openstack_controller }}:{{ pve_ussuri_k8s_openstack_model }} --format json 2>&1 | cat" \
+      > /tmp/pve-ussuri-k8s-env-status.json
+    python3 /root/pve-ussuri-k8s-juju-status-query.py unit-on \
+      --app {{ pve_ussuri_k8s_compute_app }} --machine {{ pve_ussuri_k8s_machine_id }} \
+      < /tmp/pve-ussuri-k8s-env-status.json
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_k8s_unit_state
+  until: "'ACTIVE' in (pve_ussuri_k8s_unit_state.stdout | default(''))"
+  retries: "{{ pve_ussuri_k8s_wait_unit_active_retries }}"
+  delay: "{{ pve_ussuri_k8s_wait_unit_active_delay }}"
+  changed_when: false
+  failed_when: false
+
+- name: Require the compute unit on the container to be active
+  ansible.builtin.assert:
+    that:
+      - "'ACTIVE' in (pve_ussuri_k8s_unit_state.stdout | default(''))"
+    fail_msg: >-
+      {{ pve_ussuri_k8s_compute_app }} on machine {{ pve_ussuri_k8s_machine_id }}
+      ({{ pve_ussuri_k8s_ip }}) is not active after the wait budget:
+      {{ pve_ussuri_k8s_unit_state.stdout | default('') }}
+      Inspect `juju status -m {{ pve_ussuri_k8s_openstack_controller }}:{{ pve_ussuri_k8s_openstack_model }}`
+      (the app and its `ovn-chassis` subordinate) and
+      `juju debug-log --include {{ pve_ussuri_k8s_compute_app }}`. A compute that
+      cannot open /dev/kvm is the most common cause; re-run
+      --tags pve-ussuri-k8s-ct to re-verify the device pass-through.
+
+- name: Check the hypervisor registered by the new compute
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ pve_ussuri_k8s_openstack_wrapper }}"
+      - openstack
+      - hypervisor
+      - show
+      - "{{ pve_ussuri_k8s_hostname }}"
+      - -f
+      - json
+  delegate_to: localhost
+  register: pve_ussuri_k8s_hypervisor
+  failed_when: false
+  changed_when: false
+
+- name: Report the hypervisor state
+  ansible.builtin.debug:
+    msg: >-
+      hypervisor {{ pve_ussuri_k8s_hostname }}:
+      {{ 'not yet registered (the compute updates nova on its next hook)' if pve_ussuri_k8s_hypervisor.rc != 0
+         else ((pve_ussuri_k8s_hypervisor.stdout | from_json).state | default('?')
+               ~ ' / ' ~ ((pve_ussuri_k8s_hypervisor.stdout | from_json).status | default('?'))) }}

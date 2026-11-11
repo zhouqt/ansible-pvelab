@@ -1,0 +1,105 @@
+---
+
+pve_ussuri_k8s_run_ct: false
+pve_ussuri_k8s_run_compute: false
+pve_ussuri_k8s_run_metadata_patch: false
+pve_ussuri_k8s_run_client_cloud: false
+pve_ussuri_k8s_run_bootstrap: false
+pve_ussuri_k8s_run_deploy: false
+
+pve_ussuri_k8s_vmid: 1110
+pve_ussuri_k8s_hostname: os9
+pve_ussuri_k8s_ip_octet: "{{ pve_ussuri_k8s_vmid | int - 1000 }}"
+pve_ussuri_k8s_public_prefix: "192.168.11"
+pve_ussuri_k8s_public_gateway: "192.168.11.1"
+pve_ussuri_k8s_nets:
+  - name: eth0
+    bridge: pub11
+    ip: "{{ pve_ussuri_k8s_public_prefix }}.{{ pve_ussuri_k8s_ip_octet }}/24"
+    gw: "{{ pve_ussuri_k8s_public_gateway }}"
+  - name: eth1
+    bridge: pub12
+    ip: "192.168.12.{{ pve_ussuri_k8s_ip_octet }}/24"
+  - name: eth2
+    bridge: int13
+    ip: "192.168.13.{{ pve_ussuri_k8s_ip_octet }}/24"
+  - name: eth3
+    bridge: int14
+    ip: "192.168.14.{{ pve_ussuri_k8s_ip_octet }}/24"
+  - name: ens22
+    bridge: pub11
+    ip: manual
+pve_ussuri_k8s_ip: "{{ pve_ussuri_k8s_public_prefix }}.{{ pve_ussuri_k8s_ip_octet }}"
+pve_ussuri_k8s_cores: 8
+pve_ussuri_k8s_memory: 24576
+pve_ussuri_k8s_rootfs_size: 128
+pve_ussuri_k8s_features: "nesting=1,fuse=1"
+pve_ussuri_k8s_template: "{{ pve_focal_template }}"
+pve_ussuri_k8s_storage: "{{ pve_storage }}"
+pve_ussuri_k8s_nameserver: 8.8.8.8
+pve_ussuri_k8s_tags: "juju,openstack"
+pve_ussuri_k8s_apt_mirror: "{{ apt_mirror }}"
+
+pve_ussuri_k8s_juju_client_vmid: "{{ pve_juju_client_vmid }}"
+pve_ussuri_k8s_juju_client_user: "{{ pve_juju_client_user }}"
+pve_ussuri_k8s_juju_data: "/home/{{ pve_ussuri_k8s_juju_client_user }}/.local/share/juju"
+pve_ussuri_k8s_juju29_bin: "/snap/bin/juju"
+pve_ussuri_k8s_juju36_bin: "/snap/bin/juju_yoga"
+pve_ussuri_k8s_stage_dir: "/home/{{ pve_ussuri_k8s_juju_client_user }}/ussuri-k8s"
+
+pve_ussuri_k8s_openstack_controller: "{{ pve_juju_controller_name }}"
+pve_ussuri_k8s_openstack_model: openstack
+pve_ussuri_k8s_compute_app: nova-compute-kvm
+pve_ussuri_k8s_compute_series: focal
+pve_ussuri_k8s_aggregate: k8s-az
+pve_ussuri_k8s_wait_unit_active_retries: 120
+pve_ussuri_k8s_wait_unit_active_delay: 15
+
+pve_ussuri_k8s_openstack_wrapper: "{{ playbook_dir }}/openstack-wrapper.sh"
+pve_ussuri_k8s_image_name: ubuntu-jammy
+pve_ussuri_k8s_image_id: ""
+pve_ussuri_k8s_secgroup_quota: 10
+pve_ussuri_k8s_cleanup_stale_secgroups: false
+
+pve_ussuri_k8s_cloud_name: openstack
+pve_ussuri_k8s_region: "{{ openstack_region }}"
+pve_ussuri_k8s_keystone_url: "https://192.168.11.101:5000/v3"
+pve_ussuri_k8s_admin_domain: admin_domain
+pve_ussuri_k8s_admin_project: admin
+pve_ussuri_k8s_admin_username: admin
+pve_ussuri_k8s_credential_name: admin
+pve_ussuri_k8s_admin_password_file: "{{ playbook_dir }}/credentials/pve-openstack-keystone-admin-password.txt"
+pve_ussuri_k8s_vault_ca_file: "{{ playbook_dir }}/credentials/vault-ca-pve-openstack.crt"
+pve_ussuri_k8s_update_credential: false
+
+pve_ussuri_k8s_controller_name: os-k8s-controller
+pve_ussuri_k8s_bootstrap_base: "ubuntu@22.04"
+pve_ussuri_k8s_bootstrap_constraints: >-
+  cores=2 mem=4096 root-disk=20G allocate-public-ip=true arch=amd64
+  zones={{ pve_ussuri_k8s_aggregate }}
+pve_ussuri_k8s_model_defaults:
+  - network=tenant-net
+  - external-network=ext-net
+  - use-default-secgroup=true
+  - image-metadata-defaults-disabled=true
+pve_ussuri_k8s_bootstrap_timeout: 1800
+pve_ussuri_k8s_unregister_on_failure: false
+pve_ussuri_k8s_model_name: k8s-132
+pve_ussuri_k8s_model_constraints: "zones={{ pve_ussuri_k8s_aggregate }}"
+pve_ussuri_k8s_bundle: charmed-kubernetes
+pve_ussuri_k8s_channel: "{{ k8s_channel }}"
+pve_ussuri_k8s_overlay_src: "{{ playbook_dir }}/bundles/charmed-k8s-ussuri-overlay.yaml"
+pve_ussuri_k8s_overlay_name: k8s-ussuri-overlay.yaml
+pve_ussuri_k8s_deploy_timeout: 3600
+
+pve_ussuri_k8s_expected_apps:
+  - calico
+  - containerd
+  - easyrsa
+  - etcd
+  - kubeapi-load-balancer
+  - kubernetes-control-plane
+  - kubernetes-worker
+pve_ussuri_k8s_wait_retries: 160
+pve_ussuri_k8s_wait_delay: 30
+pve_ussuri_k8s_expected_ready_nodes: 2

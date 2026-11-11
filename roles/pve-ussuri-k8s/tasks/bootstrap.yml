@@ -1,0 +1,126 @@
+---
+
+- name: Require the OVN metadata agent patch inside the compute container
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ pve_ussuri_k8s_vmid }} -- grep -q 'Only IPv4' \
+      /usr/lib/python3/dist-packages/neutron/agent/ovn/metadata/agent.py \
+      && echo PATCH-OK || echo PATCH-MISSING
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_k8s_bootstrap_patch
+  changed_when: false
+
+- name: Refuse to bootstrap without the metadata patch
+  ansible.builtin.assert:
+    that:
+      - "'PATCH-OK' in pve_ussuri_k8s_bootstrap_patch.stdout"
+    fail_msg: >-
+      CT {{ pve_ussuri_k8s_vmid }} still runs the stock OVN metadata agent. The
+      bootstrap VM would get no metadata, no sshd, and the bootstrap would hang
+      on "Attempting to connect to <fip>:22". Run
+      --tags pve-ussuri-k8s-metadata-patch first.
+
+- name: Look up the jammy image id in Glance
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ pve_ussuri_k8s_openstack_wrapper }}"
+      - openstack
+      - image
+      - show
+      - "{{ pve_ussuri_k8s_image_name }}"
+      - -f
+      - value
+      - -c
+      - id
+  delegate_to: localhost
+  register: pve_ussuri_k8s_image_lookup
+  changed_when: false
+  when: pve_ussuri_k8s_image_id | length == 0
+
+- name: Resolve the bootstrap image id
+  ansible.builtin.set_fact:
+    pve_ussuri_k8s_resolved_image_id: >-
+      {{ pve_ussuri_k8s_image_id if pve_ussuri_k8s_image_id | length > 0
+         else (pve_ussuri_k8s_image_lookup.stdout | default('') | trim) }}
+
+- name: Require a usable bootstrap image
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_k8s_resolved_image_id is match('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+    fail_msg: >-
+      No ``{{ pve_ussuri_k8s_image_name }}`` image found in Glance
+      (got ``{{ pve_ussuri_k8s_resolved_image_id }}``); the env's resources stage
+      uploads it.
+
+- name: Check whether the Juju 3.6 controller is already registered
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
+      "{{ pve_ussuri_k8s_juju36_bin }} controllers 2>/dev/null | awk 'NR>1 {print \$1}' | grep -qx '{{ pve_ussuri_k8s_controller_name }}' && echo PRESENT || echo ABSENT"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_k8s_controller_probe
+  changed_when: false
+
+- name: Bootstrap the controller
+  block:
+    - name: Bootstrap os-k8s-controller on the env cloud
+      ansible.builtin.shell: |
+        set -euo pipefail
+        pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
+          "timeout {{ pve_ussuri_k8s_bootstrap_timeout }} {{ pve_ussuri_k8s_juju36_bin }} bootstrap \
+             {{ pve_ussuri_k8s_cloud_name }}/{{ pve_ussuri_k8s_region }} {{ pve_ussuri_k8s_controller_name }} \
+             --credential {{ pve_ussuri_k8s_credential_name }} \
+             --bootstrap-base {{ pve_ussuri_k8s_bootstrap_base }} \
+             --bootstrap-image {{ pve_ussuri_k8s_resolved_image_id }} \
+             --bootstrap-constraints '{{ pve_ussuri_k8s_bootstrap_constraints | regex_replace('\\s+', ' ') | trim }}' \
+             {% for default in pve_ussuri_k8s_model_defaults %}--model-default '{{ default }}' {% endfor %}2>&1 | cat"
+      args:
+        executable: /bin/bash
+      when: "'PRESENT' not in pve_ussuri_k8s_controller_probe.stdout"
+      register: pve_ussuri_k8s_bootstrap
+      changed_when: true
+  rescue:
+    - name: Unregister the failed controller
+      ansible.builtin.shell: |
+        set -euo pipefail
+        pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
+          "{{ pve_ussuri_k8s_juju36_bin }} unregister {{ pve_ussuri_k8s_controller_name }} --no-prompt 2>&1 | cat"
+      args:
+        executable: /bin/bash
+      when: pve_ussuri_k8s_unregister_on_failure | bool
+      changed_when: true
+      failed_when: false
+
+    - name: Report the bootstrap failure
+      ansible.builtin.fail:
+        msg: >-
+          juju_yoga bootstrap {{ pve_ussuri_k8s_controller_name }} failed
+          {{ '(the client registration was removed; a new attempt is possible)'
+             if pve_ussuri_k8s_unregister_on_failure | bool
+             else '(run `juju_yoga unregister ' ~ pve_ussuri_k8s_controller_name ~ ' --no-prompt` before retrying)' }}.
+          Last output:
+          {{ (pve_ussuri_k8s_bootstrap.stdout | default('')).splitlines()[-15:] | join('\n') }}
+          {{ (pve_ussuri_k8s_bootstrap.stderr | default('')).splitlines()[-15:] | join('\n') }}
+
+- name: Confirm the controller is registered with the Juju 3.6 client
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
+      "{{ pve_ussuri_k8s_juju36_bin }} controllers 2>&1 | cat"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_k8s_controllers
+  changed_when: false
+  failed_when: false
+
+- name: Require os-k8s-controller to be listed
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_k8s_controllers.stdout is search('(?m)^' ~ pve_ussuri_k8s_controller_name ~ '\s')
+    fail_msg: >-
+      {{ pve_ussuri_k8s_controller_name }} is not in `juju_yoga controllers`:
+      {{ pve_ussuri_k8s_controllers.stdout }}
+      {{ pve_ussuri_k8s_controllers.stderr | default('') }}

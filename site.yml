@@ -728,6 +728,12 @@
   tags: [never, openstack-pve-resources]
   roles: [pve-yoga-resources]
 
+- name: Deploy Charmed Kubernetes 1.32 on the env1 (focal/ussuri) PVE cloud
+  hosts: pve
+  become: false
+  tags: [never, pve-ussuri-k8s]
+  roles: [pve-ussuri-k8s]
+
 - name: Deploy the PVE observability hub (COS Lite on k8s snap)
   hosts: pve
   become: false
