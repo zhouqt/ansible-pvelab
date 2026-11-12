@@ -24,7 +24,7 @@
 
     - name: Apply or verify the container system UUIDs
       ansible.builtin.include_role:
-        name: pve-ct-system-uuid
+        name: pve-common-ct-uuid
       vars:
         pve_ct_system_uuid_items: "{{ pve_ct_uuid_items }}"
         pve_ct_system_uuid_print_registry: "{{ pve_ct_uuid_print_registry }}"

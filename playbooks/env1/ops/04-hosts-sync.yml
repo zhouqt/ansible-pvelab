@@ -3,7 +3,7 @@
   hosts: pve
   become: false
   tasks:
-    - name: Run the pve-machines hosts-sync task file
+    - name: Run the pve-env1-machines hosts-sync task file
       ansible.builtin.include_role:
-        name: pve-machines
+        name: pve-env1-machines
         tasks_from: hosts-sync

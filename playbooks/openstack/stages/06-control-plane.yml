@@ -4,4 +4,4 @@
   hosts: pve
   become: false
   tags: [never, openstack-pve-control-plane]
-  roles: [pve-yoga-control-plane]
+  roles: [pve-openstack-control-plane]

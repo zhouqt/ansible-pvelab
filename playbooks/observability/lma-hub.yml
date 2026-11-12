@@ -3,5 +3,5 @@
 - name: Deploy the PVE LMA hub (Juju 2.9 controller + bionic nagios)
   hosts: pve
   become: false
-  tags: [never, pve-lma-hub]
-  roles: [pve-lma-hub]
+  tags: [never, pve-obs-lma-hub]
+  roles: [pve-obs-lma-hub]

@@ -11,7 +11,7 @@ import unittest
 from unittest import mock
 import uuid
 
-FILES = pathlib.Path(__file__).resolve().parents[1] / "roles/pve-ct-system-uuid/files"
+FILES = pathlib.Path(__file__).resolve().parents[1] / "roles/pve-common-ct-uuid/files"
 
 def load(name):
     spec = importlib.util.spec_from_file_location(name, FILES / ("%s.py" % name))

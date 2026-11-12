@@ -4,4 +4,4 @@
   hosts: pve
   become: false
   tags: [never, openstack-pve-teardown]
-  roles: [pve-yoga-teardown]
+  roles: [pve-openstack-teardown]

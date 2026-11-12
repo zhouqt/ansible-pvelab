@@ -1,0 +1,139 @@
+---
+- name: Start from an empty work list
+  ansible.builtin.set_fact:
+    pve_ct_system_uuid_requested: []
+    pve_ct_system_uuid_targets: []
+    pve_ct_system_uuid_print_lines: []
+
+- name: Normalise the caller supplied container list
+  ansible.builtin.set_fact:
+    pve_ct_system_uuid_requested: >-
+      {{ pve_ct_system_uuid_requested
+         + [ (item | combine({'vmid': item.vmid | int})) if item is mapping
+             else {'vmid': item | int} ] }}
+  loop: "{{ pve_ct_system_uuid_items }}"
+  loop_control:
+    label: "{{ item.vmid | default(item) }}"
+
+- name: Fall back to every container in the registry
+  ansible.builtin.set_fact:
+    pve_ct_system_uuid_requested: >-
+      {{ pve_ct_system_uuid_requested + [ {'vmid': item.key | int} ] }}
+  loop: "{{ pve_ct_system_uuid_registry | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: pve_ct_system_uuid_items | length == 0
+
+- name: Refuse to run without any container to look at
+  ansible.builtin.assert:
+    that:
+      - pve_ct_system_uuid_requested | length > 0
+    fail_msg: >-
+      pve-common-ct-uuid needs pve_ct_system_uuid_items or a non-empty
+      pve_ct_system_uuid_registry.
+    quiet: true
+
+- name: Resolve the expected system UUID of every container
+  ansible.builtin.command:
+    argv: >-
+      {{ ['python3', role_path + '/files/patch_smbios_uuid.py', '--print', '--uuid',
+          item.get('system_uuid', '') or pve_ct_system_uuid_registry.get(item.vmid | string, '')]
+         | list
+         if (item.get('system_uuid', '') or pve_ct_system_uuid_registry.get(item.vmid | string, '')) | length > 0
+         else ['python3', role_path + '/files/patch_smbios_uuid.py', '--print', '--uuid-name',
+               pve_ct_system_uuid_namespace + ':' + (item.vmid | string)] }}
+  delegate_to: localhost
+  loop: "{{ pve_ct_system_uuid_requested }}"
+  loop_control:
+    label: "{{ item.vmid }}"
+  register: pve_ct_system_uuid_resolution
+  changed_when: false
+  check_mode: false
+
+- name: Index the resolved UUIDs by vmid
+  ansible.builtin.set_fact:
+    pve_ct_system_uuid_expected: >-
+      {{ dict(pve_ct_system_uuid_resolution.results
+              | map(attribute='item.vmid') | map('string')
+              | zip(pve_ct_system_uuid_resolution.results
+                    | map(attribute='stdout') | map('trim'))) }}
+
+- name: Assemble the effective container list and the printable table
+  ansible.builtin.set_fact:
+    pve_ct_system_uuid_targets: >-
+      {{ pve_ct_system_uuid_targets
+         + [ item | combine({'system_uuid': pve_ct_system_uuid_expected[item.vmid | string]}) ] }}
+    pve_ct_system_uuid_print_lines: >-
+      {{ pve_ct_system_uuid_print_lines
+         + [ '  "' + (item.vmid | string) + '": "'
+             + pve_ct_system_uuid_expected[item.vmid | string] + '"' ] }}
+  loop: "{{ pve_ct_system_uuid_requested }}"
+  loop_control:
+    label: "{{ item.vmid }}"
+
+- name: Look up the requested containers on this host
+  ansible.builtin.command: "pct status {{ item.vmid }}"
+  loop: "{{ pve_ct_system_uuid_targets }}"
+  loop_control:
+    label: "vmid {{ item.vmid }}"
+  register: pve_ct_system_uuid_presence
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: pve_ct_system_uuid_verify_only | bool
+
+- name: Drop registry entries without a container on this host
+  ansible.builtin.set_fact:
+    pve_ct_system_uuid_absent: >-
+      {{ pve_ct_system_uuid_presence.results | default([])
+         | selectattr('rc', 'ne', 0) | map(attribute='item.vmid') | map('int') | list }}
+  when: pve_ct_system_uuid_verify_only | bool
+
+- name: Keep only the containers that exist here
+  ansible.builtin.set_fact:
+    pve_ct_system_uuid_targets: >-
+      {{ pve_ct_system_uuid_targets
+         | rejectattr('vmid', 'in', pve_ct_system_uuid_absent | default([])) | list }}
+  when: pve_ct_system_uuid_verify_only | bool
+
+- name: Report registry entries that have no container on this host
+  ansible.builtin.debug:
+    msg: >-
+      read-only run: skipping vmid {{ pve_ct_system_uuid_absent | join(', ') }}
+      (recorded in the registry, no such container on this host).
+  when:
+    - pve_ct_system_uuid_verify_only | bool
+    - pve_ct_system_uuid_absent | default([]) | length > 0
+
+- name: Refuse to run when none of the requested containers is here
+  ansible.builtin.assert:
+    that:
+      - pve_ct_system_uuid_targets | length > 0
+    fail_msg: >-
+      pve-common-ct-uuid: none of the requested containers exists on this host
+      ({{ pve_ct_system_uuid_absent | default([]) | join(', ') }}).
+    quiet: true
+
+- name: Assert the UUIDs are well formed, reserved-free and unique
+  ansible.builtin.assert:
+    that:
+      - pve_ct_system_uuid_targets | length > 0
+      - >-
+        pve_ct_system_uuid_targets
+        | rejectattr('system_uuid', 'match', '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+        | list | length == 0
+      - >-
+        pve_ct_system_uuid_targets | map(attribute='system_uuid')
+        | select('in', ['00000000-0000-0000-0000-000000000000',
+                        'ffffffff-ffff-ffff-ffff-ffffffffffff'])
+        | list | length == 0
+      - >-
+        pve_ct_system_uuid_targets | map(attribute='system_uuid')
+        | unique | list | length == pve_ct_system_uuid_targets | length
+      - >-
+        pve_ct_system_uuid_registry.values() | map('lower') | unique | list | length
+        == pve_ct_system_uuid_registry | length
+    fail_msg: >-
+      pve-common-ct-uuid: expected a distinct, canonical UUID per container; got
+      {{ pve_ct_system_uuid_targets | map(attribute='system_uuid') | list }}
+    quiet: true

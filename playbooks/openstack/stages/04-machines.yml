@@ -4,4 +4,4 @@
   hosts: pve
   become: false
   tags: [never, openstack-pve-machines]
-  roles: [pve-yoga-machines]
+  roles: [pve-openstack-machines]

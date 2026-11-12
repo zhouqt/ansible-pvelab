@@ -4,4 +4,4 @@
   hosts: pve
   become: false
   tags: [never, openstack-pve-ceph]
-  roles: [pve-yoga-ceph]
+  roles: [pve-openstack-ceph]

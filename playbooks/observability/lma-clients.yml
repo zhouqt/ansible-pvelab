@@ -4,4 +4,4 @@
   hosts: pve
   become: false
   tags: [never, openstack-pve-lma-clients]
-  roles: [pve-yoga-lma-clients]
+  roles: [pve-obs-lma-clients]

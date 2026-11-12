@@ -8,5 +8,5 @@
   tasks:
     - name: Load the stage implementation
       ansible.builtin.include_role:
-        name: sunbeam-pve
+        name: pve-sunbeam
         tasks_from: verify.yml

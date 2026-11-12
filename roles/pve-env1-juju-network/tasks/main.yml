@@ -1,0 +1,457 @@
+---
+- name: Validate every topology guest has derived secondary network addresses
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_secondary_network_ips is mapping
+      - >-
+        ((pve_ussuri_secondary_network_ips.keys() | map('int') | list | sort)
+        == (pve_ussuri_workload_vmids | sort))
+    fail_msg: >-
+      pve_ussuri_secondary_network_ips must cover exactly every vmid in pve_ussuri_topology
+      (both come from the same table; a mismatch means the variables were overridden by hand).
+
+- name: Validate each workload secondary network address
+  ansible.builtin.assert:
+    that:
+      - item.value is mapping
+      - (item.value.keys() | list | sort) == ['internal', 'oam', 'storage']
+      - (item.value.oam.split('.') | last | int) == (item.key | int) - (pve_ussuri_ip_offset | int)
+      - (item.value.internal.split('.') | last | int) == (item.key | int) - (pve_ussuri_ip_offset | int)
+      - (item.value.storage.split('.') | last | int) == (item.key | int) - (pve_ussuri_ip_offset | int)
+      - (item.value.oam.split('.')[0:3] | join('.')) == (pve_juju_network_spaces[1].cidr.split('.')[0:3] | join('.'))
+      - (item.value.internal.split('.')[0:3] | join('.')) == (pve_juju_network_spaces[2].cidr.split('.')[0:3] | join('.'))
+      - (item.value.storage.split('.')[0:3] | join('.')) == (pve_juju_network_spaces[3].cidr.split('.')[0:3] | join('.'))
+    fail_msg: >-
+      the oam/internal/storage addresses of VMID {{ item.key }} do not follow "last octet = vmid -
+      {{ pve_ussuri_ip_offset }}" pattern, or they disagree with the subnets in pve_juju_network_spaces.
+  loop: "{{ pve_ussuri_secondary_network_ips | dict2items }}"
+  loop_control:
+    label: "VMID {{ item.key }}"
+
+- name: Require globally unique secondary network addresses
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pve_ussuri_secondary_network_ips.values() | map('dict2items') | flatten
+         | map(attribute='value') | list | unique | length) == (pve_ussuri_workload_vmids | length) * 3
+    fail_msg: "pve_ussuri_secondary_network_ips contains duplicate secondary network addresses."
+
+- name: Read OpenStack Juju model status before network configuration
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} status -m {{ pve_juju_controller_name }}:openstack --format json"
+  register: pve_network_status_before
+  changed_when: false
+
+- name: Require valid OpenStack Juju machine inventory before configuring spaces
+  ansible.builtin.assert:
+    that:
+      - pve_network_status_before.rc == 0
+      - "'machines' in (pve_network_status_before.stdout | from_json)"
+      - "'applications' in (pve_network_status_before.stdout | from_json)"
+    fail_msg: "cannot read the OpenStack Juju machines/applications; refusing to configure spaces from an incomplete inventory."
+
+- name: Build expected Juju machine mapping and addresses from the topology
+  ansible.builtin.set_fact:
+    pve_network_expected_vmids: "{{ pve_ussuri_workload_vmids | map('string') | list }}"
+    pve_network_machine_ids: >-
+      {{ dict((pve_ussuri_workload_vmids | map('string') | list)
+         | zip(range(0, pve_ussuri_workload_vmids | length) | map('string') | list)) }}
+    pve_network_public_ips_by_vmid: >-
+      {%- set ns = namespace(m={}) -%}
+      {%- for v in pve_ussuri_workload_vmids -%}
+      {%-   set ns.m = ns.m | combine({v | string: pve_juju_network_spaces[0].cidr
+             | regex_replace('\\.0/24$', '.' ~ ((v | int) - (pve_ussuri_ip_offset | int)))}) -%}
+      {%- endfor -%}
+      {{ ns.m }}
+
+- name: Verify Juju discovered every OpenStack workload guest secondary NIC address
+  ansible.builtin.assert:
+    that:
+      - pve_network_machine_ids[item] in (pve_network_status_before.stdout | from_json).machines
+      - >-
+        pve_network_public_ips_by_vmid[item] in (
+          (pve_network_status_before.stdout | from_json).machines[
+            pve_network_machine_ids[item]
+          ].get('ip-addresses', []) + [
+            (pve_network_status_before.stdout | from_json).machines[
+              pve_network_machine_ids[item]
+            ].get('dns-name', '')
+          ]
+        )
+      - >-
+        (pve_ussuri_secondary_network_ips[item].values() | list
+        | difference(
+          (pve_network_status_before.stdout | from_json).machines[
+            pve_network_machine_ids[item]
+          ].get('ip-addresses', []) + [
+            (pve_network_status_before.stdout | from_json).machines[
+              pve_network_machine_ids[item]
+            ].get('dns-name', '')
+          ]
+        ) | length) == 0
+    fail_msg: >-
+      Juju machine {{ pve_network_machine_ids[item] }} (PVE VMID {{ item }}) has not discovered
+      all configured oam/internal/storage addresses. Configure all NICs before registering manual
+      machines; refusing to create or move spaces against incomplete machine network data.
+  loop: "{{ pve_network_expected_vmids }}"
+  loop_control:
+    label: "VMID {{ item }} → Juju machine {{ pve_network_machine_ids[item] }}"
+
+- name: Read OpenStack Juju subnet inventory before space changes
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} subnets -m {{ pve_juju_controller_name }}:openstack --format json"
+  register: pve_network_subnets_before
+  changed_when: false
+
+- name: Require the OpenStack model to hold exactly the topology machines
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((pve_network_status_before.stdout | from_json).machines | default({})
+          | dict2items | map(attribute='key') | map('int') | list | sort)
+        == (range(0, pve_ussuri_workload_vmids | length) | list)
+    fail_msg: >-
+      OpenStack Juju machines must be exactly 0..{{ (pve_ussuri_workload_vmids | length) - 1 }}
+      (one per pve_ussuri_topology entry). Complete the pve-env1-machines registration stage first.
+
+- name: Require every intended subnet to be discovered by Juju
+  ansible.builtin.assert:
+    that:
+      - pve_network_subnets_before.rc == 0
+      - "'subnets' in (pve_network_subnets_before.stdout | from_json)"
+      - >-
+        (pve_juju_network_spaces | map(attribute='cidr') | difference(
+          (pve_network_subnets_before.stdout | from_json).subnets.keys() | list
+        ) | length) == 0
+    fail_msg: >-
+      Juju has not discovered every required subnet from registered manual machines. Spaces must
+      only be configured after machines report their NICs; refusing to guess missing subnet data.
+
+- name: Require Juju subnet inventory uses the expected CIDRs only
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pve_network_subnets_before.stdout | from_json).subnets.keys() | list | sort
+        == (pve_juju_network_spaces | map(attribute='cidr') | list | sort)
+    fail_msg: >-
+      Juju subnet inventory contains missing or unexpected CIDRs. Refusing to reassign any
+      non-declared subnet into OpenStack spaces.
+
+- name: Read existing OpenStack Juju spaces
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} spaces -m {{ pve_juju_controller_name }}:openstack --format json"
+  register: pve_network_spaces_before
+  changed_when: false
+
+- name: Require a valid OpenStack Juju space inventory
+  ansible.builtin.assert:
+    that:
+      - pve_network_spaces_before.rc == 0
+      - "'spaces' in (pve_network_spaces_before.stdout | from_json)"
+    fail_msg: "cannot read the Juju spaces of the OpenStack model; refusing to configure the network while the state is unknown."
+
+- name: Reject duplicate or conflicting existing Juju spaces
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((pve_network_spaces_before.stdout | from_json).spaces
+          | selectattr('name', 'equalto', item.name) | list | length) <= 1
+      - >-
+        (((pve_network_spaces_before.stdout | from_json).spaces
+          | selectattr('name', 'equalto', item.name)
+          | map(attribute='subnets') | map('default', {}) | map('dict2items')
+          | flatten | map(attribute='key') | list)
+          | difference(
+              pve_juju_network_spaces | map(attribute='cidr') | list
+              if item.name == pve_juju_public_native_space else [item.cidr]
+            ) | length) == 0
+    fail_msg: >-
+      Juju space {{ item.name }} already contains an unexpected subnet or duplicate entry.
+      Resolve the mapping manually before assigning {{ item.cidr }}.
+  loop: "{{ pve_juju_network_spaces }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Require the public subnet remains in Juju's native alpha space
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pve_network_subnets_before.stdout | from_json).subnets[pve_juju_public_cidr].space
+        == pve_juju_public_native_space
+      - >-
+        (pve_juju_network_spaces | selectattr('cidr', 'equalto', pve_juju_public_cidr)
+        | selectattr('name', 'equalto', pve_juju_public_native_space) | list | length) == 1
+      - >-
+        (((pve_network_spaces_before.stdout | from_json).spaces
+          | selectattr('name', 'equalto', pve_juju_public_native_space)
+          | map(attribute='subnets') | map('default', {}) | map('dict2items')
+          | flatten | map(attribute='key') | list)
+          | difference(pve_juju_network_spaces | map(attribute='cidr') | list) | length) == 0
+    fail_msg: >-
+      {{ pve_juju_public_cidr }} must remain in Juju's native alpha space, which may contain only
+      declared PVE CIDRs. Never create a separate Juju public space or move pub11 out of alpha.
+
+- name: Refuse a separate Juju public space
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((pve_network_spaces_before.stdout | from_json).spaces
+          | selectattr('name', 'equalto', 'public') | list | length) == 0
+    fail_msg: >-
+      Juju's public network is the native alpha space. Remove or manually resolve the conflicting
+      separate public space before continuing.
+
+- name: Refuse to move subnets after OpenStack applications are deployed
+  ansible.builtin.assert:
+    that:
+      - >-
+        (((pve_network_status_before.stdout | from_json).applications | default({}) | length) == 0)
+        or
+        (
+          ((pve_network_subnets_before.stdout | from_json).subnets[item.cidr].space == item.name)
+          and
+          (item.name in (pve_network_spaces_before.stdout | from_json).spaces
+            | map(attribute='name') | list)
+        )
+    fail_msg: >-
+      OpenStack applications already exist and {{ item.cidr }} is not in {{ item.name }}.
+      Moving a live subnet can change unit endpoint addresses; resolve this in a maintenance window.
+  loop: "{{ pve_juju_network_spaces }}"
+  loop_control:
+    label: "{{ item.name }} {{ item.cidr }}"
+  when: not (pve_juju_network_validate_only | default(false) | bool)
+
+- name: Require existing OpenStack applications to have final declared subnet bindings
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((pve_network_status_before.stdout | from_json).applications | default({}) | length) == 0
+        or
+        (
+          ((pve_network_subnets_before.stdout | from_json).subnets[item.cidr].space == item.name)
+          and
+          (item.name in (pve_network_spaces_before.stdout | from_json).spaces
+            | map(attribute='name') | list)
+        )
+    fail_msg: >-
+      OpenStack applications already exist and {{ item.cidr }} is not in {{ item.name }}.
+      A validate-only control-plane run requires the complete final network mapping.
+  loop: "{{ pve_juju_network_spaces }}"
+  loop_control:
+    label: "{{ item.name }} {{ item.cidr }}"
+  when: pve_juju_network_validate_only | default(false) | bool
+
+- name: Create missing Juju spaces after workload machine registration
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_juju_bin }} add-space -m {{ pve_juju_controller_name }}:openstack {{ item.name }}
+  loop: "{{ pve_juju_network_spaces | rejectattr('name', 'equalto', pve_juju_public_native_space) | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - not (pve_juju_network_validate_only | default(false) | bool)
+    - item.name not in (pve_network_spaces_before.stdout | from_json).spaces | map(attribute='name') | list
+
+- name: Move discovered non-public subnets to their declared Juju spaces
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_juju_bin }} move-to-space {{ item.name }} {{ item.cidr }}
+        -m {{ pve_juju_controller_name }}:openstack --force
+  loop: "{{ pve_juju_network_spaces | rejectattr('name', 'equalto', pve_juju_public_native_space) | list }}"
+  loop_control:
+    label: "{{ item.name }} {{ item.cidr }}"
+  when:
+    - not (pve_juju_network_validate_only | default(false) | bool)
+    - (pve_network_subnets_before.stdout | from_json).subnets[item.cidr].space != item.name
+
+- name: Read final OpenStack Juju subnet inventory
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} subnets -m {{ pve_juju_controller_name }}:openstack --format json"
+  register: pve_network_subnets_after
+  changed_when: false
+
+- name: Require final subnet inventory to contain only the declared PVE networks
+  ansible.builtin.assert:
+    that:
+      - pve_network_subnets_after.rc == 0
+      - "'subnets' in (pve_network_subnets_after.stdout | from_json)"
+      - >-
+        (pve_network_subnets_after.stdout | from_json).subnets.keys() | list | sort
+        == (pve_juju_network_spaces | map(attribute='cidr') | list | sort)
+    fail_msg: "Juju subnet inventory has an unexpected or missing CIDR after assignment."
+
+- name: Verify every PVE subnet belongs to its declared Juju space
+  ansible.builtin.assert:
+    that:
+      - pve_network_subnets_after.rc == 0
+      - >-
+        (pve_network_subnets_after.stdout | from_json).subnets[item.cidr].space == item.name
+    fail_msg: "Juju subnet {{ item.cidr }} is not in the expected space {{ item.name }}."
+  loop: "{{ pve_juju_network_spaces }}"
+  loop_control:
+    label: "{{ item.name }} {{ item.cidr }}"
+
+- name: Read final OpenStack Juju space inventory
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} spaces -m {{ pve_juju_controller_name }}:openstack --format json"
+  register: pve_network_spaces_after
+  changed_when: false
+
+- name: Require each final Juju space to contain exactly its declared subnet
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((pve_network_spaces_after.stdout | from_json).spaces
+          | selectattr('name', 'equalto', item.name)
+          | map(attribute='subnets') | map('default', {}) | map('dict2items')
+          | flatten | map(attribute='key') | list | sort) == [item.cidr]
+      - >-
+        ((pve_network_spaces_after.stdout | from_json).spaces
+          | selectattr('name', 'equalto', item.name) | list | length) == 1
+    fail_msg: "Juju space {{ item.name }} must contain exactly the expected subnet {{ item.cidr }}."
+  loop: "{{ pve_juju_network_spaces | rejectattr('name', 'equalto', pve_juju_public_native_space) | list }}"
+  loop_control:
+    label: "{{ item.name }} {{ item.cidr }}"
+
+- name: Require Juju alpha to contain only the public subnet
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((pve_network_spaces_after.stdout | from_json).spaces
+          | selectattr('name', 'equalto', pve_juju_public_native_space)
+          | map(attribute='subnets') | map('default', {}) | map('dict2items')
+          | flatten | map(attribute='key') | list | sort) == [pve_juju_public_cidr]
+      - >-
+        ((pve_network_spaces_after.stdout | from_json).spaces
+          | selectattr('name', 'equalto', pve_juju_public_native_space) | list | length) == 1
+    fail_msg: "Juju alpha must contain only {{ pve_juju_public_cidr }}; never move pub11 out of alpha."
+
+- name: Read OpenStack Juju model default space
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} model-config -m {{ pve_juju_controller_name }}:openstack default-space"
+  register: pve_network_default_space_before
+  changed_when: false
+
+- name: Refuse to change a live model default space
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((pve_network_status_before.stdout | from_json).applications | default({}) | length) == 0
+        or pve_network_default_space_before.stdout | trim == pve_juju_default_space
+    fail_msg: >-
+      OpenStack applications already exist while the model default-space is not {{ pve_juju_default_space }}.
+      Refusing an automatic live endpoint binding change; resolve it in a maintenance window.
+
+- name: Set OpenStack Juju model default space to internal
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_juju_bin }} model-config -m {{ pve_juju_controller_name }}:openstack
+        default-space={{ pve_juju_default_space }}
+  when:
+    - not (pve_juju_network_validate_only | default(false) | bool)
+    - pve_network_default_space_before.stdout | trim != pve_juju_default_space
+
+- name: Read configured OpenStack Juju model default space
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} model-config -m {{ pve_juju_controller_name }}:openstack default-space"
+  register: pve_network_default_space_after
+  changed_when: false
+
+- name: Verify OpenStack Juju model default space
+  ansible.builtin.assert:
+    that:
+      - pve_network_default_space_after.rc == 0
+      - pve_network_default_space_after.stdout | trim == pve_juju_default_space
+    fail_msg: >-
+      OpenStack Juju model default-space is not {{ pve_juju_default_space }}. Run
+      pve-env1-juju-network before deploying charms.

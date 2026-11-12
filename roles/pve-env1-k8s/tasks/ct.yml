@@ -1,0 +1,228 @@
+---
+
+- name: Refuse a VM that already occupies the k8s compute VMID
+  ansible.builtin.command: "qm status {{ pve_ussuri_k8s_vmid }}"
+  register: pve_ussuri_k8s_qm_status
+  failed_when: false
+  changed_when: false
+
+- name: Check whether the k8s compute container exists
+  ansible.builtin.command: "pct config {{ pve_ussuri_k8s_vmid }}"
+  register: pve_ussuri_k8s_ct_status
+  failed_when: false
+  changed_when: false
+
+- name: Require the k8s compute VMID to be free or to be our own container
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_k8s_qm_status.rc != 0
+      - >-
+        pve_ussuri_k8s_ct_status.rc != 0 or
+        ('hostname: ' ~ pve_ussuri_k8s_hostname) in pve_ussuri_k8s_ct_status.stdout
+      - >-
+        pve_ussuri_k8s_ct_status.rc != 0 or
+        pve_ussuri_k8s_ct_status.stdout is search('(?m)^net0: .*ip=' ~
+          (pve_ussuri_k8s_ip | regex_replace('\.', '[.]')) ~ '/24')
+    fail_msg: >-
+      VMID {{ pve_ussuri_k8s_vmid }} is taken by something that is not the k8s compute
+      container `{{ pve_ussuri_k8s_hostname }}` with {{ pve_ussuri_k8s_ip }}; refusing
+      to overwrite. Destroy the guest or pick another vmid.
+
+- name: Check the PVE storages available to the container
+  ansible.builtin.command: pvesm status
+  register: pve_ussuri_k8s_storage_inventory
+  changed_when: false
+
+- name: Require the thin pool and the focal template to be available
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_k8s_storage.split(':')[0] in pve_ussuri_k8s_storage_inventory.stdout
+    fail_msg: "PVE storage {{ pve_ussuri_k8s_storage }} is not active; refusing to create CT {{ pve_ussuri_k8s_vmid }}."
+
+- name: Create the k8s compute container
+  ansible.builtin.shell: |
+    set -euo pipefail
+    vmid={{ pve_ussuri_k8s_vmid }}
+    if pct config "$vmid" >/dev/null 2>&1; then
+      echo "EXISTS-SKIP $vmid"
+      exit 0
+    fi
+    nets=(
+    {% for net in pve_ussuri_k8s_nets %}
+      --net{{ loop.index0 }} 'name={{ net.name }},bridge={{ net.bridge }},ip={{ net.ip }}{% if net.gw is defined %},gw={{ net.gw }}{% endif %}'
+    {% endfor %}
+    )
+    pct create "$vmid" '{{ pve_ussuri_k8s_template }}' \
+      --hostname '{{ pve_ussuri_k8s_hostname }}' \
+      --ostype ubuntu --cores {{ pve_ussuri_k8s_cores }} --memory {{ pve_ussuri_k8s_memory }} --swap 0 \
+      --rootfs '{{ pve_ussuri_k8s_storage }}:{{ pve_ussuri_k8s_rootfs_size }}' \
+      --unprivileged 0 --features '{{ pve_ussuri_k8s_features }}' \
+      "${nets[@]}" \
+      --nameserver {{ pve_ussuri_k8s_nameserver }} \
+      --tags '{{ pve_ussuri_k8s_tags }}' \
+      --onboot 1 --startup 'order=3'
+    echo "CREATE-OK $vmid {{ pve_ussuri_k8s_hostname }}"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_k8s_ct_create
+  changed_when: "'CREATE-OK' in pve_ussuri_k8s_ct_create.stdout"
+
+- name: Read the configuration of the k8s compute container
+  ansible.builtin.command: "pct config {{ pve_ussuri_k8s_vmid }}"
+  register: pve_ussuri_k8s_ct_config
+  changed_when: false
+
+- name: Require the container identity and static NICs to match the declared layout
+  ansible.builtin.assert:
+    that:
+      - "'hostname: ' ~ pve_ussuri_k8s_hostname in pve_ussuri_k8s_ct_config.stdout"
+      - "'ip=dhcp' not in pve_ussuri_k8s_ct_config.stdout"
+      - pve_ussuri_k8s_ct_config.stdout is search('(?m)^net0: .*bridge=pub11(?:,|$)')
+      - pve_ussuri_k8s_ct_config.stdout is search('(?m)^net0: .*ip=' ~ (pve_ussuri_k8s_ip | regex_replace('\.', '[.]')) ~ '/24')
+      - pve_ussuri_k8s_ct_config.stdout is search('(?m)^net4: .*bridge=pub11(?:,|$)')
+      - pve_ussuri_k8s_ct_config.stdout is search('(?m)^net4: .*ip=manual(?:,|$)')
+      - pve_ussuri_k8s_ct_config.stdout is not search('(?m)^net4: .*gw=')
+      - pve_ussuri_k8s_ct_config.stdout is not search('(?m)^unprivileged:\s*1\s*$')
+    fail_msg: >-
+      CT {{ pve_ussuri_k8s_vmid }} does not match the declared layout (hostname
+      {{ pve_ussuri_k8s_hostname }}, static pub11 {{ pve_ussuri_k8s_ip }}, ens22 uplink,
+      privileged); refusing to rewrite it.
+
+- name: Install the container-config helper on the PVE host
+  ansible.builtin.copy:
+    src: k8s_ct_conf.py
+    dest: /root/pve-ussuri-k8s-ct-conf.py
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Write the capability baseline and the device pass-through
+  ansible.builtin.command:
+    argv:
+      - python3
+      - /root/pve-ussuri-k8s-ct-conf.py
+      - "/etc/pve/lxc/{{ pve_ussuri_k8s_vmid }}.conf"
+      - --dev
+      - /dev/net/tun
+      - --dev
+      - /dev/kvm
+  register: pve_ussuri_k8s_ct_conf
+  changed_when: pve_ussuri_k8s_ct_conf.stdout | trim == 'changed'
+
+- name: Give the k8s compute container its own SMBIOS system UUID
+  ansible.builtin.include_role:
+    name: pve-common-ct-uuid
+  vars:
+    pve_ct_system_uuid_items: ["{{ pve_ussuri_k8s_vmid }}"]
+    pve_ct_system_uuid_apply_live: true
+
+- name: Check the runtime state of the k8s compute container
+  ansible.builtin.command: "pct status {{ pve_ussuri_k8s_vmid }}"
+  register: pve_ussuri_k8s_ct_runtime
+  changed_when: false
+
+- name: Start the k8s compute container
+  ansible.builtin.command: "pct start {{ pve_ussuri_k8s_vmid }}"
+  when: "'status: stopped' in pve_ussuri_k8s_ct_runtime.stdout"
+
+- name: Wait for systemd inside the k8s compute container
+  ansible.builtin.command: "pct exec {{ pve_ussuri_k8s_vmid }} -- systemctl is-system-running"
+  register: pve_ussuri_k8s_ct_systemd
+  until: pve_ussuri_k8s_ct_systemd.stdout | trim in ['running', 'degraded']
+  failed_when: false
+  retries: 60
+  delay: 5
+  changed_when: false
+
+- name: Read the Juju client public key from CT {{ pve_ussuri_k8s_juju_client_vmid }}
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_ussuri_k8s_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_ussuri_k8s_juju_client_user }}"
+      - -c
+      - "cat ~/.ssh/id_ed25519.pub"
+  register: pve_ussuri_k8s_client_pubkey
+  changed_when: false
+
+- name: Validate the Juju client public key
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_k8s_client_pubkey.stdout is match('^ssh-ed25519 [A-Za-z0-9+/]+={0,3}( .*)?$')
+    fail_msg: >-
+      CT {{ pve_ussuri_k8s_juju_client_vmid }} has no usable ed25519 key for
+      {{ pve_ussuri_k8s_juju_client_user }}; initialise that CT first
+      (--tags pve-env1-juju-ctrl).
+
+- name: Push the CT init script to the PVE host
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/pve/scripts/juju-ct-init.sh"
+    dest: /root/pve-ussuri-k8s-ct-init.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Initialize the k8s compute container (ubuntu user, sudo, client key)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    vmid={{ pve_ussuri_k8s_vmid }}
+    pct push "$vmid" /root/pve-ussuri-k8s-ct-init.sh /root/juju-ct-init.sh --perms 0700
+    for attempt in $(seq 1 15); do
+      if out="$(pct exec "$vmid" -- env JUJU_CLIENT_PUBKEY='{{ pve_ussuri_k8s_client_pubkey.stdout | trim }}' \
+                 bash /root/juju-ct-init.sh 2>/dev/null)"; then
+        pct exec "$vmid" -- rm -f /root/juju-ct-init.sh
+        echo "$out"
+        exit 0
+      fi
+      sleep 4
+    done
+    echo "CT $vmid did not finish juju-ct-init.sh" >&2
+    exit 1
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_k8s_ct_init
+  changed_when: "'INIT-OK' not in pve_ussuri_k8s_ct_init.stdout"
+  failed_when: "'INIT-OK' not in pve_ussuri_k8s_ct_init.stdout"
+
+- name: Push the APT-mirror helper to the PVE host
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/pve/scripts/yoga-apt-mirror.sh"
+    dest: /root/pve-ussuri-k8s-apt-mirror.sh
+    owner: root
+    group: root
+    mode: "0700"
+  when: pve_ussuri_k8s_apt_mirror | length > 0
+
+- name: Point the k8s compute container at the APT mirror
+  ansible.builtin.shell: |
+    set -euo pipefail
+    vmid={{ pve_ussuri_k8s_vmid }}
+    pct push "$vmid" /root/pve-ussuri-k8s-apt-mirror.sh /root/apt-mirror.sh --perms 0700
+    pct exec "$vmid" -- bash /root/apt-mirror.sh '{{ pve_ussuri_k8s_apt_mirror }}'
+    pct exec "$vmid" -- rm -f /root/apt-mirror.sh
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_k8s_ct_apt_mirror
+  changed_when: "'changed=1' in pve_ussuri_k8s_ct_apt_mirror.stdout"
+  when: pve_ussuri_k8s_apt_mirror | length > 0
+
+- name: Require /dev/kvm and /dev/net/tun to be usable inside the container
+  ansible.builtin.shell: |
+    set -euo pipefail
+    vmid={{ pve_ussuri_k8s_vmid }}
+    bad=""
+    pct exec "$vmid" -- dd if=/dev/kvm of=/dev/null bs=1 count=0 status=none 2>/dev/null \
+      || bad="$bad /dev/kvm"
+    pct exec "$vmid" -- python3 -c "import os; os.close(os.open('/dev/net/tun', os.O_RDWR))" 2>/dev/null \
+      || bad="$bad /dev/net/tun"
+    [ -z "$bad" ] || { echo "DEV-OPEN-FAILED:$bad" >&2; exit 1; }
+    echo "DEV-OPEN-OK"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_k8s_ct_dev_open
+  changed_when: false
+  failed_when: "'DEV-OPEN-OK' not in pve_ussuri_k8s_ct_dev_open.stdout"

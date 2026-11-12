@@ -4,4 +4,4 @@
   hosts: localhost
   become: false
   tags: [never, openstack-pve-resources]
-  roles: [pve-yoga-resources]
+  roles: [pve-openstack-resources]

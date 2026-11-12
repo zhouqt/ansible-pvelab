@@ -4,4 +4,4 @@
   hosts: pve
   become: false
   tags: [never, openstack-pve-ovn-uplink]
-  roles: [pve-yoga-ovn-uplink]
+  roles: [pve-openstack-ovn-uplink]

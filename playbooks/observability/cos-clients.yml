@@ -4,4 +4,4 @@
   hosts: pve
   become: false
   tags: [never, openstack-pve-observability]
-  roles: [pve-yoga-observability]
+  roles: [pve-obs-cos-clients]

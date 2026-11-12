@@ -1,0 +1,742 @@
+---
+
+- name: Define the isolated Juju 3.x command prefix
+  ansible.builtin.set_fact:
+    pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
+    pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
+
+- name: Resolve the settled-application list for this profile
+  ansible.builtin.set_fact:
+    pve_yoga_settled_applications: >-
+      {{ pve_yoga_profiles[pve_yoga_profile].settled_applications
+         | default(pve_yoga_core_applications) }}
+
+- name: Ensure the per-environment credentials directory exists on the control node
+  ansible.builtin.file:
+    path: "{{ pve_yoga_credentials_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+  when: pve_yoga_keystone_admin_password | length == 0
+
+- name: Generate a Keystone admin password when neither Vault nor a credentials file supplies one
+  ansible.builtin.copy:
+    content: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}\n"
+    dest: "{{ pve_yoga_keystone_admin_password_file }}"
+    mode: "0600"
+    force: false
+  delegate_to: localhost
+  become: false
+  when: pve_yoga_keystone_admin_password | length == 0
+
+- name: Adopt the generated Keystone admin password for the rest of the play
+  ansible.builtin.set_fact:
+    pve_yoga_keystone_admin_password: >-
+      {{ lookup('ansible.builtin.file', pve_yoga_keystone_admin_password_file) | trim }}
+  no_log: true
+  when: pve_yoga_keystone_admin_password | length == 0
+
+- name: Require the OpenStack keystone admin password
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_keystone_admin_password | length > 0
+    fail_msg: >-
+      cannot obtain the keystone admin password, and cannot write {{ pve_yoga_keystone_admin_password_file }}.
+      set vault_pve_yoga_keystone_admin_password through Ansible Vault (or
+      vault_pve_keystone_admin_password), or make sure the Ansible controller can write to the credentials directory.
+  no_log: true
+
+- name: Require the internal default space and public binding space
+  ansible.builtin.assert:
+    that:
+      - "pve_yoga_network_spaces | selectattr('name', 'equalto', 'public') | map(attribute='cidr') | list == [pve_yoga_public_cidr]"
+      - "pve_yoga_network_spaces | selectattr('name', 'equalto', pve_yoga_default_space) | map(attribute='cidr') | list == [pve_yoga_internal_cidr]"
+    fail_msg: "the OpenStack endpoint bindings require public={{ pve_yoga_public_cidr }} and internal={{ pve_yoga_internal_cidr }}."
+
+- name: Read configured Juju model default space
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} model-config -m {{ pve_yoga_model }} default-space"
+  register: pve_yoga_control_default_space
+  changed_when: false
+
+- name: Require verified default space before deploying charms
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_control_default_space.rc == 0
+      - pve_yoga_control_default_space.stdout | trim == pve_yoga_default_space
+    fail_msg: >-
+      the OpenStack model default-space must be {{ pve_yoga_default_space }}. Run
+      --tags openstack-pve-network, then deploy the charms.
+
+- name: Define the bundle artifacts and their staged names
+  ansible.builtin.set_fact:
+    pve_yoga_bundle_artifacts:
+      - src: "{{ repo_root }}/bundles/openstack-pve-bundle.yaml.j2"
+        staged: openstack-pve-bundle.yaml
+        render: true
+      - src: "{{ repo_root }}/bundles/openstack-pve-overlay.yaml"
+        staged: openstack-pve-overlay.yaml
+        render: false
+      - src: null
+        staged: openstack-pve-wave1-bundle.yaml
+        render: false
+        generated: true
+    pve_yoga_bundle_staged: "{{ pve_yoga_juju_stage_dir }}/openstack-pve-bundle.yaml"
+    pve_yoga_overlay_staged: "{{ pve_yoga_juju_stage_dir }}/openstack-pve-overlay.yaml"
+    pve_yoga_wave1_bundle_staged: "{{ pve_yoga_juju_stage_dir }}/openstack-pve-wave1-bundle.yaml"
+    pve_yoga_wave1_generator: /root/yoga-make-wave1-bundle.py
+
+- name: Render the bundle template into /root on the PVE host
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "/root/{{ item.staged }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ pve_yoga_bundle_artifacts }}"
+  loop_control:
+    label: "{{ item.staged }}"
+  when: item.render
+
+- name: Copy the version-independent artifacts into /root on the PVE host
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "/root/{{ item.staged }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ pve_yoga_bundle_artifacts }}"
+  loop_control:
+    label: "{{ item.staged }}"
+  when: not item.render and not (item.generated | default(false))
+
+- name: Copy the wave-1 bundle generator to the PVE host
+  ansible.builtin.copy:
+    src: make-wave1-bundle.py
+    dest: "{{ pve_yoga_wave1_generator }}"
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Derive the wave-1 bundle from the rendered bundle and the full overlay
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ pve_yoga_wave1_generator }}"
+      - --base
+      - /root/openstack-pve-bundle.yaml
+      - --overlay
+      - /root/openstack-pve-overlay.yaml
+      - --out
+      - /root/openstack-pve-wave1-bundle.yaml
+      - --apps
+      - "{{ pve_yoga_control_plane_wave1_apps | join(',') }}"
+  register: pve_yoga_control_wave1_gen
+  changed_when: "'WAVE1-OK' in pve_yoga_control_wave1_gen.stdout"
+  when: pve_yoga_control_plane_two_wave | bool
+
+- name: Adopt the derived wave-1 machine map and deferred application list
+  ansible.builtin.set_fact:
+    pve_yoga_wave1_map_machines: >-
+      {{ pve_yoga_control_wave1_gen.stdout_lines
+         | select('search', '^WAVE1-MAP-MACHINES ')
+         | first | regex_replace('^WAVE1-MAP-MACHINES\s+', '') | trim }}
+    pve_yoga_wave1_deferred_apps: >-
+      {{ (pve_yoga_control_wave1_gen.stdout_lines
+          | select('search', '^WAVE1-DEFERRED ')
+          | first | regex_replace('^WAVE1-DEFERRED\s+', '') | trim).split(',') }}
+  when: pve_yoga_control_plane_two_wave | bool
+
+- name: Ensure the bundle staging directory exists in the Juju client CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - install
+      - -d
+      - -m
+      - "0700"
+      - -o
+      - "{{ pve_yoga_juju_client_user }}"
+      - -g
+      - "{{ pve_yoga_juju_client_user }}"
+      - "{{ pve_yoga_juju_stage_dir }}"
+
+- name: Push the bundle artifacts into the Juju client CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - "/root/{{ item.staged }}"
+      - "{{ pve_yoga_juju_stage_dir }}/{{ item.staged }}"
+  loop: "{{ pve_yoga_bundle_artifacts }}"
+  loop_control:
+    label: "{{ item.staged }}"
+
+- name: Make the pushed bundle files readable by the Juju client user
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - chown
+      - "{{ pve_yoga_juju_client_user }}:{{ pve_yoga_juju_client_user }}"
+      - "{{ pve_yoga_juju_stage_dir }}/{{ item.staged }}"
+  loop: "{{ pve_yoga_bundle_artifacts }}"
+  loop_control:
+    label: "{{ item.staged }}"
+
+- name: Read existing OpenStack application inventory
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+  register: pve_yoga_control_status
+  changed_when: false
+
+- name: Require a valid OpenStack model status
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_control_status.rc == 0
+      - "'applications' in (pve_yoga_control_status.stdout | from_json)"
+    fail_msg: "cannot read the OpenStack model status; refusing to deploy while the state is unknown."
+
+- name: Dry-run the wave-1 bundle to prove it carries only the critical path
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_yoga_juju_cmd }} deploy {{ pve_yoga_wave1_bundle_staged }}
+        --map-machines={{ pve_yoga_wave1_map_machines }} --dry-run -m {{ pve_yoga_model }}
+  register: pve_yoga_control_wave1_dryrun
+  changed_when: false
+  when: pve_yoga_control_plane_two_wave | bool
+
+- name: Require the wave-1 dry-run to leave every deferred application out
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_control_wave1_dryrun.rc == 0
+      - >-
+        pve_yoga_control_wave1_dryrun.stdout_lines
+        | select('search', '(?<![\w-])(' ~ (pve_yoga_wave1_deferred_apps | join('|')) ~ ')(?![\w-])')
+        | list | length == 0
+    fail_msg: >-
+      the wave-1 bundle contains applications that were meant for wave two ({{ pve_yoga_wave1_deferred_apps | join(',') }}),
+      then wave one is no longer "critical path only". Check the
+      whether applications/relations still match the derivation logic in files/make-wave1-bundle.py.
+  when: pve_yoga_control_plane_two_wave | bool
+
+- name: Deploy the critical path of the OpenStack bundle (wave 1, P0-5)
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_yoga_juju_cmd }} deploy {{ pve_yoga_wave1_bundle_staged }}
+        --map-machines={{ pve_yoga_wave1_map_machines }} -m {{ pve_yoga_model }}
+  register: pve_yoga_control_deploy_wave1
+  changed_when: "'Deploying' in pve_yoga_control_deploy_wave1.stdout or 'added' in pve_yoga_control_deploy_wave1.stdout"
+  when: pve_yoga_control_plane_two_wave | bool
+
+- name: Deploy the OpenStack bundle with the placement/binding overlay
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_yoga_juju_cmd }} deploy {{ pve_yoga_bundle_staged }}
+        --overlay {{ pve_yoga_overlay_staged }}
+        --map-machines=existing,0=0,1=1,2=2,3=3,4=4,5=5 -m {{ pve_yoga_model }}
+  register: pve_yoga_control_deploy
+  changed_when: "'Deploying' in pve_yoga_control_deploy.stdout or 'added' in pve_yoga_control_deploy.stdout"
+  when: not (pve_yoga_control_plane_two_wave | bool)
+
+- name: Reconcile the MySQL grants the co-located leader failed to create
+  ansible.builtin.include_tasks: reconcile-mysql-grants.yml
+
+- name: Deploy the rest of the OpenStack bundle (wave 2, P0-5)
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_yoga_juju_cmd }} deploy {{ pve_yoga_bundle_staged }}
+        --overlay {{ pve_yoga_overlay_staged }}
+        --map-machines=existing,0=0,1=1,2=2,3=3,4=4,5=5 -m {{ pve_yoga_model }}
+  register: pve_yoga_control_deploy
+  changed_when: "'Deploying' in pve_yoga_control_deploy.stdout or 'added' in pve_yoga_control_deploy.stdout"
+  when: pve_yoga_control_plane_two_wave | bool
+
+- name: Read the OpenStack model status before Vault initialization
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+  register: pve_yoga_vault_status
+  changed_when: false
+
+- name: Require the Vault application and unit to be present
+  ansible.builtin.assert:
+    that:
+      - "'vault' in (pve_yoga_vault_status.stdout | from_json).applications"
+      - >-
+        (((pve_yoga_vault_status.stdout | from_json).applications.vault.units | default({}, true)) | length) > 0
+    fail_msg: "the OpenStack model has no vault unit; check the bundle deploy output."
+
+- name: Derive the yoga Vault unit address and its PVE guest
+  ansible.builtin.set_fact:
+    pve_yoga_vault_address: >-
+      {{ ((pve_yoga_vault_status.stdout | from_json).applications.vault.units
+          | dict2items | map(attribute='value') | first)['public-address'] }}
+    pve_yoga_vault_vmid: >-
+      {{ pve_yoga_workload_vmids[
+           ((pve_yoga_vault_status.stdout | from_json).applications.vault.units
+            | dict2items | map(attribute='value') | first)['machine'] | int] }}
+
+- name: Wait for the yoga Vault API, repairing the co-located-leader grants on every retry
+  ansible.builtin.include_tasks: vault-wait.yml
+  vars:
+    pve_yoga_vault_wait_attempt: 1
+    pve_yoga_vault_probe_retries: 18
+
+- name: Require the yoga Vault API to answer before touching its storage
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_vault_init_state.rc == 0
+      - "'initialized' in (pve_yoga_vault_init_state.stdout | default('', true))"
+    fail_msg: >-
+      Vault API http://{{ pve_yoga_vault_address }}:8200/v1/sys/init produced no parseable response
+      after {{ pve_yoga_vault_wait_attempts | default(4) }} probe rounds (3 min for the first round,
+      90s per round afterwards, with reconcile-mysql-grants + latch repair re-run between rounds)
+      (rc={{ pve_yoga_vault_init_state.rc }}). The most common cause is that vault's storage is not
+      ready yet --
+      vault-mysql-router cannot bootstrap until reconcile-mysql-grants creates its mysqlrouteruser
+      grant; if the app is already active while vault.service still says
+      `Start request repeated too quickly` (systemd start-rate latch), clear the latch manually:
+      `pct exec {{ pve_yoga_vault_vmid }} -- systemctl reset-failed vault.service` then start it.
+      Re-run this playbook once confirmed (it is idempotent).
+
+- name: Initialize the yoga Vault when it is not yet initialized
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -sk
+      - "http://{{ pve_yoga_vault_address }}:8200/v1/sys/init"
+      - -X
+      - PUT
+      - -d
+      - '{"secret_shares": 5, "secret_threshold": 3}'
+  register: pve_yoga_vault_init_response
+  failed_when: >-
+    pve_yoga_vault_init_response.rc != 0
+    or 'root_token' not in (pve_yoga_vault_init_response.stdout | default('', true))
+  when: >-
+    not ((pve_yoga_vault_init_state.stdout | default('{}', true) | from_json).initialized | default(false))
+  no_log: true
+
+- name: Persist the yoga Vault init material to the credentials directory
+  ansible.builtin.copy:
+    content: "{{ pve_yoga_vault_init_response.stdout }}\n"
+    dest: "{{ pve_yoga_vault_init_file }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when: pve_yoga_vault_init_response is changed
+  no_log: true
+
+- name: Expose the freshly initialized yoga Vault root token for this run
+  ansible.builtin.set_fact:
+    pve_yoga_vault_root_token: "{{ (pve_yoga_vault_init_response.stdout | from_json).root_token }}"
+  when: pve_yoga_vault_init_response is changed
+  no_log: true
+
+- name: Load the yoga Vault unseal keys and root token from the credentials file
+  ansible.builtin.set_fact:
+    pve_yoga_vault_keys: >-
+      {{ (lookup('ansible.builtin.file', pve_yoga_vault_init_file, errors='ignore')
+          | default('{}', true) | from_json)['keys'] | default([], true) }}
+    pve_yoga_vault_root_token: >-
+      {{ (lookup('ansible.builtin.file', pve_yoga_vault_init_file, errors='ignore')
+          | default('{}', true) | from_json)['root_token'] | default('', true) }}
+  no_log: true
+
+- name: Read the yoga Vault seal status
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -sk
+      - "http://{{ pve_yoga_vault_address }}:8200/v1/sys/seal-status"
+  register: pve_yoga_vault_seal_status
+  changed_when: false
+  failed_when: false
+
+- name: Unseal the yoga Vault with the first three keys when sealed
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -sk
+      - "http://{{ pve_yoga_vault_address }}:8200/v1/sys/unseal"
+      - -X
+      - PUT
+      - -d
+      - '{"key": "{{ item }}"}'
+  loop: "{{ pve_yoga_vault_keys[:3] }}"
+  when:
+    - pve_yoga_vault_keys | length >= 3
+    - (pve_yoga_vault_seal_status.stdout | default('{}') | from_json).sealed | default(true)
+  no_log: true
+
+- name: Require the yoga Vault to be unsealed before authorizing the charm
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -sk
+      - "http://{{ pve_yoga_vault_address }}:8200/v1/sys/seal-status"
+  register: pve_yoga_vault_seal_after
+  changed_when: false
+  failed_when: false
+  until: not ((pve_yoga_vault_seal_after.stdout | default('{}') | from_json).sealed | default(true))
+  retries: 12
+  delay: 5
+
+- name: Check whether Vault charm is already authorized
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} run vault/0 get-root-ca --wait=10m --format json -m {{ pve_yoga_model }}"
+  register: pve_yoga_vault_root_ca_pre
+  failed_when: false
+  changed_when: false
+  when: pve_yoga_vault_root_token | length > 0
+  no_log: true
+
+- name: Authorize the Vault charm with the root token
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} run vault/0 authorize-charm token={{ pve_yoga_vault_root_token }} --wait=10m -m {{ pve_yoga_model }}"
+  when:
+    - pve_yoga_vault_root_token | length > 0
+    - pve_yoga_vault_root_ca_pre.rc != 0 or 'BEGIN CERTIFICATE' not in pve_yoga_vault_root_ca_pre.stdout
+  no_log: true
+
+- name: Generate the Vault root CA parameter file inside the Juju client CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "printf '%s\\n' '{\"common_name\": \"root-ca\"}' > {{ pve_yoga_juju_stage_dir }}/pve-yoga-vault-ca-params.json"
+  when: pve_yoga_vault_root_token | length > 0
+
+- name: Check whether the Vault root CA already exists
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} run vault/0 get-root-ca --wait=10m --format json -m {{ pve_yoga_model }}"
+  register: pve_yoga_vault_root_ca_check
+  failed_when: false
+  changed_when: false
+  when: pve_yoga_vault_root_token | length > 0
+  no_log: true
+
+- name: Generate the Vault root CA only when it is missing
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} run vault/0 generate-root-ca --params {{ pve_yoga_juju_stage_dir }}/pve-yoga-vault-ca-params.json --wait=10m -m {{ pve_yoga_model }}"
+  when:
+    - pve_yoga_vault_root_token | length > 0
+    - pve_yoga_vault_root_ca_check.rc != 0 or 'BEGIN CERTIFICATE' not in pve_yoga_vault_root_ca_check.stdout
+  no_log: true
+
+- name: Set the keystone admin password
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} config -m {{ pve_yoga_model }} keystone admin-password={{ pve_yoga_keystone_admin_password }}"
+  no_log: true
+
+- name: Read the final OpenStack application inventory
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+  register: pve_yoga_control_status_after
+  changed_when: false
+
+- name: Require the core OpenStack applications to be deployed
+  ansible.builtin.assert:
+    that:
+      - >-
+        pve_yoga_core_applications
+        | difference((pve_yoga_control_status_after.stdout | from_json).applications.keys() | list)
+        | length == 0
+    fail_msg: "not all core OpenStack applications are deployed; check the bundle deploy output."
+
+- name: Reconcile the MySQL grants again once the routers are up
+  ansible.builtin.include_tasks: reconcile-mysql-grants.yml
+  vars:
+    pve_yoga_mysql_reconcile_wait: 600
+    pve_yoga_mysql_reconcile_skip_cluster_wait: true
+
+- name: Recover the units the co-located MySQL leader left in error
+  ansible.builtin.include_tasks: recover-error-units.yml
+
+- name: Wait for keystone to become active
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} wait-for application keystone --timeout 45m -m {{ pve_yoga_model }}"
+  register: pve_yoga_control_keystone_wait
+  changed_when: false
+
+- name: Read the OpenStack model status to look for the missing-grant symptom
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+  register: pve_yoga_control_gate_status
+  changed_when: false
+
+- name: Select the core applications that are unsettled for a reason other than Ceph
+  ansible.builtin.set_fact:
+    pve_yoga_control_core_unsettled_apps: "{{ pve_yoga_control_unsettled_doc | from_json }}"
+  vars:
+    pve_yoga_control_unsettled_doc: >-
+      {%- set apps = (pve_yoga_control_gate_status.stdout | from_json).applications | default({}) -%}
+      {%- set out = [] -%}
+      {%- for name in pve_yoga_settled_applications -%}
+      {%- set st = (apps.get(name, {}) | default({})).get('application-status', {}) | default({}) -%}
+      {%- set cur = st.get('current', '') -%}
+      {%- set msg = (st.get('message', '') | default('')) | lower -%}
+      {%- if cur != 'active'
+             and not (cur == 'waiting'
+                      and 'storage-backend' in msg
+                      and 'database' not in msg) -%}
+      {%- set _ = out.append(name) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ out | to_json }}
+
+- name: Report the core applications that are unsettled for a reason other than Ceph
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'all core apps are active (or waiting on ceph)'
+         if pve_yoga_control_core_unsettled_apps | length == 0
+         else ('core apps not settled: ' ~ (pve_yoga_control_core_unsettled_apps | join(', '))
+               ~ '; apply one more round of MySQL grants and re-evaluate') }}
+
+- name: Reconcile the MySQL grants once more when a core application is still unsettled
+  ansible.builtin.include_tasks: reconcile-mysql-grants.yml
+  vars:
+    pve_yoga_mysql_reconcile_wait: 600
+    pve_yoga_mysql_reconcile_skip_cluster_wait: true
+  when: pve_yoga_control_core_unsettled_apps | length > 0
+
+- name: Wait for the unsettled core applications to settle after the final reconcile
+  ansible.builtin.shell: |
+    set -o pipefail
+    pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c \
+      "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json" \
+    | python3 -c '
+    import json, sys
+    core = {{ pve_yoga_settled_applications | to_json }}
+    apps = json.load(sys.stdin).get("applications", {})
+    bad = []
+    for n in core:
+        st = apps.get(n, {}).get("application-status") or {}
+        cur = st.get("current", "")
+        msg = (st.get("message") or "").lower()
+        if cur != "active" and not (cur == "waiting"
+                                    and "storage-backend" in msg
+                                    and "database" not in msg):
+            bad.append(n + "(" + cur + ")")
+    print("unsettled: " + (", ".join(bad) if bad else "none"))
+    sys.exit(1 if bad else 0)
+    '
+  args:
+    executable: /bin/bash
+  register: pve_yoga_control_settle_wait
+  until: pve_yoga_control_settle_wait.rc == 0
+  retries: 40
+  delay: 30
+  changed_when: false
+  when: pve_yoga_control_core_unsettled_apps | length > 0
+
+- name: Repair the cinder-ceph keyring the co-located nova-compute clobbers
+  ansible.builtin.include_role:
+    name: pve-openstack-cinder-keyring
+
+- name: Copy the nova client refresh helper to the PVE host
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/pve/scripts/yoga-restart-nova-clients.sh"
+    dest: /root/yoga-restart-nova-clients.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the nova client refresh helper into every workload CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ item.vmid }}"
+      - /root/yoga-restart-nova-clients.sh
+      - /root/yoga-restart-nova-clients.sh
+      - --perms
+      - "0700"
+  loop: "{{ pve_yoga_workload_cts }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  changed_when: false
+
+- name: Refresh the cached placement endpoint in the nova clients on the workload CTs
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ item.vmid }}"
+      - --
+      - /bin/bash
+      - /root/yoga-restart-nova-clients.sh
+  loop: "{{ pve_yoga_workload_cts }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  register: pve_yoga_nova_refresh_ct
+  changed_when: "'NOVA-REFRESHED' in pve_yoga_nova_refresh_ct.stdout"
+  failed_when: >-
+    pve_yoga_nova_refresh_ct.rc != 0
+    or 'NOVA-REFRESH-DONE' not in pve_yoga_nova_refresh_ct.stdout
+
+- name: Refresh the cached placement endpoint in the nova clients on the KVM workload
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ pve_yoga_juju_client_vmid }} -- install -d -o {{ pve_yoga_juju_client_user }} -g {{ pve_yoga_juju_client_user }} -m 0755 {{ pve_yoga_juju_stage_dir }}
+    pct push {{ pve_yoga_juju_client_vmid }} /root/yoga-restart-nova-clients.sh {{ pve_yoga_juju_stage_dir }}/yoga-restart-nova-clients.sh --perms 0700
+    pct exec {{ pve_yoga_juju_client_vmid }} -- chown {{ pve_yoga_juju_client_user }}:{{ pve_yoga_juju_client_user }} {{ pve_yoga_juju_stage_dir }}/yoga-restart-nova-clients.sh
+    pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c '
+      set -e
+      ip={{ pve_yoga_public_prefix }}.{{ pve_yoga_workload_kvm_vmid - pve_yoga_ip_offset }}
+      scp -o StrictHostKeyChecking=no -q {{ pve_yoga_juju_stage_dir }}/yoga-restart-nova-clients.sh ubuntu@$ip:/tmp/
+      ssh -o StrictHostKeyChecking=no -q ubuntu@$ip "sudo bash /tmp/yoga-restart-nova-clients.sh && rm -f /tmp/yoga-restart-nova-clients.sh"
+      rm -f {{ pve_yoga_juju_stage_dir }}/yoga-restart-nova-clients.sh
+    '
+  args:
+    executable: /bin/bash
+  register: pve_yoga_nova_refresh_kvm
+  changed_when: "'NOVA-REFRESHED' in pve_yoga_nova_refresh_kvm.stdout"

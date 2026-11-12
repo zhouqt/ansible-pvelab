@@ -4,4 +4,4 @@
   hosts: pve
   become: false
   tags: [never, openstack-pve-seed-restore]
-  roles: [pve-yoga-seed-restore]
+  roles: [pve-openstack-seed-restore]

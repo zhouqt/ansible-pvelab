@@ -1,0 +1,65 @@
+---
+- name: Load shared stage facts
+  ansible.builtin.include_tasks: _stage_guard.yml
+
+- name: Collect the cluster health snapshot from the primary
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ sunbeam_primary_node.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'verify-cluster.sh.j2') }}"
+  register: sunbeam_verify_raw
+  changed_when: false
+
+- name: Split the snapshot into named sections
+  ansible.builtin.set_fact:
+    sunbeam_verify: >-
+      {{ dict(sunbeam_verify_raw.stdout | regex_findall('(?ms)^### ([A-Z_]+)\n(.*?)(?=^### |\Z)')) }}
+
+- name: Probe the OVN metadata data path on every node
+  ansible.builtin.command:
+    argv:
+      - "{{ sunbeam_pct_bin }}"
+      - exec
+      - "{{ item.vmid }}"
+      - --
+      - bash
+      - -s
+    stdin: "{{ lookup('template', 'check-metadata-path.sh.j2') }}"
+  loop: "{{ sunbeam_nodes }}"
+  register: sunbeam_verify_metadata
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.fqdn }}"
+
+- name: Check whether the system UUID helpers are installed on the PVE host
+  ansible.builtin.stat:
+    path: "{{ pve_ct_system_uuid_helper_dir | default('/usr/local/lib/ansible-pve') }}/ct_uuid_registry.py"
+  register: sunbeam_verify_system_uuid_helper
+
+- name: Assert every Sunbeam CT keeps its own SMBIOS system UUID
+  ansible.builtin.include_role:
+    name: pve-common-ct-uuid
+  vars:
+    pve_ct_system_uuid_items: "{{ sunbeam_nodes | map(attribute='vmid') | list }}"
+    pve_ct_system_uuid_verify_only: true
+  when: sunbeam_verify_system_uuid_helper.stat.exists
+
+- name: Report an environment without per-CT system UUIDs
+  ansible.builtin.debug:
+    msg: >-
+      pve-common-ct-uuid is not installed on this host, so the check is skipped.
+      Run playbooks/sunbeam/stages/03-system-uuid.yml with
+      -e sunbeam_confirm_system_uuid=true (or the pve-env1-prepare stage) to give every
+      CT its own system UUID; until then live
+      migration between Sunbeam nodes fails with
+      "Attempt to migrate guest to the same host".
+  when: not sunbeam_verify_system_uuid_helper.stat.exists
+
+- name: Parse the snapshot and assert the health baseline
+  ansible.builtin.include_tasks: verify-parse.yml

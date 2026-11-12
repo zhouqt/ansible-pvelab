@@ -1,12 +1,12 @@
 ---
 
-- name: Sunbeam on PVE — pve-prepare
+- name: Sunbeam on PVE — pve-env1-prepare
   hosts: pve
   gather_facts: false
   vars:
-    sunbeam_stage: pve-prepare
+    sunbeam_stage: pve-env1-prepare
   tasks:
     - name: Load the stage implementation
       ansible.builtin.include_role:
-        name: sunbeam-pve
-        tasks_from: pve-prepare.yml
+        name: pve-sunbeam
+        tasks_from: pve-env1-prepare.yml

@@ -1,0 +1,151 @@
+---
+
+- name: Define the isolated Juju 3.x command prefix
+  ansible.builtin.set_fact:
+    pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
+    pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
+
+- name: Read OpenStack Juju status for the recovery assessment
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+  register: pve_yoga_recovery_status
+  changed_when: false
+
+- name: Require a valid OpenStack model status before recovery
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_recovery_status.rc == 0
+      - "'applications' in (pve_yoga_recovery_status.stdout | from_json)"
+    fail_msg: "cannot read the OpenStack model status; make sure controller CT {{ pve_yoga_controller_vmid }} is running."
+
+- name: Rebuild the MySQL InnoDB cluster after a complete outage
+  ansible.builtin.include_tasks: mysql-rebuild.yml
+
+- name: Restore and unseal the yoga Vault when it restarted
+  ansible.builtin.include_tasks: vault-unseal.yml
+
+- name: Resolve units left in error state by the outage
+  ansible.builtin.include_tasks: resolve-error-units.yml
+
+- name: Copy the Ceph OSD boot-activation helpers to the PVE host
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/pve/scripts/{{ item }}"
+    dest: "/root/{{ item }}"
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - ceph-osd-boot-activate.sh
+    - ceph-osd-activate.service
+
+- name: Install the Ceph OSD boot-activation unit inside every OSD CT
+  ansible.builtin.shell: |
+    set -euo pipefail
+    vmid={{ item }}
+    pct push "$vmid" /root/ceph-osd-boot-activate.sh /usr/local/sbin/ceph-osd-boot-activate.sh --perms 0755
+    pct push "$vmid" /root/ceph-osd-activate.service /etc/systemd/system/ceph-osd-activate.service --perms 0644
+    pct exec "$vmid" -- systemctl daemon-reload
+    pct exec "$vmid" -- systemctl enable ceph-osd-activate.service
+  args:
+    executable: /bin/bash
+  loop: "{{ pve_yoga_osd_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+  changed_when: false
+
+- name: Re-activate Ceph OSDs in every OSD CT
+  ansible.builtin.command: "pct exec {{ item }} -- /usr/local/sbin/ceph-osd-boot-activate.sh"
+  loop: "{{ pve_yoga_osd_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+  changed_when: false
+
+- name: Wait for ceph-osd to become active after recovery
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} wait-for application ceph-osd --timeout 30m -m {{ pve_yoga_model }}"
+  changed_when: false
+
+- name: Check the Ceph monitor quorum and report daemons that dropped out
+  ansible.builtin.include_tasks: ceph-mon-check.yml
+
+- name: Repair the cinder-ceph keyring the co-located nova-compute clobbers
+  ansible.builtin.include_role:
+    name: pve-openstack-cinder-keyring
+
+- name: Wait for keystone to become active after recovery
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} wait-for application keystone --timeout 30m -m {{ pve_yoga_model }}"
+  changed_when: false
+
+- name: Wait for the MySQL routers to reconnect after recovery
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} wait-for application {{ item }} --timeout 15m -m {{ pve_yoga_model }}"
+  loop: >-
+    {{ (pve_yoga_recovery_status.stdout | from_json).applications.keys()
+       | select('match', '.*-mysql-router$') | list }}
+  loop_control:
+    label: "{{ item }}"
+  changed_when: false
+
+- name: Read the post-recovery OpenStack application inventory
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
+  register: pve_yoga_recovery_status_after
+  changed_when: false
+
+- name: Report the post-recovery application workload states
+  ansible.builtin.debug:
+    msg: >-
+      {{ (pve_yoga_recovery_status_after.stdout | from_json).applications
+         | dict2items
+         | map(attribute='key') | sort
+         | zip((pve_yoga_recovery_status_after.stdout | from_json).applications
+               | dict2items
+               | map(attribute='value')
+               | map(attribute='application-status') | map(attribute='current') | list)
+         | map('join', '=') | list }}

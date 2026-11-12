@@ -7,7 +7,7 @@
   tasks:
     - name: Apply the per-container SMBIOS system UUIDs
       ansible.builtin.include_role:
-        name: pve-ct-system-uuid
+        name: pve-common-ct-uuid
       vars:
         pve_ct_system_uuid_items: >-
           {{ ([pve_yoga_controller_vmid | int]

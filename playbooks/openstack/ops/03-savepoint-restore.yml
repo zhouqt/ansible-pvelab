@@ -4,4 +4,4 @@
   hosts: pve
   become: false
   tags: [never, openstack-pve-savepoint-restore]
-  roles: [pve-yoga-savepoint-restore]
+  roles: [pve-openstack-savepoint-restore]

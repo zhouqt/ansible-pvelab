@@ -5,7 +5,7 @@ import pathlib
 import unittest
 import unittest.mock
 
-SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "roles/sunbeam-pve/files/restore_reconcile.py"
+SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "roles/pve-sunbeam/files/restore_reconcile.py"
 SPEC = importlib.util.spec_from_file_location("restore_reconcile", SCRIPT)
 reconcile = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(reconcile)

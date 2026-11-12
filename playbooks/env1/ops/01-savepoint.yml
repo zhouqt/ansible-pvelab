@@ -4,4 +4,4 @@
   hosts: pve
   become: false
   tags: [never, openstack-ussuri-savepoint]
-  roles: [pve-ussuri-savepoint]
+  roles: [pve-env1-savepoint]

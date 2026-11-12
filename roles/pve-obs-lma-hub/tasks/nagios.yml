@@ -1,0 +1,195 @@
+---
+
+- name: Seed the nagios host key in the Juju client known_hosts
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ip={{ pve_lma_nagios_ip }}
+    keyscan=$(ssh-keyscan -H "$ip" 2>/dev/null)
+    [[ -n "$keyscan" ]] || { echo "SSH did not become available on $ip" >&2; exit 1; }
+    printf '%s\n' "$keyscan" | {{ pve_obs_hub_pct_bin }} exec {{ pve_lma_juju_client_vmid }} -- \
+      su - {{ pve_lma_juju_client_user }} -c \
+      "install -d -m 0700 ~/.ssh; touch ~/.ssh/known_hosts; \
+       ssh-keygen -R \"$ip\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; \
+       ssh-keygen -R \"[$ip]:22\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; \
+       cat >> ~/.ssh/known_hosts"
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Read the {{ pve_lma_model }} model status
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - "{{ pve_lma_juju_cmd }} status -m {{ pve_lma_model_ref }} --format json"
+  register: pve_lma_status
+  changed_when: false
+  failed_when: false
+
+- name: Add the nagios CT as a machine
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_lma_juju_cmd }} add-machine ssh:ubuntu@{{ pve_lma_nagios_ip }}
+        -m {{ pve_lma_model_ref }}
+  when: pve_lma_nagios_ip not in (pve_lma_status.stdout | default(''))
+
+- name: Wait for the machine to report its address
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - "{{ pve_lma_juju_cmd }} status -m {{ pve_lma_model_ref }} --format json"
+  register: pve_lma_status_machine
+  until: pve_lma_nagios_ip in pve_lma_status_machine.stdout
+  failed_when: pve_lma_nagios_ip not in pve_lma_status_machine.stdout
+  retries: 60
+  delay: 10
+  changed_when: false
+
+- name: Find the machine carrying {{ pve_lma_nagios_ip }}
+  ansible.builtin.set_fact:
+    pve_lma_nagios_machine: >-
+      {{ ((pve_lma_status_machine.stdout | from_json).machines | default({}, true) | dict2items
+          | selectattr('value.ip-addresses', 'defined')
+          | selectattr('value.ip-addresses', 'contains', pve_lma_nagios_ip) | list)[0].key | default('') }}
+
+- name: Require a machine id for the nagios CT
+  ansible.builtin.assert:
+    that: pve_lma_nagios_machine | length > 0
+    fail_msg: >-
+      cannot find the machine hosting {{ pve_lma_nagios_ip }} in {{ pve_lma_model }}; on a manual cloud
+      principal charms must pass --to explicitly.
+
+- name: Deploy nagios
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_lma_juju_cmd }} deploy nagios -m {{ pve_lma_model_ref }}
+        --series {{ pve_lma_nagios_series }} --channel {{ pve_lma_nagios_channel }}
+        --to {{ pve_lma_nagios_machine }}
+  register: pve_lma_deploy_nagios
+  failed_when: >-
+    pve_lma_deploy_nagios.rc != 0
+    and 'already exists' not in (pve_lma_deploy_nagios.stderr | default(''))
+  changed_when: pve_lma_deploy_nagios.rc == 0
+
+- name: Wait for nagios to become active
+  ansible.builtin.include_role:
+    name: pve-obs-cos-hub
+    tasks_from: wait-model-active
+  vars:
+    obs_wait_model_ref: "{{ pve_lma_model_ref }}"
+    obs_wait_apps: [nagios]
+    obs_wait_label: "{{ pve_lma_model }} nagios"
+    obs_wait_juju_cmd: "{{ pve_lma_juju_cmd }}"
+    obs_wait_budget: "{{ pve_lma_settle_budget_seconds }}"
+    obs_wait_interval: "{{ pve_lma_settle_interval }}"
+  when: not (pve_lma_skip_wait | bool)
+
+- name: Read the offers published in {{ pve_lma_model }}
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - "{{ pve_lma_juju_cmd }} offers -m {{ pve_lma_model_ref }} --format json"
+  register: pve_lma_offers_before
+  changed_when: false
+  failed_when: false
+
+- name: Publish the nagios monitors offer
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_lma_juju_cmd }} offer -c {{ pve_lma_controller_name }}
+        {{ pve_lma_model }}.nagios:monitors
+  when: >-
+    'nagios' not in ((pve_lma_offers_before.stdout | default('{}', true) | from_json)
+                     | default({}, true))
+  register: pve_lma_offer_create
+  failed_when: >-
+    pve_lma_offer_create.rc | default(0) != 0
+    and 'already exists' not in (pve_lma_offer_create.stderr | default(''))
+  changed_when: true
+
+- name: Read the published offers
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - "{{ pve_lma_juju_cmd }} offers -m {{ pve_lma_model_ref }} --format json"
+  register: pve_lma_offers_out
+  changed_when: false
+
+- name: Require the nagios offer to be published
+  ansible.builtin.assert:
+    that: "'nagios' in (pve_lma_offers_out.stdout | from_json)"
+    fail_msg: >-
+      the offer nagios:monitors is not published (offers = {{ pve_lma_offers_out.stdout }}).
+
+- name: Show the {{ pve_lma_model }} status
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_hub_pct_bin }}"
+      - exec
+      - "{{ pve_lma_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_lma_juju_client_user }}"
+      - -c
+      - "{{ pve_lma_juju_cmd }} status -m {{ pve_lma_model_ref }}"
+  register: pve_lma_status_final
+  changed_when: false
+
+- name: Report the LMA model
+  ansible.builtin.debug:
+    msg: "{{ pve_lma_status_final.stdout_lines }}"

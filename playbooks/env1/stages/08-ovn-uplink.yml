@@ -3,5 +3,5 @@
 - name: Configure the PVE compute pub11 uplink for OVN br-ex
   hosts: pve
   become: false
-  tags: [never, pve-ovn-uplink]
-  roles: [pve-ovn-uplink]
+  tags: [never, pve-env1-ovn-uplink]
+  roles: [pve-env1-ovn-uplink]

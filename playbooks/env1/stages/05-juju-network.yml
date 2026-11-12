@@ -3,5 +3,5 @@
 - name: Configure PVE Juju network spaces after workload registration
   hosts: pve
   become: false
-  tags: [never, pve-juju-network]
-  roles: [pve-juju-network]
+  tags: [never, pve-env1-juju-network]
+  roles: [pve-env1-juju-network]

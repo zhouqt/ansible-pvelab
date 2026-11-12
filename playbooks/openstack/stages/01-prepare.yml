@@ -4,4 +4,4 @@
   hosts: pve
   become: false
   tags: [never, openstack-pve-prepare]
-  roles: [pve-yoga-prepare]
+  roles: [pve-openstack-prepare]

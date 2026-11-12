@@ -1,0 +1,64 @@
+---
+
+- name: Pin the container under work
+  ansible.builtin.set_fact:
+    pve_ct_system_uuid_current: "{{ item | combine({'restart_services': item.restart_services | default(pve_ct_system_uuid_restart_services)}) }}"
+
+- name: Read the status of vmid {{ pve_ct_system_uuid_current.vmid }}
+  ansible.builtin.command: "pct status {{ pve_ct_system_uuid_current.vmid }}"
+  register: pve_ct_system_uuid_status
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Fail loudly when vmid {{ pve_ct_system_uuid_current.vmid }} is not a container here
+  ansible.builtin.assert:
+    that:
+      - pve_ct_system_uuid_status.rc == 0
+    fail_msg: >-
+      pve-common-ct-uuid: vmid {{ pve_ct_system_uuid_current.vmid }} is not a container
+      on this host ({{ pve_ct_system_uuid_status.stderr | default('') | trim }}).
+    quiet: true
+
+- name: Read the configuration of vmid {{ pve_ct_system_uuid_current.vmid }}
+  ansible.builtin.command: "pct config {{ pve_ct_system_uuid_current.vmid }}"
+  register: pve_ct_system_uuid_config
+  changed_when: false
+  check_mode: false
+
+- name: Refuse to touch a locked container
+  ansible.builtin.assert:
+    that:
+      - pve_ct_system_uuid_config.stdout_lines | select('match', '^lock:') | list | length == 0
+    fail_msg: >-
+      pve-common-ct-uuid: vmid {{ pve_ct_system_uuid_current.vmid }} is locked
+      ({{ pve_ct_system_uuid_config.stdout_lines | select('match', '^lock:') | join(', ') }});
+      unlock it before changing its configuration.
+    quiet: true
+
+- name: Remember whether the container is running
+  ansible.builtin.set_fact:
+    pve_ct_system_uuid_running: "{{ pve_ct_system_uuid_status.stdout is search('running') }}"
+    pve_ct_system_uuid_running_map: >-
+      {{ pve_ct_system_uuid_running_map | default({})
+         | combine({ pve_ct_system_uuid_current.vmid | string:
+                     pve_ct_system_uuid_status.stdout is search('running') }) }}
+
+- name: Generate the host-side DMI copy for vmid {{ pve_ct_system_uuid_current.vmid }}
+  ansible.builtin.include_tasks: _generate.yml
+  when: not (pve_ct_system_uuid_verify_only | bool)
+
+- name: Record the identity in the host registry
+  ansible.builtin.include_tasks: _registry.yml
+  when: not (pve_ct_system_uuid_verify_only | bool)
+
+- name: Write the bind mounts into the configuration of vmid {{ pve_ct_system_uuid_current.vmid }}
+  ansible.builtin.include_tasks: _conf.yml
+  when: not (pve_ct_system_uuid_verify_only | bool)
+
+- name: Hot bind the mounts into the running container vmid {{ pve_ct_system_uuid_current.vmid }}
+  ansible.builtin.include_tasks: _live.yml
+  when:
+    - pve_ct_system_uuid_apply_live | bool
+    - not (pve_ct_system_uuid_verify_only | bool)
+    - pve_ct_system_uuid_running | bool

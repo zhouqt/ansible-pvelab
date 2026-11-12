@@ -1,0 +1,93 @@
+---
+- name: Assert one-time PVE preparation was explicitly requested
+  ansible.builtin.assert:
+    that:
+      - pve_run_host_baseline | bool or pve_run_template_repack | bool
+    fail_msg: "pve-env1-prepare is a one-off step. Set pve_run_host_baseline=true and/or pve_run_template_repack=true before running it."
+
+- name: Check PVE host bridge inventory
+  ansible.builtin.command: "ip -o link show {{ item }}"
+  loop:
+    - vmbr0
+    - pub11
+    - pub12
+    - int13
+    - int14
+  changed_when: false
+  when: pve_run_host_baseline | bool
+
+- name: Check PVE local template inventory
+  ansible.builtin.command: pveam list local
+  register: pve_template_inventory
+  changed_when: false
+  when: pve_run_template_repack | bool
+
+- name: Assert focal image checksum has been verified and provided
+  ansible.builtin.assert:
+    that:
+      - pve_focal_rootfs_sha256 | length == 64
+      - pve_focal_rootfs_sha256 is match('^[0-9a-fA-F]{64}$')
+    fail_msg: "before the rootfs can be downloaded automatically you must supply the verified vault_pve_focal_rootfs_sha256 through Ansible Vault."
+  when:
+    - pve_run_template_repack | bool
+    - pve_focal_template not in pve_template_inventory.stdout
+
+- name: Download focal cloud root filesystem archive
+  ansible.builtin.get_url:
+    url: https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64-root.tar.xz
+    dest: /var/tmp/ubuntu-20.04-server-cloudimg-amd64-root.tar.xz
+    mode: "0644"
+    checksum: "sha256:{{ pve_focal_rootfs_sha256 }}"
+  when:
+    - pve_run_template_repack | bool
+    - pve_focal_template not in pve_template_inventory.stdout
+
+- name: Create focal template unpack directory
+  ansible.builtin.file:
+    path: /var/tmp/pve-focal-template/tree
+    state: directory
+    mode: "0755"
+  when:
+    - pve_run_template_repack | bool
+    - pve_focal_template not in pve_template_inventory.stdout
+
+- name: Unpack focal root filesystem without device nodes
+  ansible.builtin.command:
+    argv:
+      - tar
+      - -xJf
+      - /var/tmp/ubuntu-20.04-server-cloudimg-amd64-root.tar.xz
+      - -C
+      - /var/tmp/pve-focal-template/tree
+      - --exclude=./dev/*
+    creates: /var/tmp/pve-focal-template/tree/etc/os-release
+  when:
+    - pve_run_template_repack | bool
+    - pve_focal_template not in pve_template_inventory.stdout
+
+- name: Repack focal root filesystem as a PVE template
+  ansible.builtin.shell: >-
+    XZ_OPT=-T0 tar -cJf /var/lib/vz/template/cache/ubuntu-focal-cloudimg-rootfs_20.04-6_amd64.tar.xz
+    --numeric-owner --acls --xattrs --format=pax
+    -C /var/tmp/pve-focal-template/tree .
+  args:
+    creates: /var/lib/vz/template/cache/ubuntu-focal-cloudimg-rootfs_20.04-6_amd64.tar.xz
+  when:
+    - pve_run_template_repack | bool
+    - pve_focal_template not in pve_template_inventory.stdout
+
+- name: Recheck PVE local template inventory
+  ansible.builtin.command: pveam list local
+  register: pve_template_final_inventory
+  changed_when: false
+  when: pve_run_template_repack | bool
+
+- name: Require focal template
+  ansible.builtin.assert:
+    that:
+      - pve_focal_template in (pve_template_final_inventory.stdout if pve_run_template_repack | bool else pve_template_inventory.stdout)
+    fail_msg: >-
+      {{ pve_focal_template }} is missing. On a first deployment you can explicitly set
+      -e pve_run_template_repack=true to download and repack it; otherwise follow
+      handle it by hand as described in docs/pve-juju-openstack-deploy-runbook.md section 2.
+  when: pve_run_template_repack | bool

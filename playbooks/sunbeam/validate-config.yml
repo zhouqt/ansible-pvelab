@@ -4,7 +4,7 @@
   gather_facts: false
   vars_files:
     - ../../inventory/group_vars/all/sunbeam.yml
-    - ../../roles/sunbeam-pve/defaults/main.yml
+    - ../../roles/pve-sunbeam/defaults/main.yml
   vars:
     sunbeam_show_nodes: false
   tasks:
@@ -83,7 +83,7 @@
 
     - name: Find every role template
       ansible.builtin.find:
-        paths: "{{ playbook_dir }}/../../roles/sunbeam-pve/templates"
+        paths: "{{ playbook_dir }}/../../roles/pve-sunbeam/templates"
         patterns: "*.j2"
       register: sunbeam_validate_templates
 

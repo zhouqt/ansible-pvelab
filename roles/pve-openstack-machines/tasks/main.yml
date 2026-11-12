@@ -1,0 +1,647 @@
+---
+
+- name: Validate the yoga workload inventory is self-consistent
+  ansible.builtin.assert:
+    that:
+      - (pve_yoga_workload_cts | map(attribute='vmid') | list | sort)
+        == (pve_yoga_workload_vmids | difference([pve_yoga_workload_kvm_vmid]) | sort)
+      - pve_yoga_kvm_workload.vmid == pve_yoga_workload_kvm_vmid
+      - (pve_yoga_workload_vmids | sort)
+        == (((pve_yoga_workload_cts | map(attribute='vmid') | list) + [pve_yoga_workload_kvm_vmid]) | sort)
+      - (pve_yoga_workload_secondary_network_ips.keys() | map('int') | list | sort)
+        == ((pve_yoga_workload_vmids + [pve_yoga_controller_vmid]) | sort)
+    fail_msg: "the pve_yoga_* workload inventory is inconsistent; refusing to create guests."
+
+- name: Read Juju client public key for workload authorization
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "cat ~/.ssh/id_ed25519.pub"
+  register: pve_yoga_machines_client_pubkey
+  changed_when: false
+
+- name: Validate Juju client public key
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_machines_client_pubkey.stdout is match('^ssh-ed25519 [A-Za-z0-9+/]+={0,3}( .*)?$')
+    fail_msg: "cannot read the Juju client ed25519 public key; run openstack-pve-juju-ctrl first."
+
+- name: Check whether each yoga workload CT exists
+  ansible.builtin.command: "pct status {{ item.vmid }}"
+  loop: "{{ pve_yoga_workload_cts }}"
+  loop_control:
+    label: "CT {{ item.vmid }}"
+  register: pve_yoga_ct_status
+  failed_when: false
+  changed_when: false
+
+- name: Create yoga workload CTs
+  ansible.builtin.command:
+    argv:
+      - pct
+      - create
+      - "{{ item.item.vmid }}"
+      - "{{ pve_yoga_lxc_template }}"
+      - --hostname
+      - "{{ item.item.hostname }}"
+      - --ostype
+      - ubuntu
+      - --cores
+      - "{{ item.item.cores }}"
+      - --memory
+      - "{{ item.item.memory }}"
+      - --swap
+      - "0"
+      - --rootfs
+      - "{{ pve_storage }}:32"
+      - --unprivileged
+      - "0"
+      - --features
+      - nesting=1,fuse=1
+      - --net0
+      - "name=eth0,bridge={{ pve_yoga_network_spaces[0].bridge }},ip={{ pve_yoga_public_prefix }}.{{ item.item.vmid - pve_yoga_ip_offset }}/24,gw={{ pve_yoga_public_gateway }}"
+      - --net1
+      - "name=eth1,bridge={{ pve_yoga_network_spaces[1].bridge }},ip={{ pve_yoga_workload_secondary_network_ips[item.item.vmid | string].oam }}/24"
+      - --net2
+      - "name=eth2,bridge={{ pve_yoga_network_spaces[2].bridge }},ip={{ pve_yoga_workload_secondary_network_ips[item.item.vmid | string].internal }}/24"
+      - --net3
+      - "name=eth3,bridge={{ pve_yoga_network_spaces[3].bridge }},ip={{ pve_yoga_workload_secondary_network_ips[item.item.vmid | string].storage }}/24"
+      - --nameserver
+      - 8.8.8.8
+      - --onboot
+      - "1"
+      - --start
+      - "0"
+  loop: "{{ pve_yoga_ct_status.results }}"
+  loop_control:
+    label: "CT {{ item.item.vmid }}"
+  when: item.rc != 0
+
+- name: Read each yoga workload CT configuration
+  ansible.builtin.command: "pct config {{ item.vmid }}"
+  loop: "{{ pve_yoga_workload_cts }}"
+  loop_control:
+    label: "CT {{ item.vmid }}"
+  register: pve_yoga_ct_configs
+  changed_when: false
+
+- name: Require each yoga workload CT to match the declared identity and static NICs
+  ansible.builtin.assert:
+    that:
+      - "'hostname: ' ~ item.item.hostname in item.stdout"
+      - "item.stdout is search('(?m)^net0: .*bridge=' ~ pve_yoga_network_spaces[0].bridge ~ '(?:,|$)')"
+      - "item.stdout is search('(?m)^net0: .*ip=' ~ (pve_yoga_public_prefix | regex_replace('\\.', '[.]')) ~ '[.]' ~ (item.item.vmid - pve_yoga_ip_offset) ~ '/24')"
+      - "item.stdout is search('(?m)^net0: .*gw=' ~ (pve_yoga_public_gateway | regex_replace('\\.', '[.]')) ~ '(?:,|$)')"
+      - "item.stdout is search('(?m)^net1: .*bridge=' ~ pve_yoga_network_spaces[1].bridge ~ '(?:,|$)')"
+      - "item.stdout is search('(?m)^net2: .*bridge=' ~ pve_yoga_network_spaces[2].bridge ~ '(?:,|$)')"
+      - "item.stdout is search('(?m)^net3: .*bridge=' ~ pve_yoga_network_spaces[3].bridge ~ '(?:,|$)')"
+      - "'ip=dhcp' not in item.stdout"
+    fail_msg: "the hostname/static NICs of CT {{ item.item.vmid }} do not match the inventory; refusing to rewrite."
+  loop: "{{ pve_yoga_ct_configs.results }}"
+  loop_control:
+    label: "CT {{ item.item.vmid }}"
+
+- name: Push the yoga cap.drop helper to the PVE host
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/pve/scripts/yoga-set-capdrop.py"
+    dest: /root/yoga-set-capdrop.py
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Configure privileged capability baseline on yoga workload CTs
+  ansible.builtin.shell: |
+    set -euo pipefail
+    python3 /root/yoga-set-capdrop.py {{ item.vmid }} "YOGA WORKLOAD SETTINGS"
+  args:
+    executable: /bin/bash
+  loop: "{{ pve_yoga_workload_cts }}"
+  loop_control:
+    label: "CT {{ item.vmid }}"
+  register: pve_yoga_ct_capdrop
+  changed_when: "'CHANGED' in pve_yoga_ct_capdrop.stdout"
+
+- name: Identify compute CTs that need the dedicated uplink NIC
+  ansible.builtin.set_fact:
+    pve_yoga_compute_ct_vmids: >-
+      {{ pve_yoga_workload_cts | map(attribute='vmid') | list
+         | intersect(pve_yoga_compute_uplink_vmids) }}
+
+- name: Read compute CT configurations to detect a missing uplink NIC
+  ansible.builtin.command: "pct config {{ item }}"
+  loop: "{{ pve_yoga_compute_ct_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+  register: pve_yoga_compute_ct_uplink_before
+  changed_when: false
+
+- name: Read runtime state of compute CTs missing the uplink NIC
+  ansible.builtin.command: "pct status {{ item.item }}"
+  loop: "{{ pve_yoga_compute_ct_uplink_before.results }}"
+  loop_control:
+    label: "CT {{ item.item }}"
+  when: item.stdout is not search('(?m)^net4:')
+  register: pve_yoga_compute_ct_uplink_runtime
+  changed_when: false
+
+- name: Stop running compute CTs before adding the uplink NIC
+  ansible.builtin.command: "pct stop {{ item.item.item }}"
+  loop: "{{ pve_yoga_compute_ct_uplink_runtime.results | default([], true) | selectattr('skipped', 'undefined') | list }}"
+  loop_control:
+    label: "CT {{ item.item.item }}"
+  when: "'status: running' in item.stdout"
+
+- name: Add the dedicated no-L3 uplink NIC to compute CTs missing it
+  ansible.builtin.command: >-
+    pct set {{ item.item }} --net4
+    name={{ pve_yoga_compute_uplink_guest_interface }},bridge={{ pve_yoga_compute_uplink_bridge }},ip=manual
+  loop: "{{ pve_yoga_compute_ct_uplink_before.results }}"
+  loop_control:
+    label: "CT {{ item.item }}"
+  when: item.stdout is not search('(?m)^net4:')
+
+- name: Read compute CT configurations after uplink NIC provisioning
+  ansible.builtin.command: "pct config {{ item }}"
+  loop: "{{ pve_yoga_compute_ct_vmids }}"
+  loop_control:
+    label: "CT {{ item }}"
+  register: pve_yoga_compute_ct_uplink_after
+  changed_when: false
+
+- name: Require compute CTs to expose a no-L3 uplink NIC on {{ pve_yoga_compute_uplink_bridge }}
+  ansible.builtin.assert:
+    that:
+      - "item.stdout is search('(?m)^net4: .*name=' ~ pve_yoga_compute_uplink_guest_interface ~ '(?:,|$)')"
+      - "item.stdout is search('(?m)^net4: .*bridge=' ~ pve_yoga_compute_uplink_bridge ~ '(?:,|$)')"
+      - "item.stdout is search('(?m)^net4: .*ip=manual(?:,|$)')"
+      - "item.stdout is not search('(?m)^net4: .*gw=')"
+    fail_msg: "the net4 uplink of compute CT {{ item.item }} is not the L3-free {{ pve_yoga_compute_uplink_guest_interface }}->{{ pve_yoga_compute_uplink_bridge }}."
+  loop: "{{ pve_yoga_compute_ct_uplink_after.results }}"
+  loop_control:
+    label: "CT {{ item.item }}"
+
+- name: Push the thin-LV OSD helper to the PVE host
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/pve/scripts/yoga-setup-osd-lv.sh"
+    dest: /root/yoga-setup-osd-lv.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Build the vmid:osdindex mapping for the OSD thin LVs
+  ansible.builtin.set_fact:
+    pve_yoga_machines_osd_lv_spec: >-
+      {{ pve_yoga_osd_vmids
+         | zip(range(0, pve_yoga_osd_vmids | length))
+         | map('join', ':') | join(' ') }}
+
+- name: Create the OSD thin LVs and their CT device mounts before the CTs start
+  ansible.builtin.command: "bash /root/yoga-setup-osd-lv.sh '{{ pve_yoga_machines_osd_lv_spec }}'"
+  environment:
+    OSD_SIZE_MB: "{{ pve_yoga_osd_size_mb }}"
+    OSD_LV_PREFIX: "{{ pve_yoga_osd_lv_prefix }}"
+    OSD_THINPOOL: "{{ pve_yoga_osd_thinpool }}"
+    OSD_THINPOOL_MAX_DATA_PERCENT: "{{ pve_yoga_osd_thinpool_max_data_percent }}"
+  register: pve_yoga_machines_osd_lv
+  changed_when: "'YOGA-SETUP-OSD-LV-DONE' in pve_yoga_machines_osd_lv.stdout"
+
+- name: Require the OSD device mount to be present in every OSD CT configuration
+  ansible.builtin.shell: |
+    set -euo pipefail
+    bad=""
+    for vmid in {{ pve_yoga_osd_vmids | join(' ') }}; do
+      grep -q "dev/osd-block" "/etc/pve/lxc/$vmid.conf" || bad="$bad $vmid"
+    done
+    [ -z "$bad" ] || { echo "OSD-MOUNT-MISSING:$bad"; exit 1; }
+    echo "OSD-MOUNT-OK"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_machines_osd_mount
+  changed_when: false
+  failed_when: "'OSD-MOUNT-OK' not in pve_yoga_machines_osd_mount.stdout"
+
+- name: Grant /dev/kvm to every compute CT
+  ansible.builtin.shell: |
+    set -euo pipefail
+    changed_any=""
+    for vmid in {{ pve_yoga_compute_ct_vmids | join(' ') }}; do
+      conf="$(pct config "$vmid")"
+      if printf '%s\n' "$conf" | grep -qE '^dev[0-9]+: */dev/kvm$'; then continue; fi
+      idx=""
+      for i in $(seq 1 31); do
+        printf '%s\n' "$conf" | grep -qE "^dev$i:" || { idx=$i; break; }
+      done
+      [ -n "$idx" ] || { echo "KVM-DEV-NO-SLOT $vmid" >&2; exit 1; }
+      pct set "$vmid" --dev"$idx" path=/dev/kvm >/dev/null
+      echo "KVM-DEV-ADDED $vmid dev$idx"
+      changed_any=1
+    done
+    [ -n "$changed_any" ] || echo "KVM-DEV-UNCHANGED"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_compute_ct_kvm_dev
+  changed_when: "'KVM-DEV-ADDED' in pve_yoga_compute_ct_kvm_dev.stdout"
+
+- name: Give every yoga workload CT its own SMBIOS system UUID
+  ansible.builtin.include_role:
+    name: pve-common-ct-uuid
+  vars:
+    pve_ct_system_uuid_items: "{{ pve_yoga_workload_cts | map(attribute='vmid') | list }}"
+    pve_ct_system_uuid_apply_live: true
+
+- name: Check runtime state of yoga workload CTs
+  ansible.builtin.command: "pct status {{ item.vmid }}"
+  loop: "{{ pve_yoga_workload_cts }}"
+  loop_control:
+    label: "CT {{ item.vmid }}"
+  register: pve_yoga_ct_runtime
+  changed_when: false
+
+- name: Start stopped yoga workload CTs
+  ansible.builtin.command: "pct start {{ item.item.vmid }}"
+  loop: "{{ pve_yoga_ct_runtime.results }}"
+  loop_control:
+    label: "CT {{ item.item.vmid }}"
+  when: "'status: stopped' in item.stdout"
+
+- name: Wait for yoga workload CT systemd
+  ansible.builtin.command: "pct exec {{ item.vmid }} -- systemctl is-system-running"
+  loop: "{{ pve_yoga_workload_cts }}"
+  loop_control:
+    label: "CT {{ item.vmid }}"
+  register: pve_yoga_ct_systemd
+  until: pve_yoga_ct_systemd.stdout | trim in ['running', 'degraded']
+  failed_when: pve_yoga_ct_systemd.stdout | trim not in ['running', 'degraded']
+  retries: 30
+  delay: 5
+  changed_when: false
+
+- name: Require /dev/kvm to be openable inside every running compute CT
+  ansible.builtin.shell: |
+    set -euo pipefail
+    bad=""
+    for vmid in {{ pve_yoga_compute_ct_vmids | join(' ') }}; do
+      pct status "$vmid" | grep -q 'status: running' || continue
+      pct exec "$vmid" -- dd if=/dev/kvm of=/dev/null bs=1 count=0 status=none 2>/dev/null \
+        || bad="$bad $vmid"
+    done
+    [ -z "$bad" ] || { echo "KVM-OPEN-FAILED:$bad" >&2; exit 1; }
+    echo "KVM-OPEN-OK"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_compute_ct_kvm_open
+  changed_when: false
+  failed_when: "'KVM-OPEN-OK' not in pve_yoga_compute_ct_kvm_open.stdout"
+
+- name: Restore sys-kernel-config.mount inside the yoga workload CTs
+  ansible.builtin.shell: |
+    set -euo pipefail
+    unmasked=""
+    for vmid in {{ pve_yoga_workload_cts | map(attribute='vmid') | join(' ') }}; do
+      state="$(pct exec "$vmid" -- systemctl is-enabled sys-kernel-config.mount 2>/dev/null || true)"
+      if [ "$state" = "masked" ]; then
+        pct exec "$vmid" -- systemctl unmask sys-kernel-config.mount >/dev/null
+        unmasked="$unmasked $vmid"
+      fi
+    done
+    echo "UNMASKED:${unmasked:- none}"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_ct_unmask_kernel_config
+  changed_when: "'UNMASKED: none' not in pve_yoga_ct_unmask_kernel_config.stdout"
+
+- name: Push yoga CT init script to PVE host
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/pve/scripts/juju-ct-init.sh"
+    dest: /root/juju-yoga-ct-init.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Initialize yoga workload CTs (ubuntu user, NOPASSWD sudo, client key, snapd)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    for vmid in {{ pve_yoga_workload_cts | map(attribute='vmid') | join(' ') }}; do
+      pct push "$vmid" /root/juju-yoga-ct-init.sh /root/juju-ct-init.sh --perms 0700
+      pct exec "$vmid" -- env JUJU_CLIENT_PUBKEY='{{ pve_yoga_machines_client_pubkey.stdout | trim }}' \
+        bash /root/juju-ct-init.sh
+      pct exec "$vmid" -- rm -f /root/juju-ct-init.sh
+    done
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Push the yoga APT-mirror helper to the PVE host
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/pve/scripts/yoga-apt-mirror.sh"
+    dest: /root/yoga-apt-mirror.sh
+    owner: root
+    group: root
+    mode: "0700"
+  tags: [openstack-pve-apt-mirror]
+  when: pve_yoga_apt_mirror | length > 0
+
+- name: Point the yoga workload CTs at the APT mirror
+  ansible.builtin.shell: |
+    set -euo pipefail
+    for vmid in {{ pve_yoga_workload_cts | map(attribute='vmid') | join(' ') }}; do
+      pct push "$vmid" /root/yoga-apt-mirror.sh /root/yoga-apt-mirror.sh --perms 0700
+      pct exec "$vmid" -- bash /root/yoga-apt-mirror.sh '{{ pve_yoga_apt_mirror }}'
+      pct exec "$vmid" -- rm -f /root/yoga-apt-mirror.sh
+    done
+  args:
+    executable: /bin/bash
+  register: pve_yoga_workload_ct_apt_mirror
+  changed_when: "'changed=1' in pve_yoga_workload_ct_apt_mirror.stdout"
+  tags: [openstack-pve-apt-mirror]
+  when: pve_yoga_apt_mirror | length > 0
+
+- name: Install the python3 modules the OpenStack charms expect from the OS
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pkgs="{{ pve_yoga_unit_python3_packages | join(' ') }}"
+    if [ -z "$pkgs" ]; then
+      echo "PY3DEPS: none (profile {{ pve_yoga_profile }})"
+      exit 0
+    fi
+    installed=""
+    for vmid in {{ pve_yoga_workload_cts | map(attribute='vmid') | join(' ') }}; do
+      missing=""
+      for pkg in $pkgs; do
+        pct exec "$vmid" -- dpkg -s "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+      done
+      if [ -z "$missing" ]; then
+        continue
+      fi
+      pct exec "$vmid" -- env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+      for pkg in $missing; do
+        pct exec "$vmid" -- env DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" >/dev/null
+        installed="$installed $vmid:$pkg"
+      done
+    done
+    echo "PY3DEPS:${installed:- none}"
+  args:
+    executable: /bin/bash
+  register: pve_yoga_ct_python3_deps
+  changed_when: "'PY3DEPS: none' not in pve_yoga_ct_python3_deps.stdout"
+  tags: [openstack-pve-unit-python3-deps]
+
+- name: Create and configure the yoga KVM workload VM
+  ansible.builtin.include_tasks: kvm-workload.yml
+
+- name: Copy yoga machine-registration helper to PVE host
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/pve/scripts/yoga-add-juju-machine.sh"
+    dest: /root/yoga-add-juju-machine.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install yoga machine-registration helper in Juju client CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - /root/yoga-add-juju-machine.sh
+      - /usr/local/sbin/yoga-add-juju-machine.sh
+      - --perms
+      - "0755"
+
+- name: Seed Juju client known_hosts for every yoga workload guest
+  ansible.builtin.shell: |
+    set -euo pipefail
+    for vmid in {{ pve_yoga_workload_vmids | join(' ') }}; do
+      ip="{{ pve_yoga_public_prefix }}.$((vmid - {{ pve_yoga_ip_offset }}))"
+      key=
+      for _ in $(seq 1 60); do
+        key=$(ssh-keyscan -T 3 -H "$ip" 2>/dev/null) && [[ -n "$key" ]] && break
+        sleep 5
+      done
+      [[ -n "$key" ]] || { echo "ERROR: SSH not available on $ip" >&2; exit 1; }
+      printf '%s\n' "$key" | pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c \
+        "install -d -m 0700 ~/.ssh; touch ~/.ssh/known_hosts; ssh-keygen -R \"$ip\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; ssh-keygen -R \"[$ip]:22\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; cat >> ~/.ssh/known_hosts"
+    done
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Register yoga workload guests as Juju machines 0-5
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - >-
+        JUJU_BIN={{ pve_yoga_juju_bin }} JUJU_DATA={{ pve_yoga_juju_data }}
+        /usr/local/sbin/yoga-add-juju-machine.sh {{ pve_yoga_public_prefix }}.{{ item - pve_yoga_ip_offset }}
+        {{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}
+  loop: "{{ pve_yoga_workload_vmids }}"
+  loop_control:
+    label: "vmid {{ item }} → machine {{ pve_yoga_workload_vmids.index(item) }}"
+  changed_when: false
+
+- name: Compute the expected yoga machine primary addresses
+  ansible.builtin.set_fact:
+    pve_yoga_expected_machine_ips: >-
+      {{ pve_yoga_expected_machine_ips | default([])
+         + [pve_yoga_public_prefix ~ '.' ~ (item | int - pve_yoga_ip_offset)] }}
+  loop: "{{ pve_yoga_workload_vmids }}"
+  loop_control:
+    label: "vmid {{ item }}"
+
+- name: Read OpenStack Juju model status after machine registration
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_yoga_juju_client_user }}"
+      - -c
+      - "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }} status -m {{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }} --format json"
+  register: pve_yoga_machines_status
+  changed_when: false
+  until: >-
+    ((pve_yoga_machines_status.stdout | from_json).machines | default({}, true) | length
+      == (pve_yoga_workload_vmids | length))
+    and
+    (pve_yoga_expected_machine_ips | difference(
+      (pve_yoga_machines_status.stdout | from_json).machines | dict2items
+      | map(attribute='value') | selectattr('ip-addresses', 'defined')
+      | map(attribute='ip-addresses') | flatten) | length == 0)
+  retries: 30
+  delay: 5
+
+- name: Require yoga machines 0-5 to be registered with the expected primary address
+  ansible.builtin.assert:
+    that:
+      - pve_yoga_machines_status.rc == 0
+      - "'machines' in (pve_yoga_machines_status.stdout | from_json)"
+      - >-
+        ((pve_yoga_machines_status.stdout | from_json).machines | default({}, true)
+          | dict2items | map(attribute='key') | map('int') | list | sort)
+        == (range(0, pve_yoga_workload_vmids | length) | list)
+      - >-
+        '{{ pve_yoga_public_prefix }}.' ~ (item - pve_yoga_ip_offset) in (
+          (pve_yoga_machines_status.stdout | from_json).machines[(pve_yoga_workload_vmids.index(item)) | string].get('ip-addresses', [])
+          + [(pve_yoga_machines_status.stdout | from_json).machines[(pve_yoga_workload_vmids.index(item)) | string].get('dns-name', '')]
+        )
+    fail_msg: >-
+      Juju machines 0-5 were not registered as expected (they should be vmid {{ pve_yoga_workload_vmids | join(', ') }},
+      primary addresses {{ pve_yoga_public_prefix }}.{{ pve_yoga_workload_vmids[0] - pve_yoga_ip_offset }}-{{ pve_yoga_workload_vmids | max - pve_yoga_ip_offset }}).
+  loop: "{{ pve_yoga_workload_vmids }}"
+  loop_control:
+    label: "vmid {{ item }} → machine {{ pve_yoga_workload_vmids.index(item) }}"
+
+- name: Assemble the yoga guest name map (vmid -> hostname)
+  ansible.builtin.set_fact:
+    pve_yoga_guest_names: >-
+      {{ ({pve_yoga_controller_vmid: pve_yoga_controller_name})
+         | combine(pve_yoga_workload_cts | items2dict(key_name='vmid', value_name='hostname'))
+         | combine({pve_yoga_kvm_workload.vmid: pve_yoga_kvm_workload.hostname}) }}
+    pve_yoga_hosts_ct_vmids: >-
+      {{ [pve_yoga_controller_vmid]
+         + (pve_yoga_workload_vmids | difference([pve_yoga_workload_kvm_vmid])) }}
+
+- name: Build the managed yoga /etc/hosts block
+  ansible.builtin.set_fact:
+    pve_yoga_hosts_block: |
+      {% for vmid, name in pve_yoga_guest_names.items() | sort %}
+      {% for net in pve_yoga_network_spaces %}
+      {{ net.cidr | regex_replace('\.0/24$', '') }}.{{ vmid | int - pve_yoga_ip_offset }} {{ name }}
+      {% endfor %}
+      {% endfor %}
+
+- name: Write the managed yoga /etc/hosts block on the PVE host
+  ansible.builtin.copy:
+    content: "{{ pve_yoga_hosts_block }}"
+    dest: /root/yoga-hosts.block
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Push the yoga hosts-sync helper to the PVE host
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/pve/scripts/yoga-hosts-sync.sh"
+    dest: /root/yoga-hosts-sync.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the static name map into every yoga container guest
+  ansible.builtin.shell: |
+    set -euo pipefail
+    for vmid in {{ pve_yoga_hosts_ct_vmids | join(' ') }}; do
+      pct push "$vmid" /root/yoga-hosts.block /root/yoga-hosts.block
+      pct push "$vmid" /root/yoga-hosts-sync.sh /root/yoga-hosts-sync.sh --perms 0700
+      pct exec "$vmid" -- bash /root/yoga-hosts-sync.sh /root/yoga-hosts.block
+      pct exec "$vmid" -- rm -f /root/yoga-hosts.block /root/yoga-hosts-sync.sh
+    done
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Ensure the Juju client staging directory exists
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_yoga_juju_client_vmid }}"
+      - --
+      - install
+      - -d
+      - -o
+      - "{{ pve_yoga_juju_client_user }}"
+      - -g
+      - "{{ pve_yoga_juju_client_user }}"
+      - -m
+      - "0755"
+      - "{{ pve_yoga_juju_stage_dir }}"
+  changed_when: false
+
+- name: Install the static name map into the yoga KVM guest
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct push {{ pve_yoga_juju_client_vmid }} /root/yoga-hosts.block {{ pve_yoga_juju_stage_dir }}/yoga-hosts.block
+    pct push {{ pve_yoga_juju_client_vmid }} /root/yoga-hosts-sync.sh {{ pve_yoga_juju_stage_dir }}/yoga-hosts-sync.sh --perms 0700
+    pct exec {{ pve_yoga_juju_client_vmid }} -- chown {{ pve_yoga_juju_client_user }}:{{ pve_yoga_juju_client_user }} {{ pve_yoga_juju_stage_dir }}/yoga-hosts.block {{ pve_yoga_juju_stage_dir }}/yoga-hosts-sync.sh
+    pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c '
+      set -e
+      ip={{ pve_yoga_public_prefix }}.{{ pve_yoga_workload_kvm_vmid - pve_yoga_ip_offset }}
+      scp -o StrictHostKeyChecking=no -q {{ pve_yoga_juju_stage_dir }}/yoga-hosts.block {{ pve_yoga_juju_stage_dir }}/yoga-hosts-sync.sh ubuntu@$ip:/tmp/
+      ssh -o StrictHostKeyChecking=no -q ubuntu@$ip "sudo bash /tmp/yoga-hosts-sync.sh /tmp/yoga-hosts.block"
+      rm -f {{ pve_yoga_juju_stage_dir }}/yoga-hosts.block {{ pve_yoga_juju_stage_dir }}/yoga-hosts-sync.sh
+    '
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Point the yoga KVM guest at the APT mirror
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct push {{ pve_yoga_juju_client_vmid }} /root/yoga-apt-mirror.sh {{ pve_yoga_juju_stage_dir }}/yoga-apt-mirror.sh --perms 0700
+    pct exec {{ pve_yoga_juju_client_vmid }} -- chown {{ pve_yoga_juju_client_user }}:{{ pve_yoga_juju_client_user }} {{ pve_yoga_juju_stage_dir }}/yoga-apt-mirror.sh
+    pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c '
+      set -e
+      ip={{ pve_yoga_public_prefix }}.{{ pve_yoga_workload_kvm_vmid - pve_yoga_ip_offset }}
+      scp -o StrictHostKeyChecking=no -q {{ pve_yoga_juju_stage_dir }}/yoga-apt-mirror.sh ubuntu@$ip:/tmp/
+      ssh -o StrictHostKeyChecking=no -q ubuntu@$ip "sudo bash /tmp/yoga-apt-mirror.sh {{ pve_yoga_apt_mirror }}"
+      rm -f {{ pve_yoga_juju_stage_dir }}/yoga-apt-mirror.sh
+    '
+  args:
+    executable: /bin/bash
+  register: pve_yoga_kvm_apt_mirror
+  changed_when: "'changed=1' in pve_yoga_kvm_apt_mirror.stdout"
+  tags: [openstack-pve-apt-mirror]
+  when: pve_yoga_apt_mirror | length > 0
+
+- name: Install the python3 modules the OpenStack charms expect from the OS (KVM workload)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pkgs="{{ pve_yoga_unit_python3_packages | join(' ') }}"
+    if [ -z "$pkgs" ]; then
+      echo "PY3DEPS: none (profile {{ pve_yoga_profile }})"
+      exit 0
+    fi
+    out="$(pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c '
+      set -e
+      ip={{ pve_yoga_public_prefix }}.{{ pve_yoga_workload_kvm_vmid - pve_yoga_ip_offset }}
+      ssh -o StrictHostKeyChecking=no -q ubuntu@$ip "
+        miss=\"\"
+        for p in {{ pve_yoga_unit_python3_packages | join(' ') }}; do
+          dpkg -s \"\$p\" >/dev/null 2>&1 || miss=\"\$miss \$p\"
+        done
+        if [ -z \"\$miss\" ]; then
+          echo PY3DEPS-KVM: none
+          exit 0
+        fi
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+        sudo DEBIAN_FRONTEND=noninteractive apt-get -y install \$miss
+      "
+    ' 2>&1)"
+    echo "$out" | tail -3
+    if echo "$out" | grep -q "PY3DEPS-KVM: none"; then
+      echo "PY3DEPS: none"
+    else
+      echo "PY3DEPS: kvm {{ pve_yoga_unit_python3_packages | join(' ') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: pve_yoga_kvm_python3_deps
+  changed_when: "'PY3DEPS: none' not in pve_yoga_kvm_python3_deps.stdout"
+  tags: [openstack-pve-unit-python3-deps]

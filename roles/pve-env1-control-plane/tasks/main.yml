@@ -1,0 +1,646 @@
+---
+
+- name: Define the Juju 2.9 model handle
+  ansible.builtin.set_fact:
+    pve_ussuri_model: "{{ pve_juju_controller_name }}:{{ pve_ussuri_model_name }}"
+
+- name: Ensure the per-environment credentials directory exists on the control node
+  ansible.builtin.file:
+    path: "{{ pve_ussuri_credentials_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+  when: pve_keystone_admin_password | length == 0
+
+- name: Generate a Keystone admin password when neither Vault nor a credentials file supplies one
+  ansible.builtin.copy:
+    content: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}\n"
+    dest: "{{ pve_ussuri_keystone_admin_password_file }}"
+    mode: "0600"
+    force: false
+  delegate_to: localhost
+  become: false
+  when: pve_keystone_admin_password | length == 0
+
+- name: Adopt the generated Keystone admin password for the rest of the play
+  ansible.builtin.set_fact:
+    pve_keystone_admin_password: >-
+      {{ lookup('ansible.builtin.file', pve_ussuri_keystone_admin_password_file) | trim }}
+  no_log: true
+  when: pve_keystone_admin_password | length == 0
+
+- name: Require the OpenStack keystone admin password
+  ansible.builtin.assert:
+    that:
+      - pve_keystone_admin_password | length > 0
+    fail_msg: >-
+      cannot obtain the keystone admin password, and cannot write {{ pve_ussuri_keystone_admin_password_file }}.
+      set vault_pve_keystone_admin_password through Ansible Vault, or make sure the Ansible controller
+      can write to the credentials directory.
+  no_log: true
+
+- name: Require OpenStack public/admin/internal binding spaces before deploying charms
+  ansible.builtin.assert:
+    that:
+      - "pve_juju_network_spaces | selectattr('name', 'equalto', pve_juju_public_native_space) | map(attribute='cidr') | list == [pve_juju_public_cidr]"
+      - "pve_juju_network_spaces | selectattr('name', 'equalto', pve_juju_default_space) | map(attribute='cidr') | list == ['192.168.13.0/24']"
+    fail_msg: "OpenStack endpoint bindings require public=alpha and default/internal=192.168.13.0/24."
+
+- name: Verify Juju controller and OpenStack model are ready
+  ansible.builtin.command: >-
+    pct exec {{ pve_juju_client_vmid }} -- su - {{ pve_juju_client_user }} -c
+    '{{ pve_juju_bin }} status -m {{ pve_ussuri_model }} --format short'
+  register: pve_control_status
+  changed_when: false
+
+- name: Read configured Juju model default space
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} model-config -m {{ pve_ussuri_model }} default-space"
+  register: pve_control_default_space
+  changed_when: false
+
+- name: Require verified Juju default space before OpenStack deployment
+  ansible.builtin.assert:
+    that:
+      - pve_control_default_space.rc == 0
+      - pve_control_default_space.stdout | trim == pve_juju_default_space
+    fail_msg: >-
+      OpenStack model default-space must be {{ pve_juju_default_space }}. Run
+      --tags pve-env1-juju-network after registering workload machines and before this stage.
+
+- name: Read existing application inventory before OpenStack deployment
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} status -m {{ pve_ussuri_model }} --format json"
+  register: pve_control_existing_applications
+  changed_when: false
+  failed_when: pve_control_existing_applications.rc != 0 or 'applications' not in (pve_control_existing_applications.stdout | from_json)
+
+- name: Require endpoint bindings use only public and default internal spaces for existing applications
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} show-application -m {{ pve_ussuri_model }} {{ item.application }} --format json"
+  loop:
+    - { application: keystone, endpoints: [public, admin, internal] }
+    - { application: nova-cloud-controller, endpoints: [public, admin, internal] }
+    - { application: neutron-api, endpoints: [public, admin, internal] }
+    - { application: glance, endpoints: [public, admin, internal] }
+    - { application: cinder, endpoints: [public, admin, internal] }
+    - { application: openstack-dashboard, endpoints: [public] }
+  register: pve_control_public_binding_checks
+  changed_when: false
+  when: item.application in ((pve_control_existing_applications.stdout | from_json).applications | default({})).keys() | list
+
+- name: Verify public and internal endpoint bindings for existing OpenStack applications
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.stdout | from_json)[item.item.application]['endpoint-bindings'].get('public', '')
+        == pve_juju_public_native_space
+      - >-
+        (item.stdout | from_json)[item.item.application]['endpoint-bindings'].get('', '')
+        == 'internal'
+      - >-
+        item.item.endpoints | difference(
+          (item.stdout | from_json)[item.item.application]['endpoint-bindings'].keys() | list
+        ) | length == 0
+      - >-
+        (item.item.endpoints | reject('equalto', 'public') | list
+        | select('in', ((item.stdout | from_json)[item.item.application]['endpoint-bindings']
+          | dict2items | selectattr('key', 'in', item.item.endpoints)
+          | selectattr('value', 'equalto', 'internal') | map(attribute='key') | list))
+        | list | length) ==
+        (item.item.endpoints | reject('equalto', 'public') | list | length)
+    fail_msg: >-
+      Existing {{ item.item.application }} endpoint bindings are not public=alpha and
+      admin/internal=internal. Refusing to deploy around a potentially wrong live endpoint mapping;
+      correct it in a controlled maintenance window.
+  loop: "{{ pve_control_public_binding_checks.results | default([]) }}"
+  when: not item.skipped | default(false)
+
+- name: Copy OpenStack control-plane deployment script to PVE host
+  ansible.builtin.template:
+    src: "{{ pve_deploy_control_template }}"
+    dest: /root/deploy-control-plane.sh
+    mode: "0700"
+  no_log: true
+
+- name: Push OpenStack control-plane deployment script into the Juju client CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ pve_juju_client_vmid }}"
+      - /root/deploy-control-plane.sh
+      - /tmp/deploy-control-plane.sh
+  no_log: true
+
+- name: Run idempotent OpenStack control-plane deployment as Juju client
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - bash /tmp/deploy-control-plane.sh
+  register: pve_control_deployment
+  changed_when: "'DEPLOY ' in pve_control_deployment.stdout or 'REL ' in pve_control_deployment.stdout"
+
+- name: Reconcile MySQL grants right after deployment (the Vault router needs them)
+  ansible.builtin.include_tasks: reconcile-mysql-grants.yml
+
+- name: Read deployed OpenStack API endpoint bindings
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} show-application -m {{ pve_ussuri_model }} {{ item.application }} --format json"
+  loop:
+    - { application: keystone, endpoints: [public, admin, internal] }
+    - { application: nova-cloud-controller, endpoints: [public, admin, internal] }
+    - { application: neutron-api, endpoints: [public, admin, internal] }
+    - { application: glance, endpoints: [public, admin, internal] }
+    - { application: cinder, endpoints: [public, admin, internal] }
+    - { application: openstack-dashboard, endpoints: [public] }
+  register: pve_control_deployed_binding_checks
+  changed_when: false
+
+- name: Verify deployed OpenStack API endpoint bindings
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.stdout | from_json)[item.item.application]['endpoint-bindings'].get('public', '')
+        == pve_juju_public_native_space
+      - >-
+        (item.stdout | from_json)[item.item.application]['endpoint-bindings'].get('', '')
+        == 'internal'
+      - >-
+        item.item.endpoints | difference(
+          (item.stdout | from_json)[item.item.application]['endpoint-bindings'].keys() | list
+        ) | length == 0
+      - >-
+        (item.item.endpoints | reject('equalto', 'public') | list
+        | select('in', ((item.stdout | from_json)[item.item.application]['endpoint-bindings']
+          | dict2items | selectattr('key', 'in', item.item.endpoints)
+          | selectattr('value', 'equalto', 'internal') | map(attribute='key') | list))
+        | list | length) ==
+        (item.item.endpoints | reject('equalto', 'public') | list | length)
+    fail_msg: >-
+      Deployed {{ item.item.application }} endpoint bindings do not map public=alpha and
+      admin/internal=internal as expected.
+  loop: "{{ pve_control_deployed_binding_checks.results }}"
+
+- name: Probe the Vault API briefly before touching its storage
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -sk
+      - --max-time
+      - "5"
+      - "http://{{ pve_ussuri_vault_address }}:8200/v1/sys/init"
+  register: pve_ussuri_vault_api_probe
+  changed_when: false
+  failed_when: false
+  retries: 18
+  delay: 10
+  until: pve_ussuri_vault_api_probe.rc == 0
+
+- name: Repair the co-located-leader grants when the Vault API is still not answering
+  ansible.builtin.include_tasks: vault-unlatch.yml
+  when: pve_ussuri_vault_api_probe.rc != 0
+
+- name: Read the Vault initialization state
+  ansible.builtin.shell: |
+    set -uo pipefail
+    out=$(curl -sk --max-time 5 "http://{{ pve_ussuri_vault_address }}:8200/v1/sys/init") && rc=0 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      pct exec {{ pve_ussuri_vault_vmid }} -- systemctl reset-failed vault.service >/dev/null 2>&1 || true
+      pct exec {{ pve_ussuri_vault_vmid }} -- systemctl start vault.service >/dev/null 2>&1 || true
+      echo "VAULT-LATCH-CLEARED attempt failed, latch reset and service started" >&2
+    fi
+    printf '%s' "$out"
+    exit "$rc"
+  args:
+    executable: /bin/bash
+  register: pve_ussuri_vault_init_state
+  changed_when: "'VAULT-LATCH-CLEARED' in (pve_ussuri_vault_init_state.stderr | default(''))"
+  failed_when: false
+  retries: 60
+  delay: 10
+  until: pve_ussuri_vault_init_state.rc == 0
+
+- name: Require the Vault API to answer before touching its storage
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_vault_init_state.rc == 0
+      - "'initialized' in (pve_ussuri_vault_init_state.stdout | default('', true))"
+    fail_msg: >-
+      the Vault API http://{{ pve_ussuri_vault_address }}:8200/v1/sys/init gave no
+      gave no parsable response (rc={{ pve_ussuri_vault_init_state.rc }}). The most common cause is that vault's
+      storage is not ready yet -- vault-mysql-router waits for the one reconcile-mysql-grants fills in before it can bootstrap.
+      the mysqlrouteruser grant before it can bootstrap; if it is already active but vault.service is still
+      `Start request repeated too quickly` (the systemd start-limit latch); break the latch by hand:
+      `pct exec {{ pve_ussuri_vault_vmid }} -- systemctl reset-failed vault.service` then start it.
+      re-run this playbook once that is confirmed (it is idempotent).
+
+- name: Initialize the Vault when it is not yet initialized
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -sk
+      - "http://{{ pve_ussuri_vault_address }}:8200/v1/sys/init"
+      - -X
+      - PUT
+      - -d
+      - '{"secret_shares": {{ pve_ussuri_vault_shares }}, "secret_threshold": {{ pve_ussuri_vault_threshold }}}'
+  register: pve_ussuri_vault_init_response
+  failed_when: >-
+    pve_ussuri_vault_init_response.rc != 0
+    or 'root_token' not in (pve_ussuri_vault_init_response.stdout | default('', true))
+  when: >-
+    not ((pve_ussuri_vault_init_state.stdout | default('{}', true) | from_json).initialized | default(false))
+  no_log: true
+
+- name: Persist the Vault init material to the credentials directory
+  ansible.builtin.copy:
+    content: "{{ pve_ussuri_vault_init_response.stdout | default('') }}\n"
+    dest: "{{ pve_ussuri_vault_init_file }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when: pve_ussuri_vault_init_response is changed
+  no_log: true
+
+- name: Expose the freshly initialized Vault root token for this run
+  ansible.builtin.set_fact:
+    pve_vault_root_token: >-
+      {{ ((pve_ussuri_vault_init_response | default({})).stdout | default('{}', true) | from_json).root_token | default('') }}
+  when: pve_ussuri_vault_init_response is changed
+  no_log: true
+
+- name: Load the Vault unseal keys and root token from the credentials file
+  ansible.builtin.set_fact:
+    pve_ussuri_vault_keys: >-
+      {{ (lookup('ansible.builtin.file', pve_ussuri_vault_init_file, errors='ignore')
+          | default('{}', true) | from_json)['keys'] | default([], true) }}
+    pve_vault_root_token: >-
+      {{ (lookup('ansible.builtin.file', pve_ussuri_vault_init_file, errors='ignore')
+          | default('{}', true) | from_json)['root_token'] | default('', true) }}
+  no_log: true
+
+- name: Read the Vault seal status
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -sk
+      - "http://{{ pve_ussuri_vault_address }}:8200/v1/sys/seal-status"
+  register: pve_ussuri_vault_seal_status
+  changed_when: false
+  failed_when: false
+
+- name: Unseal the Vault with the first keys when sealed
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -sk
+      - "http://{{ pve_ussuri_vault_address }}:8200/v1/sys/unseal"
+      - -X
+      - PUT
+      - -d
+      - '{"key": "{{ item }}"}'
+  loop: "{{ pve_ussuri_vault_keys[:pve_ussuri_vault_threshold | int] }}"
+  when:
+    - pve_ussuri_vault_keys | length >= (pve_ussuri_vault_threshold | int)
+    - (pve_ussuri_vault_seal_status.stdout | default('{}', true) | from_json).sealed | default(true)
+  no_log: true
+
+- name: Require the Vault to be unsealed before authorizing the charm
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -sk
+      - "http://{{ pve_ussuri_vault_address }}:8200/v1/sys/seal-status"
+  register: pve_ussuri_vault_seal_after
+  changed_when: false
+  failed_when: false
+  until: not ((pve_ussuri_vault_seal_after.stdout | default('{}', true) | from_json).sealed | default(true))
+  retries: 12
+  delay: 5
+
+- name: Check whether the Vault charm is already authorized
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} run-action vault/0 get-root-ca --wait=10m --format json -m {{ pve_ussuri_model }}"
+  register: pve_ussuri_vault_root_ca_pre
+  failed_when: false
+  changed_when: false
+  when: pve_vault_root_token | length > 0
+  no_log: true
+
+- name: Authorize the Vault charm with the root token
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} run-action vault/0 authorize-charm token={{ pve_vault_root_token }} --wait=10m -m {{ pve_ussuri_model }}"
+  when:
+    - pve_vault_root_token | length > 0
+    - (pve_ussuri_vault_root_ca_pre.rc | default(1)) != 0
+      or 'BEGIN CERTIFICATE' not in (pve_ussuri_vault_root_ca_pre.stdout | default(''))
+  no_log: true
+
+- name: Generate the Vault root CA parameter file inside the Juju client CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "printf '%s\\n' '{\"common_name\": \"root-ca\"}' > /tmp/pve-ussuri-vault-ca-params.json"
+  when: pve_vault_root_token | length > 0
+
+- name: Check whether the Vault root CA already exists
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} run-action vault/0 get-root-ca --wait=10m --format json -m {{ pve_ussuri_model }}"
+  register: pve_ussuri_vault_root_ca_check
+  failed_when: false
+  changed_when: false
+  when: pve_vault_root_token | length > 0
+  no_log: true
+
+- name: Generate the Vault root CA only when it is missing
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} run-action vault/0 generate-root-ca --params /tmp/pve-ussuri-vault-ca-params.json --wait=10m -m {{ pve_ussuri_model }}"
+  when:
+    - pve_vault_root_token | length > 0
+    - (pve_ussuri_vault_root_ca_check.rc | default(1)) != 0
+      or 'BEGIN CERTIFICATE' not in (pve_ussuri_vault_root_ca_check.stdout | default(''))
+  no_log: true
+
+- name: Verify the Vault root CA is available after initialization
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} run-action vault/0 get-root-ca --wait=10m --format json -m {{ pve_ussuri_model }}"
+  register: pve_ussuri_vault_root_ca_final
+  changed_when: false
+  when: pve_vault_root_token | length > 0
+  failed_when: >-
+    pve_ussuri_vault_root_ca_final.rc != 0 or
+    'BEGIN CERTIFICATE' not in pve_ussuri_vault_root_ca_final.stdout
+  no_log: true
+
+- name: Set the keystone admin password
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} config -m {{ pve_ussuri_model }} keystone admin-password={{ pve_keystone_admin_password }}"
+  no_log: true
+
+- name: Read the final OpenStack application inventory
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} status -m {{ pve_ussuri_model }} --format json"
+  register: pve_ussuri_control_status_after
+  changed_when: false
+
+- name: Require the core OpenStack applications to be deployed
+  ansible.builtin.assert:
+    that:
+      - >-
+        pve_ussuri_core_applications
+        | difference((pve_ussuri_control_status_after.stdout | from_json).applications.keys() | list)
+        | length == 0
+    fail_msg: >-
+      these control-plane applications were not deployed successfully: {{
+        pve_ussuri_core_applications
+        | difference((pve_ussuri_control_status_after.stdout | from_json).applications.keys() | list)
+        | join(', ') }}). Look at the deploy script output and `juju status` first.
+
+- name: Reconcile the MySQL grants again once the routers are up
+  ansible.builtin.include_tasks: reconcile-mysql-grants.yml
+  vars:
+    pve_ussuri_mysql_reconcile_skip_cluster_wait: true
+    pve_ussuri_mysql_reconcile_wait: 600
+
+- name: Recover the units the co-located MySQL leader left in error
+  ansible.builtin.include_tasks: recover-error-units.yml
+
+- name: Wait for keystone to become active
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} status -m {{ pve_ussuri_model }} --format json"
+  register: pve_ussuri_keystone_wait
+  changed_when: false
+  failed_when: false
+  until: >-
+    (((pve_ussuri_keystone_wait.stdout | default('{}', true) | from_json)
+       .applications | default({})).get('keystone', {})
+       .get('application-status', {}).get('current', '') == 'active')
+  retries: 90
+  delay: 30
+
+- name: Read the OpenStack model status to look for unsettled core applications
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} status -m {{ pve_ussuri_model }} --format json"
+  register: pve_ussuri_converge_status
+  changed_when: false
+
+- name: Select the applications that must settle in this stage that are still unsettled
+  ansible.builtin.set_fact:
+    pve_ussuri_unsettled: "{{ pve_ussuri_unsettled_doc | from_json }}"
+  vars:
+    pve_ussuri_unsettled_doc: >-
+      {%- set ns = namespace(out=[]) -%}
+      {%- set apps = (pve_ussuri_converge_status.stdout | from_json).applications | default({}) -%}
+      {%- for name in pve_ussuri_settled_applications -%}
+      {%-   if (apps.get(name, {}).get('application-status', {}).get('current', '')) != 'active' -%}
+      {%-     set _ = ns.out.append(name) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ ns.out | to_json }}
+
+- name: Report the applications that must settle in this stage that are still unsettled
+  ansible.builtin.debug:
+    msg: >-
+      {{ ('core applications still not active: ' ~ (pve_ussuri_unsettled | join(', ')))
+         if pve_ussuri_unsettled | length > 0 else 'all core applications are active' }}
+
+- name: Reconcile the MySQL grants once more when a core application is still unsettled
+  ansible.builtin.include_tasks: reconcile-mysql-grants.yml
+  vars:
+    pve_ussuri_mysql_reconcile_skip_cluster_wait: true
+    pve_ussuri_mysql_reconcile_wait: 600
+  when: pve_ussuri_unsettled | length > 0
+
+- name: Wait for the unsettled core applications to settle after the final reconcile
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} status -m {{ pve_ussuri_model }} --format json"
+  register: pve_ussuri_converge_wait
+  changed_when: false
+  failed_when: false
+  until: >-
+    (((pve_ussuri_converge_wait.stdout | default('{}', true) | from_json)
+       .applications | default({})).get(item, {})
+       .get('application-status', {}).get('current', '') == 'active')
+  retries: "{{ pve_ussuri_wait_retries }}"
+  delay: "{{ pve_ussuri_wait_delay }}"
+  loop: "{{ pve_ussuri_unsettled }}"
+  loop_control:
+    label: "{{ item }}"
+  when: pve_ussuri_unsettled | length > 0
+
+- name: Read the OpenStack model status for the final convergence gate
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} status -m {{ pve_ussuri_model }} --format json"
+  register: pve_ussuri_gate_status
+  changed_when: false
+
+- name: Require every application that must settle in this stage to be active
+  ansible.builtin.assert:
+    that:
+      - pve_ussuri_gate_unsettled | length == 0
+    fail_msg: >-
+      after {{ pve_ussuri_wait_retries }} x {{ pve_ussuri_wait_delay }}s these core applications are still not
+      active: {{ pve_ussuri_gate_unsettled | join(', ') }}. Check each of them with
+      `juju status -m {{ pve_ussuri_model }}` and /var/log/juju/unit-*.log of the unit in question;
+      if it is the shared-leader MySQL grant problem, just re-run --tags pve-env1-control-plane (it is idempotent).
+  vars:
+    pve_ussuri_gate_unsettled: >-
+      {%- set ns = namespace(out=[]) -%}
+      {%- set apps = (pve_ussuri_gate_status.stdout | from_json).applications | default({}) -%}
+      {%- for name in pve_ussuri_settled_applications -%}
+      {%-   if (apps.get(name, {}).get('application-status', {}).get('current', '')) != 'active' -%}
+      {%-     set _ = ns.out.append(name ~ '=' ~ (apps.get(name, {}).get('application-status', {}).get('current', 'missing'))) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ ns.out }}
