@@ -1,7 +1,8 @@
 #!/bin/bash
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-OPENRC_FILE="${OPENSTACK_RC_FILE:-${SCRIPT_DIR}/credentials/admin-openrc-pve-openstack.sh}"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+OPENRC_FILE="${OPENSTACK_RC_FILE:-${REPO_ROOT}/credentials/admin-openrc-pve-openstack.sh}"
 
 if [ ! -r "$OPENRC_FILE" ]; then
     printf 'ERROR: OpenStack credentials file is missing or unreadable: %s\n' "$OPENRC_FILE" >&2

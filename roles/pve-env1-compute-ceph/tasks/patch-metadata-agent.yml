@@ -2,7 +2,7 @@
 
 - name: Copy the OVN metadata agent patch script to the PVE host
   ansible.builtin.copy:
-    src: "{{ repo_root }}/pve/scripts/ussuri-patch-ovn-metadata-agent.py"
+    src: "{{ repo_root }}/scripts/env1/patch-ovn-metadata-agent.py"
     dest: /root/ussuri-patch-ovn-metadata-agent.py
     owner: root
     group: root

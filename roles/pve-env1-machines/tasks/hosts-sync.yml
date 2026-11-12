@@ -26,7 +26,7 @@
 
 - name: Push the env1 hosts-sync helper to the PVE host
   ansible.builtin.copy:
-    src: "{{ role_path }}/../../pve/scripts/ussuri-hosts-sync.sh"
+    src: "{{ role_path }}/../../scripts/env1/hosts-sync.sh"
     dest: /root/ussuri-hosts-sync.sh
     owner: root
     group: root

@@ -1,6 +1,6 @@
 #!/bin/bash
 echo "REFUSED: setup-osd-loop.sh is deprecated (the loop approach caused the OSD data-loss incident on 2026-10-15)." >&2
-echo "  replacement: pve/scripts/ussuri-setup-osd-lv.sh, called automatically by --tags pve-env1-machines." >&2
+echo "  replacement: scripts/env1/setup-osd-lv.sh, called automatically by playbooks/env1/stages/04-machines.yml." >&2
 exit 1
 
 set -e

@@ -2,18 +2,20 @@
 
 - name: Copy the OSD helper scripts to the PVE host
   ansible.builtin.copy:
-    src: "{{ repo_root }}/pve/scripts/{{ item }}"
-    dest: "/root/{{ item }}"
+    src: "{{ repo_root }}/scripts/{{ item.src }}"
+    dest: "/root/{{ item.dest }}"
     owner: root
     group: root
     mode: "0700"
   loop:
-    - ussuri-setup-osd-lv.sh
-    - ussuri-osd-lvm.conf
-    - mk-osd.sh
-    - ceph-osd-boot-activate.sh
-    - ceph-osd-activate.service
-    - ceph-osd-charm-lxc-patch.py
+    - { src: env1/setup-osd-lv.sh, dest: ussuri-setup-osd-lv.sh }
+    - { src: env1/osd-lvm.conf, dest: ussuri-osd-lvm.conf }
+    - { src: openstack/mk-osd.sh, dest: mk-osd.sh }
+    - { src: openstack/ceph-osd-boot-activate.sh, dest: ceph-osd-boot-activate.sh }
+    - { src: openstack/ceph-osd-activate.service, dest: ceph-osd-activate.service }
+    - { src: openstack/ceph-osd-charm-lxc-patch.py, dest: ceph-osd-charm-lxc-patch.py }
+  loop_control:
+    label: "{{ item.dest }}"
 
 - name: Check whether the OSD devices are already in place (dry run)
   ansible.builtin.command:

@@ -55,7 +55,7 @@ pve_env1_k8s_aggregate: k8s-az
 pve_env1_k8s_wait_unit_active_retries: 120
 pve_env1_k8s_wait_unit_active_delay: 15
 
-pve_env1_k8s_openstack_wrapper: "{{ repo_root }}/openstack-wrapper.sh"
+pve_env1_k8s_openstack_wrapper: "{{ repo_root }}/scripts/env1/openstack-wrapper.sh"
 pve_env1_k8s_image_name: ubuntu-jammy
 pve_env1_k8s_image_id: ""
 pve_env1_k8s_secgroup_quota: 10

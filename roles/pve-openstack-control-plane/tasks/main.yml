@@ -684,7 +684,7 @@
 
 - name: Copy the nova client refresh helper to the PVE host
   ansible.builtin.copy:
-    src: "{{ repo_root }}/pve/scripts/yoga-restart-nova-clients.sh"
+    src: "{{ repo_root }}/scripts/openstack/restart-nova-clients.sh"
     dest: /root/yoga-restart-nova-clients.sh
     owner: root
     group: root

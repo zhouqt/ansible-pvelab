@@ -7,7 +7,7 @@
 
 - name: Push the bionic template builder to the PVE host
   ansible.builtin.copy:
-    src: "{{ repo_root }}/pve/scripts/build-bionic-template.sh"
+    src: "{{ repo_root }}/scripts/obs/build-bionic-template.sh"
     dest: /root/build-bionic-template.sh
     owner: root
     group: root

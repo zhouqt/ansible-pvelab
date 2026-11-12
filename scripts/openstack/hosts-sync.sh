@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-block_file="${1:?usage: yoga-hosts-sync.sh <block-file>}"
+block_file="${1:?usage: hosts-sync.sh <block-file>}"
 hosts=/etc/hosts
 
 [ -r "$block_file" ] || { echo "ERROR: cannot read $block_file" >&2; exit 1; }

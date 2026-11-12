@@ -127,7 +127,7 @@
     fail_msg: >-
       the template {{ pve_obs_cos_hub_templates[item.item] }} of {{ item.item }} is not in
       /var/lib/vz/template/cache. jammy/focal are prepared by pve-env1-prepare in the reference environment;
-      bionic is EOL, generate it by running pve/scripts/build-bionic-template.sh first.
+      bionic is EOL; generate it first with scripts/obs/build-bionic-template.sh.
   loop: "{{ pve_obs_cos_hub_template_stat.results }}"
   loop_control:
     label: "{{ item.item }}"

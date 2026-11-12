@@ -150,7 +150,7 @@
 
 - name: Push the CT init script to the PVE host
   ansible.builtin.copy:
-    src: "{{ repo_root }}/pve/scripts/juju-ct-init.sh"
+    src: "{{ repo_root }}/scripts/common/juju-ct-init.sh"
     dest: /root/obs-hub-ct-init.sh
     owner: root
     group: root
@@ -171,7 +171,7 @@
 
 - name: Push the APT-mirror helper to the PVE host
   ansible.builtin.copy:
-    src: "{{ repo_root }}/pve/scripts/yoga-apt-mirror.sh"
+    src: "{{ repo_root }}/scripts/common/apt-mirror.sh"
     dest: /root/obs-hub-apt-mirror.sh
     owner: root
     group: root

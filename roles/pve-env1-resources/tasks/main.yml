@@ -5,7 +5,7 @@
     pve_env1_model: "{{ pve_env1_juju_controller_name }}:{{ pve_env1_model_name }}"
     pve_env1_openstack_argv:
       - bash
-      - "{{ repo_root }}/openstack-wrapper.sh"
+      - "{{ repo_root }}/scripts/env1/openstack-wrapper.sh"
       - openstack
     pve_env1_openstack_env:
       OPENSTACK_RC_FILE: "{{ pve_env1_openrc_file }}"

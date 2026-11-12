@@ -30,18 +30,20 @@
 
 - name: Copy OSD helper scripts to PVE host
   ansible.builtin.copy:
-    src: "{{ repo_root }}/pve/scripts/{{ item }}"
-    dest: "/root/{{ item }}"
+    src: "{{ repo_root }}/scripts/{{ item.src }}"
+    dest: "/root/{{ item.dest }}"
     owner: root
     group: root
     mode: "0700"
   loop:
-    - yoga-setup-osd-lv.sh
-    - mk-osd.sh
-    - yoga-osd-lvm.conf
-    - ceph-osd-boot-activate.sh
-    - ceph-osd-activate.service
-    - ceph-osd-charm-lxc-patch.py
+    - { src: openstack/setup-osd-lv.sh, dest: yoga-setup-osd-lv.sh }
+    - { src: openstack/mk-osd.sh, dest: mk-osd.sh }
+    - { src: openstack/osd-lvm.conf, dest: yoga-osd-lvm.conf }
+    - { src: openstack/ceph-osd-boot-activate.sh, dest: ceph-osd-boot-activate.sh }
+    - { src: openstack/ceph-osd-activate.service, dest: ceph-osd-activate.service }
+    - { src: openstack/ceph-osd-charm-lxc-patch.py, dest: ceph-osd-charm-lxc-patch.py }
+  loop_control:
+    label: "{{ item.dest }}"
 
 - name: Refuse to run while any OSD CT conf still carries the old loop block
   ansible.builtin.shell: |

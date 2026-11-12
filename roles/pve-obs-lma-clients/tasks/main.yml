@@ -284,7 +284,7 @@
   ansible.builtin.command:
     argv:
       - bash
-      - "{{ repo_root }}/openstack-wrapper.sh"
+      - "{{ repo_root }}/scripts/env1/openstack-wrapper.sh"
       - openstack
       - floating
       - ip
@@ -303,7 +303,7 @@
   ansible.builtin.command:
     argv:
       - bash
-      - "{{ repo_root }}/openstack-wrapper.sh"
+      - "{{ repo_root }}/scripts/env1/openstack-wrapper.sh"
       - openstack
       - port
       - list

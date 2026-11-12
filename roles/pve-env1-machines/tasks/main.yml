@@ -450,7 +450,7 @@
 
 - name: Copy Juju CT initialization script to PVE host
   ansible.builtin.copy:
-    src: "{{ repo_root }}/pve/scripts/juju-ct-init.sh"
+    src: "{{ repo_root }}/scripts/common/juju-ct-init.sh"
     dest: /root/juju-ct-init.sh
     owner: root
     group: root
@@ -513,7 +513,7 @@
 
 - name: Copy the ussuri OSD thin-LV helper to the PVE host
   ansible.builtin.copy:
-    src: "{{ repo_root }}/pve/scripts/ussuri-setup-osd-lv.sh"
+    src: "{{ repo_root }}/scripts/env1/setup-osd-lv.sh"
     dest: /root/ussuri-setup-osd-lv.sh
     owner: root
     group: root
@@ -535,7 +535,7 @@
 
 - name: Copy the cap.drop baseline writer to the PVE host
   ansible.builtin.copy:
-    src: "{{ repo_root }}/pve/scripts/ussuri-set-capdrop.py"
+    src: "{{ repo_root }}/scripts/env1/set-capdrop.py"
     dest: /root/ussuri-set-capdrop.py
     owner: root
     group: root
@@ -543,7 +543,7 @@
 
 - name: Copy the CT virtual-machine device passthrough helper to the PVE host
   ansible.builtin.copy:
-    src: "{{ repo_root }}/pve/scripts/ussuri-ct-vm-devices.sh"
+    src: "{{ repo_root }}/scripts/env1/ct-vm-devices.sh"
     dest: /root/ussuri-ct-vm-devices.sh
     owner: root
     group: root
@@ -653,7 +653,7 @@
 
 - name: Copy Juju workload registration script to PVE host
   ansible.builtin.copy:
-    src: "{{ repo_root }}/pve/scripts/register-workload-machines.sh"
+    src: "{{ repo_root }}/scripts/env1/register-workload-machines.sh"
     dest: /root/register-workload-machines.sh
     owner: root
     group: root

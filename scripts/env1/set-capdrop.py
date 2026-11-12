@@ -9,7 +9,7 @@ CAP_DROP_LINES = (
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("usage: ussuri-set-capdrop.py <vmid> [marker-suffix]", file=sys.stderr)
+        print("usage: set-capdrop.py <vmid> [marker-suffix]", file=sys.stderr)
         return 2
     vmid = sys.argv[1]
     suffix = sys.argv[2] if len(sys.argv) > 2 else "USSURI WORKLOAD SETTINGS"

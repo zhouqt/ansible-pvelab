@@ -2,7 +2,7 @@
 pve_env1_maas_vmid: 1000
 pve_env1_maas_ip: 192.168.11.3
 pve_env1_maas_data_mount: pve-thin-pool:vm-1000-disk-1
-pve_env1_maas_script: "{{ repo_root }}/pve/scripts/setup-maas-ct.sh"
+pve_env1_maas_script: "{{ repo_root }}/scripts/env1/setup-maas-ct.sh"
 pve_env1_maas_admin_password: "{{ vault_pve_maas_admin_password | default('') }}"
 pve_env1_maas_root_password: "{{ vault_pve_maas_root_password | default('') }}"
 pve_env1_maas_ssh_pubkey: "{{ lookup('file', lookup('env', 'HOME') + '/.ssh/id_ed25519.pub', errors='ignore') | default('', true) }}"

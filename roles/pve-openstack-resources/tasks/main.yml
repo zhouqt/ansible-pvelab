@@ -6,7 +6,7 @@
     pve_openstack_model: "{{ pve_openstack_controller_name }}:{{ pve_openstack_model_name }}"
     pve_openstack_argv:
       - bash
-      - "{{ repo_root }}/openstack-wrapper.sh"
+      - "{{ repo_root }}/scripts/env1/openstack-wrapper.sh"
       - openstack
     pve_openstack_env:
       OPENSTACK_RC_FILE: "{{ pve_openstack_openrc_file }}"

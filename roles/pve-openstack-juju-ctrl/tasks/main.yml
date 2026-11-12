@@ -66,7 +66,7 @@
       - pve_openstack_juju_client_uid.rc == 0
     fail_msg: >-
       there is no user {{ pve_openstack_juju_client_user }} on CT {{ pve_openstack_juju_client_vmid }}. First, as in the reference environment,
-      (playbooks/env1/stages/03-juju-ctrl.yml) to initialise that CT (pve/scripts/juju-ct-init.sh creates the ubuntu user
+      (playbooks/env1/stages/03-juju-ctrl.yml) to initialise that CT (scripts/common/juju-ct-init.sh creates the ubuntu user
       and NOPASSWD sudo); the yoga juju 3.x client lives under that user.
 
 - name: Ensure the Juju client SSH key exists
@@ -179,7 +179,7 @@
 
 - name: Push the yoga cap.drop helper to the PVE host
   ansible.builtin.copy:
-    src: "{{ repo_root }}/pve/scripts/yoga-set-capdrop.py"
+    src: "{{ repo_root }}/scripts/openstack/set-capdrop.py"
     dest: /root/yoga-set-capdrop.py
     owner: root
     group: root

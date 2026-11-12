@@ -2,7 +2,7 @@
 
 - name: Push the yoga APT-mirror helper to the PVE host
   ansible.builtin.copy:
-    src: "{{ repo_root }}/pve/scripts/yoga-apt-mirror.sh"
+    src: "{{ repo_root }}/scripts/common/apt-mirror.sh"
     dest: /root/yoga-apt-mirror.sh
     owner: root
     group: root
