@@ -3,35 +3,35 @@
 - name: Require the yoga host baseline check to be explicitly requested
   ansible.builtin.assert:
     that:
-      - pve_yoga_run_host_baseline | bool
+      - pve_openstack_run_host_baseline | bool
     fail_msg: >-
       openstack-pve-prepare is a one-off validation step. Make sure the pve host has registered
-      the four SDN vnets {{ pve_yoga_network_spaces | map(attribute='bridge') | join('/') }}
-      (zone public/internal) and applied, run it explicitly with -e pve_yoga_run_host_baseline=true.
+      the four SDN vnets {{ pve_openstack_network_spaces | map(attribute='bridge') | join('/') }}
+      (zone public/internal) and applied, run it explicitly with -e pve_openstack_run_host_baseline=true.
 
 - name: Check PVE host bridge inventory
   ansible.builtin.command: "ip -o link show {{ item.bridge }}"
-  loop: "{{ pve_yoga_network_spaces }}"
+  loop: "{{ pve_openstack_network_spaces }}"
   loop_control:
     label: "{{ item.bridge }} ({{ item.name }})"
-  register: pve_yoga_prepare_bridges
+  register: pve_openstack_prepare_bridges
   failed_when: false
   changed_when: false
 
 - name: Require all yoga bridges to exist on the PVE host
   ansible.builtin.assert:
     that:
-      - pve_yoga_prepare_bridges.results | selectattr('rc', 'ne', 0) | list | length == 0
+      - pve_openstack_prepare_bridges.results | selectattr('rc', 'ne', 0) | list | length == 0
     fail_msg: >-
-      missing on the host: bridge {{ pve_yoga_prepare_bridges.results | selectattr('rc', 'ne', 0)
+      missing on the host: bridge {{ pve_openstack_prepare_bridges.results | selectattr('rc', 'ne', 0)
       | map(attribute='item.bridge') | join('/') }}. Run
-      `--tags openstack-pve-sdn -e pve_yoga_run_sdn=true -e @env/yoga-env<N>.yml` register this env's
+      `--tags openstack-pve-sdn -e pve_openstack_run_sdn=true -e @env/yoga-env<N>.yml` register this env's
       the 4 SDN vnets (registering/applying them requires every guest of this env to be stopped), then re-run this stage.
 
 - name: Define this environment's SNAT network list
   ansible.builtin.set_fact:
-    pve_yoga_snat_cidrs: >-
-      {{ pve_yoga_network_spaces | selectattr('snat', 'defined') | selectattr('snat')
+    pve_openstack_snat_cidrs: >-
+      {{ pve_openstack_network_spaces | selectattr('snat', 'defined') | selectattr('snat')
          | map(attribute='cidr') | list }}
 
 - name: Ensure this environment's public SNAT rules exist
@@ -40,50 +40,50 @@
     snat_ip=$(ip -4 -o addr show vmbr0 | awk '{print $4}' | cut -d/ -f1 | head -1)
     [ -n "$snat_ip" ] || { echo "PREPARE-FAIL: vmbr0 has no IPv4 address" >&2; exit 1; }
     n=0
-    for cidr in {{ pve_yoga_snat_cidrs | join(' ') }}; do
+    for cidr in {{ pve_openstack_snat_cidrs | join(' ') }}; do
       if ! iptables -t nat -C POSTROUTING -s "$cidr" -o vmbr0 -j SNAT --to-source "$snat_ip" 2>/dev/null; then
         iptables -t nat -A POSTROUTING -s "$cidr" -o vmbr0 -j SNAT --to-source "$snat_ip"
         n=$((n + 1))
       fi
     done
     echo "PREPARE-SNAT-DONE added=$n to=$snat_ip"
-  register: pve_yoga_prepare_snat
-  changed_when: "'added=0' not in pve_yoga_prepare_snat.stdout"
+  register: pve_openstack_prepare_snat
+  changed_when: "'added=0' not in pve_openstack_prepare_snat.stdout"
 
 - name: Read PVE host NAT POSTROUTING rules
   ansible.builtin.command: iptables -t nat -S POSTROUTING
-  register: pve_yoga_prepare_nat_rules
+  register: pve_openstack_prepare_nat_rules
   changed_when: false
 
 - name: Require public SNAT for internet egress
   ansible.builtin.assert:
     that:
       - >-
-        pve_yoga_prepare_nat_rules.stdout_lines
-        | select('search', '-s ' ~ (pve_yoga_public_cidr | regex_replace('\.', '[.]'))) | list | length > 0
+        pve_openstack_prepare_nat_rules.stdout_lines
+        | select('search', '-s ' ~ (pve_openstack_public_cidr | regex_replace('\.', '[.]'))) | list | length > 0
     fail_msg: >-
-      the SNAT egress rule for public ({{ pve_yoga_public_cidr }}) is missing. Make sure the SDN subnet
-      public-{{ pve_yoga_public_cidr | replace('/', '-') }} carries `snat 1` and is applied
+      the SNAT egress rule for public ({{ pve_openstack_public_cidr }}) is missing. Make sure the SDN subnet
+      public-{{ pve_openstack_public_cidr | replace('/', '-') }} carries `snat 1` and is applied
       (PVE generates the matching iptables POSTROUTING SNAT rules).
 
 - name: Check PVE local template inventory
   ansible.builtin.command: pveam list local
-  register: pve_yoga_prepare_template_inventory
+  register: pve_openstack_prepare_template_inventory
   changed_when: false
 
-- name: Require the {{ pve_yoga_openstack_series }} CT template
+- name: Require the {{ pve_openstack_series }} CT template
   ansible.builtin.assert:
     that:
-      - pve_yoga_lxc_template.split(':')[1] in pve_yoga_prepare_template_inventory.stdout
+      - pve_openstack_lxc_template.split(':')[1] in pve_openstack_prepare_template_inventory.stdout
     fail_msg: >-
-      {{ pve_yoga_lxc_template }} is missing (profile {{ pve_yoga_profile }}). On the pve host run
-      `pveam update && pveam download local {{ pve_yoga_lxc_template.split(':')[1] }}`
+      {{ pve_openstack_lxc_template }} is missing (profile {{ pve_openstack_profile }}). On the pve host run
+      `pveam update && pveam download local {{ pve_openstack_lxc_template.split(':')[1] }}`
       and retry.
 
 - name: Enable LVM discards on the PVE host
   ansible.builtin.script: "{{ repo_root }}/pve/scripts/yoga-set-issue-discards.sh"
-  register: pve_yoga_prepare_issue_discards
-  changed_when: "'changed=1' in (pve_yoga_prepare_issue_discards.stdout | default(''))"
+  register: pve_openstack_prepare_issue_discards
+  changed_when: "'changed=1' in (pve_openstack_prepare_issue_discards.stdout | default(''))"
   failed_when: >-
-    (pve_yoga_prepare_issue_discards.rc | default(1)) != 0
-    or 'ISSUE-DISCARDS value=1' not in (pve_yoga_prepare_issue_discards.stdout | default(''))
+    (pve_openstack_prepare_issue_discards.rc | default(1)) != 0
+    or 'ISSUE-DISCARDS value=1' not in (pve_openstack_prepare_issue_discards.stdout | default(''))

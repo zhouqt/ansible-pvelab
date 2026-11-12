@@ -1,9 +1,9 @@
 #!/bin/bash
 set -uo pipefail
 
-user={{ sunbeam_node_user }}
-rc_path={{ sunbeam_admin_openrc_path }}
-demo_rc={{ sunbeam_demo_openrc_path }}
+user={{ pve_sunbeam_node_user }}
+rc_path={{ pve_sunbeam_admin_openrc_path }}
+demo_rc={{ pve_sunbeam_demo_openrc_path }}
 
 tmp="$(mktemp)"
 su - "$user" -c 'sunbeam openrc' 2>/dev/null | grep -E '^(#|export )' > "$tmp"

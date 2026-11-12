@@ -5,23 +5,23 @@
     argv:
       - pct
       - exec
-      - "{{ pve_juju_client_vmid }}"
+      - "{{ pve_env1_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_juju_client_user }}"
+      - "{{ pve_env1_juju_client_user }}"
       - -c
-      - "{{ pve_juju_bin }} status -m {{ pve_ussuri_model }} --format json"
-  register: pve_ussuri_mysql_cluster_wait
+      - "{{ pve_env1_juju_bin }} status -m {{ pve_env1_model }} --format json"
+  register: pve_env1_mysql_cluster_wait
   changed_when: false
   failed_when: false
   until: >-
-    (((pve_ussuri_mysql_cluster_wait.stdout | default('{}', true) | from_json)
+    (((pve_env1_mysql_cluster_wait.stdout | default('{}', true) | from_json)
        .applications | default({})).get('mysql-innodb-cluster', {})
        .get('application-status', {}).get('current', '') == 'active')
   retries: 90
   delay: 30
-  when: not (pve_ussuri_mysql_reconcile_skip_cluster_wait | default(false) | bool)
+  when: not (pve_env1_mysql_reconcile_skip_cluster_wait | default(false) | bool)
 
 - name: Copy the MySQL grant reconcile helper to the PVE host
   ansible.builtin.copy:
@@ -37,18 +37,18 @@
       - python3
       - /root/ussuri-reconcile-mysql-grants.py
       - --client-ct
-      - "{{ pve_juju_client_vmid }}"
+      - "{{ pve_env1_juju_client_vmid }}"
       - --client-user
-      - "{{ pve_juju_client_user }}"
+      - "{{ pve_env1_juju_client_user }}"
       - --juju-bin
-      - "{{ pve_juju_bin }}"
+      - "{{ pve_env1_juju_bin }}"
       - --juju-data
-      - "/home/{{ pve_juju_client_user }}/.local/share/juju"
+      - "/home/{{ pve_env1_juju_client_user }}/.local/share/juju"
       - --model
-      - "{{ pve_ussuri_model }}"
+      - "{{ pve_env1_model }}"
       - --machine-vmids
-      - "{{ pve_ussuri_workload_vmids | join(',') }}"
+      - "{{ pve_env1_workload_vmids | join(',') }}"
       - --wait
-      - "{{ pve_ussuri_mysql_reconcile_wait | default(300) }}"
-  register: pve_ussuri_mysql_reconcile
-  changed_when: "'RECONCILE-CREATED' in pve_ussuri_mysql_reconcile.stdout"
+      - "{{ pve_env1_mysql_reconcile_wait | default(300) }}"
+  register: pve_env1_mysql_reconcile
+  changed_when: "'RECONCILE-CREATED' in pve_env1_mysql_reconcile.stdout"

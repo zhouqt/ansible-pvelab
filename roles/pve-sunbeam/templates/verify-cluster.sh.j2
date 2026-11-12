@@ -1,9 +1,9 @@
 #!/bin/bash
 set -u
 
-user={{ sunbeam_node_user }}
-rc_path={{ sunbeam_admin_openrc_path }}
-ceph={{ sunbeam_microceph_ceph_bin }}
+user={{ pve_sunbeam_node_user }}
+rc_path={{ pve_sunbeam_admin_openrc_path }}
+ceph={{ pve_sunbeam_microceph_ceph_bin }}
 
 echo "### CLUSTER_LIST"
 su - "$user" -c 'sunbeam cluster list --format yaml' 2>/dev/null
@@ -23,10 +23,10 @@ for osd in $("$ceph" osd ls 2>/dev/null); do
 done
 
 echo "### JUJU_OPENSTACK"
-su - "$user" -c 'juju status -m {{ sunbeam_juju_openstack_model }} --format json 2>/dev/null'
+su - "$user" -c 'juju status -m {{ pve_sunbeam_juju_openstack_model }} --format json 2>/dev/null'
 
 echo "### JUJU_MACHINES"
-su - "$user" -c 'juju status -m {{ sunbeam_juju_machines_model }} --format json 2>/dev/null'
+su - "$user" -c 'juju status -m {{ pve_sunbeam_juju_machines_model }} --format json 2>/dev/null'
 
 echo "### VOLUME_SERVICES"
 su - "$user" -c ". $rc_path && openstack volume service list" 2>/dev/null

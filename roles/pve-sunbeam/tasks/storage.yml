@@ -5,36 +5,36 @@
 - name: Require explicit authorization for Ceph OSD changes
   ansible.builtin.assert:
     that:
-      - sunbeam_confirm_ceph_osd | bool
-      - sunbeam_confirm_external_changes | bool
+      - pve_sunbeam_confirm_ceph_osd | bool
+      - pve_sunbeam_confirm_external_changes | bool
     fail_msg: >-
       This stage registers new OSD devices with MicroCeph (add-only; never wipes and never
       removes existing OSDs).
-      To confirm, pass -e sunbeam_confirm_ceph_osd=true -e sunbeam_confirm_external_changes=true.
+      To confirm, pass -e pve_sunbeam_confirm_ceph_osd=true -e pve_sunbeam_confirm_external_changes=true.
 
 - name: Read the MicroCeph disk inventory from every node
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
-      - "{{ sunbeam_microceph_bin }}"
+      - "{{ pve_sunbeam_microceph_bin }}"
       - disk
       - list
       - --json
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_osd_inventory
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_osd_inventory
   changed_when: false
   loop_control:
     label: "{{ item.fqdn }}"
 
 - name: Read the OSD device visibility inside every node
   ansible.builtin.command:
-    argv: "{{ [sunbeam_pct_bin, 'exec', item.vmid | string, '--', 'bash', '-s', '--', item.vmid | string] }}"
+    argv: "{{ [pve_sunbeam_pct_bin, 'exec', item.vmid | string, '--', 'bash', '-s', '--', item.vmid | string] }}"
     stdin: "{{ lookup('template', 'check-osd-device.sh.j2') }}"
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_osd_device_state
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_osd_device_state
   changed_when: false
   failed_when: false
   loop_control:
@@ -44,22 +44,22 @@
   ansible.builtin.debug:
     msg:
       - "{{ item.item.fqdn }}: {{ item.stdout_lines | default([]) | join(' ') }}"
-  loop: "{{ sunbeam_osd_device_state.results }}"
+  loop: "{{ pve_sunbeam_osd_device_state.results }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Ensure the OSD device alias inside the microcephd namespace
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.item.vmid }}"
       - --
-      - "{{ sunbeam_osd_setup_script }}"
+      - "{{ pve_sunbeam_osd_setup_script }}"
       - "{{ item.item.vmid }}"
-  loop: "{{ sunbeam_osd_device_state.results }}"
+  loop: "{{ pve_sunbeam_osd_device_state.results }}"
   when: "'alias=no' in item.stdout and 'source=yes' in item.stdout"
-  register: sunbeam_osd_alias_fix
+  register: pve_sunbeam_osd_alias_fix
   changed_when: true
   failed_when: false
   loop_control:
@@ -68,47 +68,47 @@
 - name: Restart the MicroCeph OSD service where the alias still cannot be created
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.item.item.vmid }}"
       - --
       - systemctl
       - restart
       - snap.microceph.osd.service
-  loop: "{{ sunbeam_osd_alias_fix.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | list }}"
+  loop: "{{ pve_sunbeam_osd_alias_fix.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | list }}"
   loop_control:
     label: "{{ item.item.item.fqdn }}"
 
 - name: Add the missing OSD block devices
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
-      - "{{ sunbeam_microceph_bin }}"
+      - "{{ pve_sunbeam_microceph_bin }}"
       - disk
       - add
       - "{{ item.osd_microceph_device }}"
-  loop: "{{ sunbeam_nodes }}"
-  when: item.osd_microceph_device not in (sunbeam_osd_inventory.results | map(attribute='stdout') | join(' '))
-  register: sunbeam_osd_add
+  loop: "{{ pve_sunbeam_nodes }}"
+  when: item.osd_microceph_device not in (pve_sunbeam_osd_inventory.results | map(attribute='stdout') | join(' '))
+  register: pve_sunbeam_osd_add
   loop_control:
     label: "{{ item.fqdn }} -> {{ item.osd_microceph_device }}"
 
 - name: Re-read the MicroCeph disk inventory from every node
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
-      - "{{ sunbeam_microceph_bin }}"
+      - "{{ pve_sunbeam_microceph_bin }}"
       - disk
       - list
       - --json
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_osd_inventory_after
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_osd_inventory_after
   changed_when: false
   loop_control:
     label: "{{ item.fqdn }}"
@@ -116,29 +116,29 @@
 - name: Assert every declared LV OSD device is configured
   ansible.builtin.assert:
     that:
-      - item.osd_microceph_device in (sunbeam_osd_inventory_after.results | map(attribute='stdout') | join(' '))
+      - item.osd_microceph_device in (pve_sunbeam_osd_inventory_after.results | map(attribute='stdout') | join(' '))
     fail_msg: >-
       OSD device {{ item.osd_microceph_device }} on {{ item.fqdn }} is still not registered.
       Inside that CT check `microceph disk list` and
       `systemctl status snap.microceph.osd.service`.
-  loop: "{{ sunbeam_nodes }}"
+  loop: "{{ pve_sunbeam_nodes }}"
   loop_control:
     label: "{{ item.fqdn }}"
 
 - name: Count the configured OSDs cluster-wide
   ansible.builtin.set_fact:
-    sunbeam_osd_configured_count: >-
-      {{ sunbeam_osd_inventory_after.results | map(attribute='stdout') | join(' ')
+    pve_sunbeam_osd_configured_count: >-
+      {{ pve_sunbeam_osd_inventory_after.results | map(attribute='stdout') | join(' ')
          | regex_findall('"osd":[0-9]+') | unique | length }}
 
 - name: Report the OSD inventory
   ansible.builtin.debug:
     msg:
-      - "Total registered OSDs: {{ sunbeam_osd_configured_count }} (live baseline {{ sunbeam_ceph_expected_osds }})"
-      - "LV OSD devices managed by this playbook: {{ sunbeam_ceph_managed_osd_devices }}"
-      - "Existing OSDs not managed by this playbook: {{ sunbeam_ceph_unmanaged_osds }}"
-      - "OSDs added this run: {{ sunbeam_osd_add.results | default([]) | selectattr('rc', 'defined') | map(attribute='item.fqdn') | list | join(', ') or 'none' }}"
+      - "Total registered OSDs: {{ pve_sunbeam_osd_configured_count }} (live baseline {{ pve_sunbeam_ceph_expected_osds }})"
+      - "LV OSD devices managed by this playbook: {{ pve_sunbeam_ceph_managed_osd_devices }}"
+      - "Existing OSDs not managed by this playbook: {{ pve_sunbeam_ceph_unmanaged_osds }}"
+      - "OSDs added this run: {{ pve_sunbeam_osd_add.results | default([]) | selectattr('rc', 'defined') | map(attribute='item.fqdn') | list | join(', ') or 'none' }}"
 
 - name: Remove the bootstrap file OSD when explicitly requested
   ansible.builtin.include_tasks: _ceph_remove_bootstrap_osd.yml
-  when: sunbeam_ceph_remove_bootstrap_osd | bool
+  when: pve_sunbeam_ceph_remove_bootstrap_osd | bool

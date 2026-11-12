@@ -2,7 +2,7 @@
 - name: Stage the recovery helper on the PVE host
   ansible.builtin.copy:
     src: "{{ role_path }}/files/restore_reconcile.py"
-    dest: "{{ sunbeam_staging_dir }}/restore_reconcile.py"
+    dest: "{{ pve_sunbeam_staging_dir }}/restore_reconcile.py"
     owner: root
     group: root
     mode: "0700"
@@ -11,22 +11,22 @@
   ansible.builtin.command:
     argv:
       - python3
-      - "{{ sunbeam_staging_dir }}/restore_reconcile.py"
-    stdin: "{{ sunbeam_restore_reconcile_config | to_json }}"
-  register: sunbeam_restore_reconcile
+      - "{{ pve_sunbeam_staging_dir }}/restore_reconcile.py"
+    stdin: "{{ pve_sunbeam_restore_reconcile_config | to_json }}"
+  register: pve_sunbeam_restore_reconcile
   changed_when: >-
-    sunbeam_restore_reconcile.rc == 0 and
-    ((sunbeam_restore_reconcile.stdout | from_json).changed | default(false))
+    pve_sunbeam_restore_reconcile.rc == 0 and
+    ((pve_sunbeam_restore_reconcile.stdout | from_json).changed | default(false))
   failed_when: false
 
 - name: Fail when post-restore reconciliation could not complete
   ansible.builtin.fail:
     msg: >-
-      Post-restore Juju/OVN reconciliation failed (rc={{ sunbeam_restore_reconcile.rc }}):
-      {{ sunbeam_restore_reconcile.stderr | default('') | trim }}
-      {{ sunbeam_restore_reconcile.stdout | default('') | trim }}
-  when: sunbeam_restore_reconcile.rc != 0
+      Post-restore Juju/OVN reconciliation failed (rc={{ pve_sunbeam_restore_reconcile.rc }}):
+      {{ pve_sunbeam_restore_reconcile.stderr | default('') | trim }}
+      {{ pve_sunbeam_restore_reconcile.stdout | default('') | trim }}
+  when: pve_sunbeam_restore_reconcile.rc != 0
 
 - name: Report post-restore Juju and gateway reconciliation
   ansible.builtin.debug:
-    msg: "{{ sunbeam_restore_reconcile.stdout | from_json }}"
+    msg: "{{ pve_sunbeam_restore_reconcile.stdout | from_json }}"

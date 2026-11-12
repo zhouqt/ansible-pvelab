@@ -1,8 +1,8 @@
 #!/bin/bash
 set -u
 
-user={{ sunbeam_node_user }}
-rc_path={{ sunbeam_admin_openrc_path }}
+user={{ pve_sunbeam_node_user }}
+rc_path={{ pve_sunbeam_admin_openrc_path }}
 
 if [ ! -s "$rc_path" ]; then
     echo "openrc missing: $rc_path" >&2

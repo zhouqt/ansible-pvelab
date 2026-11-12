@@ -3,99 +3,99 @@
 - name: Expose /dev/kmsg to the k8s node container
   ansible.builtin.shell: |
     set -euo pipefail
-    conf=$({{ pve_obs_hub_pct_bin }} config {{ pve_obs_hub_k8s_vmid }})
+    conf=$({{ pve_obs_cos_hub_pct_bin }} config {{ pve_obs_cos_hub_k8s_vmid }})
     if grep -qE '^dev[0-9]+: /dev/kmsg(,|$)' <<<"$conf"; then
       echo "DEV-KMSG-PRESENT"
       exit 0
     fi
     idx=0
     while grep -qE "^dev${idx}:" <<<"$conf"; do idx=$((idx + 1)); done
-    {{ pve_obs_hub_pct_bin }} set {{ pve_obs_hub_k8s_vmid }} \
+    {{ pve_obs_cos_hub_pct_bin }} set {{ pve_obs_cos_hub_k8s_vmid }} \
       --dev${idx} /dev/kmsg,mode=0644,deny-write=1
     echo "DEV-KMSG-ADDED dev${idx}"
   args:
     executable: /bin/bash
-  register: pve_obs_hub_kmsg
-  changed_when: "'DEV-KMSG-ADDED' in pve_obs_hub_kmsg.stdout"
+  register: pve_obs_cos_hub_kmsg
+  changed_when: "'DEV-KMSG-ADDED' in pve_obs_cos_hub_kmsg.stdout"
 
 - name: Require /dev/kmsg inside the k8s node container
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_k8s_vmid }}"
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - --
       - test
       - -e
       - /dev/kmsg
-  register: pve_obs_hub_kmsg_check
-  until: pve_obs_hub_kmsg_check.rc == 0
-  failed_when: pve_obs_hub_kmsg_check.rc != 0
+  register: pve_obs_cos_hub_kmsg_check
+  until: pve_obs_cos_hub_kmsg_check.rc == 0
+  failed_when: pve_obs_cos_hub_kmsg_check.rc != 0
   retries: 30
   delay: 3
   changed_when: false
 
 - name: Load the kernel modules the k8s snap needs on the PVE host
-  ansible.builtin.command: "{{ pve_obs_hub_modprobe_bin }} {{ item }}"
-  loop: "{{ pve_obs_hub_kernel_modules }}"
+  ansible.builtin.command: "{{ pve_obs_cos_hub_modprobe_bin }} {{ item }}"
+  loop: "{{ pve_obs_cos_hub_kernel_modules }}"
   loop_control:
     label: "{{ item }}"
-  register: pve_obs_hub_modprobe
+  register: pve_obs_cos_hub_modprobe
   changed_when: false
 
 - name: Persist the kernel modules across host reboots
   ansible.builtin.copy:
-    content: "{{ pve_obs_hub_kernel_modules | join('\n') }}\n"
+    content: "{{ pve_obs_cos_hub_kernel_modules | join('\n') }}\n"
     dest: /etc/modules-load.d/pve-obs-hub-k8s.conf
     owner: root
     group: root
     mode: "0644"
 
-- name: Apply the k8s node sysctls inside CT {{ pve_obs_hub_k8s_vmid }}
+- name: Apply the k8s node sysctls inside CT {{ pve_obs_cos_hub_k8s_vmid }}
   ansible.builtin.shell: |
     set -euo pipefail
     cat > /etc/sysctl.d/99-obs-hub-k8s.conf <<'EOF'
-    {% for key, value in pve_obs_hub_k8s_sysctls.items() %}
+    {% for key, value in pve_obs_cos_hub_k8s_sysctls.items() %}
     {{ key }} = {{ value }}
     {% endfor %}
     EOF
     sysctl --system >/dev/null
   args:
     executable: /bin/bash
-  register: pve_obs_hub_k8s_sysctl
+  register: pve_obs_cos_hub_k8s_sysctl
   changed_when: false
 
 - name: Install the Canonical Kubernetes snap
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_k8s_vmid }}"
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - --
       - snap
       - install
       - k8s
       - --classic
-      - "--channel={{ pve_obs_hub_k8s_channel }}"
-  register: pve_obs_hub_k8s_snap_install
-  changed_when: "'installed' in pve_obs_hub_k8s_snap_install.stdout"
+      - "--channel={{ pve_obs_cos_hub_k8s_channel }}"
+  register: pve_obs_cos_hub_k8s_snap_install
+  changed_when: "'installed' in pve_obs_cos_hub_k8s_snap_install.stdout"
   failed_when: >-
-    pve_obs_hub_k8s_snap_install.rc != 0
-    and 'already installed' not in pve_obs_hub_k8s_snap_install.stdout
+    pve_obs_cos_hub_k8s_snap_install.rc != 0
+    and 'already installed' not in pve_obs_cos_hub_k8s_snap_install.stdout
 
 - name: Require the k8s binary to be on disk
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_k8s_vmid }}"
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - --
       - test
       - -x
-      - "{{ pve_obs_hub_k8s_bin }}"
-  register: pve_obs_hub_k8s_bin_check
-  until: pve_obs_hub_k8s_bin_check.rc == 0
-  failed_when: pve_obs_hub_k8s_bin_check.rc != 0
+      - "{{ pve_obs_cos_hub_k8s_bin }}"
+  register: pve_obs_cos_hub_k8s_bin_check
+  until: pve_obs_cos_hub_k8s_bin_check.rc == 0
+  failed_when: pve_obs_cos_hub_k8s_bin_check.rc != 0
   retries: 30
   delay: 5
   changed_when: false
@@ -104,7 +104,7 @@
   ansible.builtin.shell: |
     set -uo pipefail
     unit=snap.k8s.kubelet
-    run() { {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_k8s_vmid }} -- "$@"; }
+    run() { {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_k8s_vmid }} -- "$@"; }
     if run systemctl is-active --quiet "$unit"; then
       echo "KUBELET-ACTIVE"
       exit 0
@@ -118,60 +118,60 @@
     echo "KUBELET-NOT-RUNNING-YET"
   args:
     executable: /bin/bash
-  register: pve_obs_hub_kubelet
-  changed_when: "'KUBELET-RESTARTED' in pve_obs_hub_kubelet.stdout"
+  register: pve_obs_cos_hub_kubelet
+  changed_when: "'KUBELET-RESTARTED' in pve_obs_cos_hub_kubelet.stdout"
 
 - name: Check whether the cluster is already bootstrapped
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_k8s_vmid }}"
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - --
-      - "{{ pve_obs_hub_k8s_bin }}"
+      - "{{ pve_obs_cos_hub_k8s_bin }}"
       - status
-  register: pve_obs_hub_k8s_status_before
+  register: pve_obs_cos_hub_k8s_status_before
   changed_when: false
   failed_when: false
 
 - name: Bootstrap the single-node cluster
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_k8s_vmid }}"
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - --
-      - "{{ pve_obs_hub_k8s_bin }}"
+      - "{{ pve_obs_cos_hub_k8s_bin }}"
       - bootstrap
-  register: pve_obs_hub_k8s_bootstrap
+  register: pve_obs_cos_hub_k8s_bootstrap
   when: >-
-    pve_obs_hub_k8s_status_before.rc != 0
-    or 'not bootstrapped' in pve_obs_hub_k8s_status_before.stdout
-    or 'not bootstrapped' in pve_obs_hub_k8s_status_before.stderr
+    pve_obs_cos_hub_k8s_status_before.rc != 0
+    or 'not bootstrapped' in pve_obs_cos_hub_k8s_status_before.stdout
+    or 'not bootstrapped' in pve_obs_cos_hub_k8s_status_before.stderr
 
 - name: Wait for the node to report Ready
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_k8s_vmid }}"
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - --
-      - "{{ pve_obs_hub_k8s_bin }}"
+      - "{{ pve_obs_cos_hub_k8s_bin }}"
       - kubectl
       - wait
       - --for=condition=Ready
       - node
       - --all
       - --timeout=900s
-  register: pve_obs_hub_k8s_node_ready
-  until: pve_obs_hub_k8s_node_ready.rc == 0
-  failed_when: pve_obs_hub_k8s_node_ready.rc != 0
+  register: pve_obs_cos_hub_k8s_node_ready
+  until: pve_obs_cos_hub_k8s_node_ready.rc == 0
+  failed_when: pve_obs_cos_hub_k8s_node_ready.rc != 0
   retries: 30
   delay: 20
   changed_when: false
 
 - name: Render the containerd proxy drop-in
-  when: pve_obs_hub_http_proxy | length > 0
+  when: pve_obs_cos_hub_http_proxy | length > 0
   ansible.builtin.copy:
     dest: /root/pve-obs-hub-containerd-proxy.conf
     owner: root
@@ -179,27 +179,27 @@
     mode: "0644"
     content: |
       [Service]
-      Environment=HTTP_PROXY={{ pve_obs_hub_http_proxy }}
-      Environment=HTTPS_PROXY={{ pve_obs_hub_http_proxy }}
+      Environment=HTTP_PROXY={{ pve_obs_cos_hub_http_proxy }}
+      Environment=HTTPS_PROXY={{ pve_obs_cos_hub_http_proxy }}
       Environment=NO_PROXY=localhost,127.0.0.1,192.168.0.0/16,10.0.0.0/8,registry.jujucharms.com,ghcr.io
 
-- name: Apply the containerd proxy drop-in inside CT {{ pve_obs_hub_k8s_vmid }}
-  when: pve_obs_hub_http_proxy | length > 0
+- name: Apply the containerd proxy drop-in inside CT {{ pve_obs_cos_hub_k8s_vmid }}
+  when: pve_obs_cos_hub_http_proxy | length > 0
   ansible.builtin.shell: |
     set -euo pipefail
-    {{ pve_obs_hub_pct_bin }} push {{ pve_obs_hub_k8s_vmid }} \
+    {{ pve_obs_cos_hub_pct_bin }} push {{ pve_obs_cos_hub_k8s_vmid }} \
       /root/pve-obs-hub-containerd-proxy.conf /root/.pve-obs-hub-containerd-proxy.conf --perms 0644
     target=/etc/systemd/system/snap.k8s.containerd.service.d/10-proxy.conf
-    if {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_k8s_vmid }} -- \
+    if {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_k8s_vmid }} -- \
          bash -c "cmp -s /root/.pve-obs-hub-containerd-proxy.conf $target"; then
       echo "PROXY-UNCHANGED"
       exit 0
     fi
-    {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_k8s_vmid }} -- bash -c \
+    {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_k8s_vmid }} -- bash -c \
       "install -D -m 0644 /root/.pve-obs-hub-containerd-proxy.conf $target \
        && systemctl daemon-reload && systemctl restart snap.k8s.containerd"
     for _ in $(seq 1 30); do
-      if {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_k8s_vmid }} -- \
+      if {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_k8s_vmid }} -- \
            systemctl is-active --quiet snap.k8s.containerd; then
         echo "PROXY-UPDATED"
         exit 0
@@ -210,8 +210,8 @@
     exit 1
   args:
     executable: /bin/bash
-  register: pve_obs_hub_containerd_proxy
-  changed_when: "'PROXY-UPDATED' in pve_obs_hub_containerd_proxy.stdout"
+  register: pve_obs_cos_hub_containerd_proxy
+  changed_when: "'PROXY-UPDATED' in pve_obs_cos_hub_containerd_proxy.stdout"
 
 - name: Stage the local-path provisioner manifest on the PVE host
   ansible.builtin.copy:
@@ -221,12 +221,12 @@
     group: root
     mode: "0644"
 
-- name: Push the local-path provisioner manifest into CT {{ pve_obs_hub_k8s_vmid }}
+- name: Push the local-path provisioner manifest into CT {{ pve_obs_cos_hub_k8s_vmid }}
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - push
-      - "{{ pve_obs_hub_k8s_vmid }}"
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - /root/pve-obs-hub-local-path.yaml
       - /root/pve-obs-hub-local-path.yaml
       - --perms
@@ -236,26 +236,26 @@
 - name: Install the local-path provisioner
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_k8s_vmid }}"
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - --
-      - "{{ pve_obs_hub_k8s_bin }}"
+      - "{{ pve_obs_cos_hub_k8s_bin }}"
       - kubectl
       - apply
       - -f
       - /root/pve-obs-hub-local-path.yaml
-  register: pve_obs_hub_local_path_apply
-  changed_when: "'unchanged' not in pve_obs_hub_local_path_apply.stdout"
+  register: pve_obs_cos_hub_local_path_apply
+  changed_when: "'unchanged' not in pve_obs_cos_hub_local_path_apply.stdout"
 
 - name: Wait for the local-path provisioner to become available
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_k8s_vmid }}"
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - --
-      - "{{ pve_obs_hub_k8s_bin }}"
+      - "{{ pve_obs_cos_hub_k8s_bin }}"
       - kubectl
       - -n
       - local-path-storage
@@ -263,9 +263,9 @@
       - status
       - deployment/local-path-provisioner
       - --timeout=300s
-  register: pve_obs_hub_local_path_rollout
-  until: pve_obs_hub_local_path_rollout.rc == 0
-  failed_when: pve_obs_hub_local_path_rollout.rc != 0
+  register: pve_obs_cos_hub_local_path_rollout
+  until: pve_obs_cos_hub_local_path_rollout.rc == 0
+  failed_when: pve_obs_cos_hub_local_path_rollout.rc != 0
   retries: 12
   delay: 15
   changed_when: false
@@ -273,18 +273,18 @@
 - name: Require the local-storage StorageClass to exist
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_k8s_vmid }}"
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - --
-      - "{{ pve_obs_hub_k8s_bin }}"
+      - "{{ pve_obs_cos_hub_k8s_bin }}"
       - kubectl
       - get
       - sc
-      - "{{ pve_obs_hub_storage_class }}"
-  register: pve_obs_hub_sc
-  until: pve_obs_hub_sc.rc == 0
-  failed_when: pve_obs_hub_sc.rc != 0
+      - "{{ pve_obs_cos_hub_storage_class }}"
+  register: pve_obs_cos_hub_sc
+  until: pve_obs_cos_hub_sc.rc == 0
+  failed_when: pve_obs_cos_hub_sc.rc != 0
   retries: 30
   delay: 10
   changed_when: false
@@ -292,36 +292,36 @@
 - name: Require the StorageClass to be the cluster default
   ansible.builtin.shell: |
     set -euo pipefail
-    {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_k8s_vmid }} -- {{ pve_obs_hub_k8s_bin }} kubectl get sc \
+    {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_k8s_vmid }} -- {{ pve_obs_cos_hub_k8s_bin }} kubectl get sc \
       -o jsonpath='{range .items[*]}{.metadata.name}={.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}{"\n"}{end}'
   args:
     executable: /bin/bash
-  register: pve_obs_hub_sc_default
+  register: pve_obs_cos_hub_sc_default
   changed_when: false
 
 - name: Patch the StorageClass to be default when it is not
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_k8s_vmid }}"
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - --
-      - "{{ pve_obs_hub_k8s_bin }}"
+      - "{{ pve_obs_cos_hub_k8s_bin }}"
       - kubectl
       - patch
       - sc
-      - "{{ pve_obs_hub_storage_class }}"
+      - "{{ pve_obs_cos_hub_storage_class }}"
       - -p
       - '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
   when: >-
-    (pve_obs_hub_storage_class ~ '=true') not in pve_obs_hub_sc_default.stdout
+    (pve_obs_cos_hub_storage_class ~ '=true') not in pve_obs_cos_hub_sc_default.stdout
 
 - name: Drop the default annotation from any other StorageClass
   ansible.builtin.shell: |
     set -euo pipefail
-    run() { {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_k8s_vmid }} -- {{ pve_obs_hub_k8s_bin }} "$@"; }
+    run() { {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_k8s_vmid }} -- {{ pve_obs_cos_hub_k8s_bin }} "$@"; }
     others=$(run kubectl get sc -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}' \
-      | grep -v -x '{{ pve_obs_hub_storage_class }}' || true)
+      | grep -v -x '{{ pve_obs_cos_hub_storage_class }}' || true)
     for sc in $others; do
       run kubectl patch sc "$sc" --type merge \
         -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}' >/dev/null
@@ -329,28 +329,28 @@
     done
   args:
     executable: /bin/bash
-  register: pve_obs_hub_sc_unset
-  changed_when: "'UNSET-DEFAULT' in pve_obs_hub_sc_unset.stdout"
+  register: pve_obs_cos_hub_sc_unset
+  changed_when: "'UNSET-DEFAULT' in pve_obs_cos_hub_sc_unset.stdout"
 
 - name: Enable the load-balancer addon (MetalLB) on the k8s node
-  when: pve_obs_hub_lb_enabled | bool
+  when: pve_obs_cos_hub_lb_enabled | bool
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_k8s_vmid }}"
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - --
-      - "{{ pve_obs_hub_k8s_bin }}"
+      - "{{ pve_obs_cos_hub_k8s_bin }}"
       - enable
       - load-balancer
-  register: pve_obs_hub_lb_enable
+  register: pve_obs_cos_hub_lb_enable
   changed_when: false
 
 - name: Require the MetalLB memberlist secret
-  when: pve_obs_hub_lb_enabled | bool
+  when: pve_obs_cos_hub_lb_enabled | bool
   ansible.builtin.shell: |
     set -euo pipefail
-    run() { {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_k8s_vmid }} -- {{ pve_obs_hub_k8s_bin }} "$@"; }
+    run() { {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_k8s_vmid }} -- {{ pve_obs_cos_hub_k8s_bin }} "$@"; }
     for _ in $(seq 1 30); do
       if run kubectl -n metallb-system get secret metallb-memberlist >/dev/null 2>&1; then
         echo "SECRET-PRESENT"; exit 0
@@ -363,11 +363,11 @@
     echo "SECRET-CREATED"
   args:
     executable: /bin/bash
-  register: pve_obs_hub_memberlist
-  changed_when: "'SECRET-CREATED' in pve_obs_hub_memberlist.stdout"
+  register: pve_obs_cos_hub_memberlist
+  changed_when: "'SECRET-CREATED' in pve_obs_cos_hub_memberlist.stdout"
 
 - name: Stage the MetalLB pool manifest on the PVE host
-  when: pve_obs_hub_lb_enabled | bool
+  when: pve_obs_cos_hub_lb_enabled | bool
   ansible.builtin.template:
     src: metallb-pool.yaml.j2
     dest: /root/pve-obs-hub-metallb-pool.yaml
@@ -375,13 +375,13 @@
     group: root
     mode: "0644"
 
-- name: Push the MetalLB pool manifest into CT {{ pve_obs_hub_k8s_vmid }}
-  when: pve_obs_hub_lb_enabled | bool
+- name: Push the MetalLB pool manifest into CT {{ pve_obs_cos_hub_k8s_vmid }}
+  when: pve_obs_cos_hub_lb_enabled | bool
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - push
-      - "{{ pve_obs_hub_k8s_vmid }}"
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - /root/pve-obs-hub-metallb-pool.yaml
       - /root/pve-obs-hub-metallb-pool.yaml
       - --perms
@@ -389,34 +389,34 @@
   changed_when: false
 
 - name: Apply the MetalLB pool
-  when: pve_obs_hub_lb_enabled | bool
+  when: pve_obs_cos_hub_lb_enabled | bool
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_k8s_vmid }}"
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - --
-      - "{{ pve_obs_hub_k8s_bin }}"
+      - "{{ pve_obs_cos_hub_k8s_bin }}"
       - kubectl
       - apply
       - -f
       - /root/pve-obs-hub-metallb-pool.yaml
-  register: pve_obs_hub_lb_pool
-  until: pve_obs_hub_lb_pool.rc == 0
-  failed_when: pve_obs_hub_lb_pool.rc != 0
+  register: pve_obs_cos_hub_lb_pool
+  until: pve_obs_cos_hub_lb_pool.rc == 0
+  failed_when: pve_obs_cos_hub_lb_pool.rc != 0
   retries: 20
   delay: 10
-  changed_when: "'unchanged' not in pve_obs_hub_lb_pool.stdout"
+  changed_when: "'unchanged' not in pve_obs_cos_hub_lb_pool.stdout"
 
 - name: Wait for the MetalLB controller and speaker to become available
-  when: pve_obs_hub_lb_enabled | bool
+  when: pve_obs_cos_hub_lb_enabled | bool
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_k8s_vmid }}"
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - --
-      - "{{ pve_obs_hub_k8s_bin }}"
+      - "{{ pve_obs_cos_hub_k8s_bin }}"
       - kubectl
       - -n
       - metallb-system
@@ -429,9 +429,9 @@
     - daemonset/metallb-speaker
   loop_control:
     label: "{{ item }}"
-  register: pve_obs_hub_lb_rollout
-  until: pve_obs_hub_lb_rollout.rc == 0
-  failed_when: pve_obs_hub_lb_rollout.rc != 0
+  register: pve_obs_cos_hub_lb_rollout
+  until: pve_obs_cos_hub_lb_rollout.rc == 0
+  failed_when: pve_obs_cos_hub_lb_rollout.rc != 0
   retries: 10
   delay: 20
   changed_when: false
@@ -439,14 +439,14 @@
 - name: Report the k8s node version and StorageClass
   ansible.builtin.shell: |
     set -euo pipefail
-    {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_k8s_vmid }} -- {{ pve_obs_hub_k8s_bin }} version 2>/dev/null || true
-    {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_k8s_vmid }} -- {{ pve_obs_hub_k8s_bin }} kubectl get nodes -o wide
-    {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_k8s_vmid }} -- {{ pve_obs_hub_k8s_bin }} kubectl get sc
+    {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_k8s_vmid }} -- {{ pve_obs_cos_hub_k8s_bin }} version 2>/dev/null || true
+    {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_k8s_vmid }} -- {{ pve_obs_cos_hub_k8s_bin }} kubectl get nodes -o wide
+    {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_k8s_vmid }} -- {{ pve_obs_cos_hub_k8s_bin }} kubectl get sc
   args:
     executable: /bin/bash
-  register: pve_obs_hub_k8s_report
+  register: pve_obs_cos_hub_k8s_report
   changed_when: false
 
 - name: Show the k8s node inventory
   ansible.builtin.debug:
-    msg: "{{ pve_obs_hub_k8s_report.stdout_lines }}"
+    msg: "{{ pve_obs_cos_hub_k8s_report.stdout_lines }}"

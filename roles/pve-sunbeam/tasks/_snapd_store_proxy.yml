@@ -1,32 +1,32 @@
 ---
 - name: Skip the snapd store proxy when no URL is configured
   ansible.builtin.debug:
-    msg: "sunbeam_snapd_store_proxy_url is empty; leaving snapd's proxy settings untouched"
-  when: sunbeam_snapd_store_proxy_url | length == 0
+    msg: "pve_sunbeam_snapd_store_proxy_url is empty; leaving snapd's proxy settings untouched"
+  when: pve_sunbeam_snapd_store_proxy_url | length == 0
 
 - name: Set snapd's store proxy on every node
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
       - snap
       - set
       - system
-      - "proxy.http={{ sunbeam_snapd_store_proxy_url }}"
-      - "proxy.https={{ sunbeam_snapd_store_proxy_url }}"
-  loop: "{{ sunbeam_nodes }}"
+      - "proxy.http={{ pve_sunbeam_snapd_store_proxy_url }}"
+      - "proxy.https={{ pve_sunbeam_snapd_store_proxy_url }}"
+  loop: "{{ pve_sunbeam_nodes }}"
   loop_control:
     label: "{{ item.fqdn }}"
-  register: sunbeam_snapd_store_proxy_set
+  register: pve_sunbeam_snapd_store_proxy_set
   changed_when: false
-  when: sunbeam_snapd_store_proxy_url | length > 0
+  when: pve_sunbeam_snapd_store_proxy_url | length > 0
 
 - name: Verify snapd can answer a store query quickly
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
@@ -41,21 +41,21 @@
       - /dev/null
       - -w
       - "%{http_code} %{time_total}"
-  loop: "{{ sunbeam_nodes }}"
+  loop: "{{ pve_sunbeam_nodes }}"
   loop_control:
     label: "{{ item.fqdn }}"
-  register: sunbeam_snapd_store_proxy_probe
+  register: pve_sunbeam_snapd_store_proxy_probe
   changed_when: false
   failed_when: false
-  when: sunbeam_snapd_store_proxy_url | length > 0
+  when: pve_sunbeam_snapd_store_proxy_url | length > 0
 
 - name: Report the snapd store probe
   ansible.builtin.debug:
     msg: "{{ item.item.fqdn }}: snapd find -> {{ item.stdout | default('no output') }}"
-  loop: "{{ sunbeam_snapd_store_proxy_probe.results | default([]) }}"
+  loop: "{{ pve_sunbeam_snapd_store_proxy_probe.results | default([]) }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
-  when: sunbeam_snapd_store_proxy_url | length > 0
+  when: pve_sunbeam_snapd_store_proxy_url | length > 0
 
 - name: Require snapd to reach the store through the proxy
   ansible.builtin.assert:
@@ -64,11 +64,11 @@
       - item.stdout.split()[0] == '200'
     fail_msg: >-
       snapd on {{ item.item.fqdn }} could not answer /v2/find?name=microovn
-      through {{ sunbeam_snapd_store_proxy_url }} (got
+      through {{ pve_sunbeam_snapd_store_proxy_url }} (got
       "{{ item.stdout | default(item.stderr | default('no output')) }}"). The
       openstack-hypervisor charm will fail every update-status hook until the
       store is reachable.
-  loop: "{{ sunbeam_snapd_store_proxy_probe.results | default([]) }}"
+  loop: "{{ pve_sunbeam_snapd_store_proxy_probe.results | default([]) }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
-  when: sunbeam_snapd_store_proxy_url | length > 0
+  when: pve_sunbeam_snapd_store_proxy_url | length > 0

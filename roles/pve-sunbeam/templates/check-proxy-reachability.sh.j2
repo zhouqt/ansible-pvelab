@@ -1,7 +1,7 @@
 #!/bin/bash
 set -u
 
-{% if sunbeam_proxy_enabled | bool %}
+{% if pve_sunbeam_proxy_enabled | bool %}
 out=$(python3 -c 'import socket, sys
 from urllib.parse import urlparse
 parsed = urlparse(sys.argv[1])
@@ -15,7 +15,7 @@ try:
 except OSError as exc:
     print("proxy reachable=no %s:%s (%s)" % (host, port, exc))
 else:
-    print("proxy reachable=yes %s:%s" % (host, port))' "{{ sunbeam_proxy_url }}" 2>&1)
+    print("proxy reachable=yes %s:%s" % (host, port))' "{{ pve_sunbeam_proxy_url }}" 2>&1)
 rc=$?
 if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
   echo "proxy probe failed rc=$rc out='$out'"
@@ -23,5 +23,5 @@ else
   echo "$out"
 fi
 {% else %}
-echo "proxy reachable=n/a (sunbeam_proxy_enabled=false, nothing to probe)"
+echo "proxy reachable=n/a (pve_sunbeam_proxy_enabled=false, nothing to probe)"
 {% endif %}

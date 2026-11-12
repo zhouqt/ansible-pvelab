@@ -1,26 +1,26 @@
 ---
 
-pve_obs_hub_pct_bin: /usr/sbin/pct
-pve_obs_hub_ip_bin: /usr/sbin/ip
-pve_obs_hub_iptables_bin: /usr/sbin/iptables
-pve_obs_hub_ping_bin: /usr/bin/ping
-pve_obs_hub_modprobe_bin: /usr/sbin/modprobe
-pve_obs_hub_pvesm_bin: /usr/sbin/pvesm
-pve_obs_hub_k8s_bin: /snap/bin/k8s
+pve_obs_cos_hub_pct_bin: /usr/sbin/pct
+pve_obs_cos_hub_ip_bin: /usr/sbin/ip
+pve_obs_cos_hub_iptables_bin: /usr/sbin/iptables
+pve_obs_cos_hub_ping_bin: /usr/bin/ping
+pve_obs_cos_hub_modprobe_bin: /usr/sbin/modprobe
+pve_obs_cos_hub_pvesm_bin: /usr/sbin/pvesm
+pve_obs_cos_hub_k8s_bin: /snap/bin/k8s
 
-pve_obs_hub_create_cts: true
+pve_obs_cos_hub_create_cts: true
 
-pve_obs_hub_kernel_modules:
+pve_obs_cos_hub_kernel_modules:
   - overlay
   - br_netfilter
   - vxlan
   - nf_conntrack
 
-pve_obs_hub_k8s_sysctls:
+pve_obs_cos_hub_k8s_sysctls:
   net.ipv4.ip_forward: 1
   net.bridge.bridge-nf-call-iptables: 1
   net.bridge.bridge-nf-call-ip6tables: 1
 
-pve_obs_hub_skip_wait: false
+pve_obs_cos_hub_skip_wait: false
 
-pve_obs_hub_lb_ip: "{{ pve_obs_hub_lb_pool_addresses[0].split('/')[0] }}"
+pve_obs_cos_hub_lb_ip: "{{ pve_obs_cos_hub_lb_pool_addresses[0].split('/')[0] }}"

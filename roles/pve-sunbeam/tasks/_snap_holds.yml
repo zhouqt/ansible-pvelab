@@ -2,10 +2,10 @@
 
 - name: Read the snap and apt hold state inside every CT
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, bash, "-s"]
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, bash, "-s"]
     stdin: "{{ lookup('template', 'check-snap-holds.sh.j2') }}"
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_hold_state
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_node_hold_state
   changed_when: false
   failed_when: false
   loop_control:
@@ -14,7 +14,7 @@
 - name: Show the snap and apt hold state
   ansible.builtin.debug:
     msg: "{{ item.item.fqdn }}: rc={{ item.rc }}\n{{ (item.stdout | default('')) | trim }}"
-  loop: "{{ sunbeam_node_hold_state.results }}"
+  loop: "{{ pve_sunbeam_node_hold_state.results }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
 
@@ -27,25 +27,25 @@
       Could not read /var/lib/snapd/state.json on {{ item.item.fqdn }}, so it is unknown
       whether any snap is already held. Assuming "nothing is held" could silently clear an
       operator's hold on the next run, so this stage stops instead.
-  loop: "{{ sunbeam_node_hold_state.results }}"
+  loop: "{{ pve_sunbeam_node_hold_state.results }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Index the hold-state reads by vmid
   ansible.builtin.set_fact:
-    sunbeam_hold_state_by_vmid: >-
-      {{ (sunbeam_hold_state_by_vmid | default({}))
+    pve_sunbeam_hold_state_by_vmid: >-
+      {{ (pve_sunbeam_hold_state_by_vmid | default({}))
          | combine({ (item.item.vmid | string): (item.stdout | default('')) }) }}
-  loop: "{{ sunbeam_node_hold_state.results }}"
+  loop: "{{ pve_sunbeam_node_hold_state.results }}"
   loop_control:
     label: "{{ item.item.vmid }}"
 
 - name: Classify the hold state of every node
   ansible.builtin.set_fact:
-    sunbeam_hold_plan: "{{ (sunbeam_hold_plan | default([])) + [ entry ] }}"
-  loop: "{{ sunbeam_nodes }}"
+    pve_sunbeam_hold_plan: "{{ (pve_sunbeam_hold_plan | default([])) + [ entry ] }}"
+  loop: "{{ pve_sunbeam_nodes }}"
   vars:
-    out: "{{ sunbeam_hold_state_by_vmid[item.vmid | string] | default('') }}"
+    out: "{{ pve_sunbeam_hold_state_by_vmid[item.vmid | string] | default('') }}"
     global_hold: "{{ (out | regex_findall('(?m)^GLOBAL_HOLD=(.*)$') | first | default('-')) }}"
     apt_hold: "{{ (out | regex_findall('(?m)^APT_SNAPPD_HOLD=(\\S+)$') | first | default('unknown')) }}"
     snaps_installed: "{{ out | regex_findall('(?m)^SNAP (\\S+) installed=yes(?=\\s|$)') | flatten }}"
@@ -57,9 +57,9 @@
       apt_snapd_hold: "{{ apt_hold }}"
       snaps_installed: "{{ snaps_installed }}"
       snaps_held: "{{ snaps_held }}"
-      need_global: "{{ sunbeam_snap_hold_forever | bool and global_hold == '-' }}"
-      need_apt: "{{ sunbeam_hold_snapd_deb | bool and apt_hold != 'held' }}"
-      need_snaps: "{{ sunbeam_held_snaps
+      need_global: "{{ pve_sunbeam_snap_hold_forever | bool and global_hold == '-' }}"
+      need_apt: "{{ pve_sunbeam_hold_snapd_deb | bool and apt_hold != 'held' }}"
+      need_snaps: "{{ pve_sunbeam_held_snaps
                      | select('in', snaps_installed)
                      | reject('in', snaps_held)
                      | list }}"
@@ -72,39 +72,39 @@
       apt_snapd={{ item.apt_snapd_hold }} already_held_snaps={{ item.held_snaps | join(',') }}
       -> add global={{ item.need_global }} add snapd-deb={{ item.need_apt }}
       add_snaps={{ item.need_snaps | join(',') }}
-  loop: "{{ sunbeam_hold_plan }}"
+  loop: "{{ pve_sunbeam_hold_plan }}"
   loop_control:
     label: "{{ item.fqdn }}"
 
 - name: Hold all snap refreshes on the nodes that have no global hold
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, snap, refresh, "--hold=forever"]
-  loop: "{{ sunbeam_hold_plan }}"
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, snap, refresh, "--hold=forever"]
+  loop: "{{ pve_sunbeam_hold_plan }}"
   loop_control:
     label: "{{ item.fqdn }}"
   when: item.need_global | bool
 
 - name: Hold the pinned snaps on the nodes that have no hold on them
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.0.vmid }}", --, snap, refresh, "--hold=forever", "{{ item.1 }}"]
-  loop: "{{ sunbeam_hold_plan | subelements('need_snaps') }}"
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.0.vmid }}", --, snap, refresh, "--hold=forever", "{{ item.1 }}"]
+  loop: "{{ pve_sunbeam_hold_plan | subelements('need_snaps') }}"
   loop_control:
     label: "{{ item.0.fqdn }} {{ item.1 }}"
 
 - name: Hold the snapd deb on the nodes where apt has not held it
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, apt-mark, hold, snapd]
-  loop: "{{ sunbeam_hold_plan }}"
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, apt-mark, hold, snapd]
+  loop: "{{ pve_sunbeam_hold_plan }}"
   loop_control:
     label: "{{ item.fqdn }}"
   when: item.need_apt | bool
 
 - name: Re-read the snap and apt hold state inside every CT
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, bash, "-s"]
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, bash, "-s"]
     stdin: "{{ lookup('template', 'check-snap-holds.sh.j2') }}"
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_hold_after
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_node_hold_after
   changed_when: false
   failed_when: false
   loop_control:
@@ -115,21 +115,21 @@
     that:
       - "'READABLE=yes' in (item.stdout | default(''))"
       - >-
-        not (sunbeam_snap_hold_forever | bool)
+        not (pve_sunbeam_snap_hold_forever | bool)
         or (item.stdout | regex_findall('(?m)^GLOBAL_HOLD=(.*)$') | first | default('-')) != '-'
       - >-
-        not (sunbeam_hold_snapd_deb | bool)
+        not (pve_sunbeam_hold_snapd_deb | bool)
         or 'APT_SNAPPD_HOLD=held' in (item.stdout | default(''))
     fail_msg: >-
       The holds requested on {{ item.item.fqdn }} are not in place after applying them --
       probe said '{{ item.stdout | default('') | trim }}'.
-  loop: "{{ sunbeam_node_hold_after.results }}"
+  loop: "{{ pve_sunbeam_node_hold_after.results }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Report the hold state
   ansible.builtin.debug:
     msg: "{{ item.item.fqdn }}: {{ (item.stdout | default('')) | regex_findall('(?m)^(GLOBAL_HOLD=.*|SNAP \\S+ installed=\\S+ hold=\\S+|APT_SNAPPD_HOLD=.*)$') | join(', ') }}"
-  loop: "{{ sunbeam_node_hold_after.results }}"
+  loop: "{{ pve_sunbeam_node_hold_after.results }}"
   loop_control:
     label: "{{ item.item.fqdn }}"

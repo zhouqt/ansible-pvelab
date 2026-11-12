@@ -3,101 +3,101 @@
 - name: Ensure the hub controller has an account for this environment
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_obs_hub_juju_client_vmid }}"
+      - "{{ pve_sunbeam_obs_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ sunbeam_obs_hub_juju_client_user }}"
+      - "{{ pve_sunbeam_obs_hub_juju_client_user }}"
       - "-c"
-      - "{{ sunbeam_obs_hub_juju_cmd }} add-user {{ sunbeam_obs_account_user }} -c {{ sunbeam_obs_controller }}"
-  register: sunbeam_obs_add_user
+      - "{{ pve_sunbeam_obs_hub_juju_cmd }} add-user {{ pve_sunbeam_obs_account_user }} -c {{ pve_sunbeam_obs_controller }}"
+  register: pve_sunbeam_obs_add_user
   no_log: true
-  changed_when: sunbeam_obs_add_user.rc == 0
+  changed_when: pve_sunbeam_obs_add_user.rc == 0
   failed_when:
-    - sunbeam_obs_add_user.rc != 0
-    - "'already exists' not in sunbeam_obs_add_user.stderr | default('')"
+    - pve_sunbeam_obs_add_user.rc != 0
+    - "'already exists' not in pve_sunbeam_obs_add_user.stderr | default('')"
 
 - name: Grant the environment account consume access on the hub offers
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_obs_hub_juju_client_vmid }}"
+      - "{{ pve_sunbeam_obs_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ sunbeam_obs_hub_juju_client_user }}"
+      - "{{ pve_sunbeam_obs_hub_juju_client_user }}"
       - "-c"
-      - "{{ sunbeam_obs_hub_juju_cmd }} grant {{ sunbeam_obs_account_user }} consume {{ item }} -c {{ sunbeam_obs_controller }}"
+      - "{{ pve_sunbeam_obs_hub_juju_cmd }} grant {{ pve_sunbeam_obs_account_user }} consume {{ item }} -c {{ pve_sunbeam_obs_controller }}"
   loop:
-    - "{{ sunbeam_obs_grafana_offer }}"
-    - "{{ sunbeam_obs_prometheus_offer }}"
-    - "{{ sunbeam_obs_loki_offer }}"
+    - "{{ pve_sunbeam_obs_grafana_offer }}"
+    - "{{ pve_sunbeam_obs_prometheus_offer }}"
+    - "{{ pve_sunbeam_obs_loki_offer }}"
   loop_control:
     label: "{{ item }}"
-  register: sunbeam_obs_grants
-  changed_when: sunbeam_obs_grants.rc == 0
+  register: pve_sunbeam_obs_grants
+  changed_when: pve_sunbeam_obs_grants.rc == 0
   failed_when:
-    - sunbeam_obs_grants.rc != 0
-    - "'already has' not in sunbeam_obs_grants.stderr | default('')"
+    - pve_sunbeam_obs_grants.rc != 0
+    - "'already has' not in pve_sunbeam_obs_grants.stderr | default('')"
 
 - name: Register the environment with the hub controller
   when: >-
-    sunbeam_obs_facts.ACCOUNT_FILE | default('no') != 'yes'
-    or sunbeam_obs_facts.ACCOUNT_LOGIN | default('absent') != 'ok'
+    pve_sunbeam_obs_facts.ACCOUNT_FILE | default('no') != 'yes'
+    or pve_sunbeam_obs_facts.ACCOUNT_LOGIN | default('absent') != 'ok'
   block:
     - name: Mint a registration token for the environment account
       ansible.builtin.command:
         argv:
-          - "{{ sunbeam_pct_bin }}"
+          - "{{ pve_sunbeam_pct_bin }}"
           - exec
-          - "{{ sunbeam_obs_hub_juju_client_vmid }}"
+          - "{{ pve_sunbeam_obs_hub_juju_client_vmid }}"
           - --
           - su
           - "-"
-          - "{{ sunbeam_obs_hub_juju_client_user }}"
+          - "{{ pve_sunbeam_obs_hub_juju_client_user }}"
           - "-c"
-          - "{{ sunbeam_obs_hub_juju_cmd }} change-user-password {{ sunbeam_obs_account_user }} --reset --no-prompt -c {{ sunbeam_obs_controller }}"
-      register: sunbeam_obs_token
+          - "{{ pve_sunbeam_obs_hub_juju_cmd }} change-user-password {{ pve_sunbeam_obs_account_user }} --reset --no-prompt -c {{ pve_sunbeam_obs_controller }}"
+      register: pve_sunbeam_obs_token
       no_log: true
       changed_when: true
 
     - name: Extract the registration token
       ansible.builtin.set_fact:
-        sunbeam_obs_register_token: >-
-          {{ ((sunbeam_obs_token.stderr | default(''))
-              ~ (sunbeam_obs_token.stdout | default('')))
+        pve_sunbeam_obs_register_token: >-
+          {{ ((pve_sunbeam_obs_token.stderr | default(''))
+              ~ (pve_sunbeam_obs_token.stdout | default('')))
              | regex_findall('juju register (\S+)') | first | default('') }}
-        sunbeam_obs_account_password: >-
+        pve_sunbeam_obs_account_password: >-
           {{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}
       no_log: true
 
     - name: Require a token from the hub controller
       ansible.builtin.assert:
         that:
-          - sunbeam_obs_register_token | length > 0
+          - pve_sunbeam_obs_register_token | length > 0
         fail_msg: >-
-          `juju change-user-password --reset` on {{ sunbeam_obs_controller }} did not
+          `juju change-user-password --reset` on {{ pve_sunbeam_obs_controller }} did not
           print a registration token, so the sunbeam snap cannot be registered.
           Re-run the stage; if it keeps failing, check that the hub controller is
-          reachable from CT {{ sunbeam_obs_hub_juju_client_vmid }}.
+          reachable from CT {{ pve_sunbeam_obs_hub_juju_client_vmid }}.
 
     - name: Register the snap user and write the account file
       ansible.builtin.command:
         argv:
-          - "{{ sunbeam_pct_bin }}"
+          - "{{ pve_sunbeam_pct_bin }}"
           - exec
-          - "{{ sunbeam_primary_node.vmid }}"
+          - "{{ pve_sunbeam_primary_node.vmid }}"
           - --
           - bash
           - -s
         stdin: "{{ lookup('template', 'obs-register.sh.j2') }}"
-      register: sunbeam_obs_register
+      register: pve_sunbeam_obs_register
       no_log: true
-      changed_when: sunbeam_obs_register.rc == 0
+      changed_when: pve_sunbeam_obs_register.rc == 0
 
     - name: Report the registration result
       ansible.builtin.debug:
-        msg: "{{ sunbeam_obs_register.stdout_lines | default([]) }}"
+        msg: "{{ pve_sunbeam_obs_register.stdout_lines | default([]) }}"

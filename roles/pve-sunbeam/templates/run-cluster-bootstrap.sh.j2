@@ -1,14 +1,14 @@
 #!/bin/bash
 set -uo pipefail
 
-log={{ sunbeam_node_log_dir }}/cluster-bootstrap.log
-mkdir -p {{ sunbeam_node_log_dir }}
+log={{ pve_sunbeam_node_log_dir }}/cluster-bootstrap.log
+mkdir -p {{ pve_sunbeam_node_log_dir }}
 
-su - {{ sunbeam_node_user }} -c 'sunbeam cluster bootstrap \
+su - {{ pve_sunbeam_node_user }} -c 'sunbeam cluster bootstrap \
     --accept-defaults \
-    --role {{ sunbeam_primary_node.role }} \
+    --role {{ pve_sunbeam_primary_node.role }} \
     --topology multi \
-    --manifest {{ sunbeam_manifest_path }}' >"$log" 2>&1
+    --manifest {{ pve_sunbeam_manifest_path }}' >"$log" 2>&1
 rc=$?
 
 echo "cluster bootstrap rc=$rc (log: $log)"

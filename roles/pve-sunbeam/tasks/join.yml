@@ -5,12 +5,12 @@
 - name: Require explicit authorization for joining nodes
   ansible.builtin.assert:
     that:
-      - sunbeam_confirm_cluster_join | bool
-      - sunbeam_confirm_external_changes | bool
+      - pve_sunbeam_confirm_cluster_join | bool
+      - pve_sunbeam_confirm_external_changes | bool
     fail_msg: >-
       This stage registers worker nodes into the existing Sunbeam control plane
-      ({{ sunbeam_controller_name }}).
-      To confirm, pass -e sunbeam_confirm_cluster_join=true -e sunbeam_confirm_external_changes=true.
+      ({{ pve_sunbeam_controller_name }}).
+      To confirm, pass -e pve_sunbeam_confirm_cluster_join=true -e pve_sunbeam_confirm_external_changes=true.
 
 - name: Resolve the Sunbeam node identities
   ansible.builtin.include_tasks: _node_identity.yml
@@ -24,53 +24,53 @@
       - "'API=none' not in (item.stdout | default(''))"
       - "'API=000' not in (item.stdout | default(''))"
     fail_msg: >-
-      A worker can route to {{ sunbeam_control_plane_api_host }} but nothing answers
+      A worker can route to {{ pve_sunbeam_control_plane_api_host }} but nothing answers
       there, so `sunbeam cluster join` would fail on it with "Juju Controller is not
       reachable". The endpoint is served by the loadbalancer inside
-      {{ sunbeam_primary_node.fqdn }}: check that the controller is running there
+      {{ pve_sunbeam_primary_node.fqdn }}: check that the controller is running there
       (`juju controllers`, `kubectl -n controller-sunbeam-controller get svc`) and
-      that sunbeam_k8s_loadbalancer_range ({{ sunbeam_k8s_loadbalancer_range }}) still
+      that pve_sunbeam_k8s_loadbalancer_range ({{ pve_sunbeam_k8s_loadbalancer_range }}) still
       covers it. The per-node probe output is in the
       "Report the control-plane route state of every worker" task above.
-  loop: "{{ sunbeam_control_plane_route.results | default([]) }}"
+  loop: "{{ pve_sunbeam_control_plane_route.results | default([]) }}"
   loop_control:
     label: "{{ item.item.fqdn | default('unknown') }}"
 
 - name: Read the current cluster membership from the primary
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'check-cluster-members.sh.j2') }}"
-  register: sunbeam_cluster_members
+  register: pve_sunbeam_cluster_members
   changed_when: false
 
 - name: Require a readable cluster membership snapshot
   ansible.builtin.assert:
     that:
-      - sunbeam_cluster_members.rc == 0
-      - "'membership=ok' in sunbeam_cluster_members.stdout"
+      - pve_sunbeam_cluster_members.rc == 0
+      - "'membership=ok' in pve_sunbeam_cluster_members.stdout"
     fail_msg: >-
-      `sunbeam cluster list` on {{ sunbeam_primary_node.fqdn }} could not be read, so the
+      `sunbeam cluster list` on {{ pve_sunbeam_primary_node.fqdn }} could not be read, so the
       membership of every node is unknown. Proceeding would mint a join token for nodes
       that are already members and try to re-join them:
-      {{ sunbeam_cluster_members.stdout | default('') | trim }}
+      {{ pve_sunbeam_cluster_members.stdout | default('') | trim }}
 
 - name: Report which nodes still need to join
   ansible.builtin.debug:
-    msg: "{{ sunbeam_cluster_members.stdout_lines }}"
+    msg: "{{ pve_sunbeam_cluster_members.stdout_lines }}"
 
 - name: Refuse to join while a node is half-joined
   ansible.builtin.assert:
     that:
       - >-
-        not (('microcluster ' ~ item.fqdn ~ '=yes') in sunbeam_cluster_members.stdout
-             and ('member ' ~ item.fqdn ~ '=no') in sunbeam_cluster_members.stdout)
-        or sunbeam_join_remove_half_joined_nodes | bool
+        not (('microcluster ' ~ item.fqdn ~ '=yes') in pve_sunbeam_cluster_members.stdout
+             and ('member ' ~ item.fqdn ~ '=no') in pve_sunbeam_cluster_members.stdout)
+        or pve_sunbeam_join_remove_half_joined_nodes | bool
     fail_msg: >-
       {{ item.fqdn }} is a member of the Sunbeam cluster daemon but does not run
       Sunbeam: the cluster knows it, `sunbeam cluster list` does not list it. This
@@ -80,41 +80,41 @@
       add {{ item.fqdn }}` reports "Node is already a member of the Sunbeam
       cluster", exits 0 and writes an empty token file.
       Remove the leftover member and repeat this stage:
-      pct exec {{ sunbeam_primary_node.vmid }} -- su - {{ sunbeam_node_user }} -c
+      pct exec {{ pve_sunbeam_primary_node.vmid }} -- su - {{ pve_sunbeam_node_user }} -c
       'sunbeam cluster remove {{ item.fqdn }} --force'
-      or let the playbook do it with -e sunbeam_join_remove_half_joined_nodes=true.
-  loop: "{{ sunbeam_nodes }}"
+      or let the playbook do it with -e pve_sunbeam_join_remove_half_joined_nodes=true.
+  loop: "{{ pve_sunbeam_nodes }}"
   loop_control:
     label: "{{ item.fqdn }}"
 
 - name: Remove the half-joined nodes from the cluster daemon
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - su
       - "-"
-      - "{{ sunbeam_node_user }}"
+      - "{{ pve_sunbeam_node_user }}"
       - -c
       - "sunbeam cluster remove {{ item.fqdn }} --force"
-  loop: "{{ sunbeam_nodes }}"
+  loop: "{{ pve_sunbeam_nodes }}"
   loop_control:
     label: "{{ item.fqdn }}"
-  register: sunbeam_join_remove_half_joined
+  register: pve_sunbeam_join_remove_half_joined
   when:
-    - sunbeam_join_remove_half_joined_nodes | bool
+    - pve_sunbeam_join_remove_half_joined_nodes | bool
     - >-
-      ('microcluster ' ~ item.fqdn ~ '=yes') in sunbeam_cluster_members.stdout
-      and ('member ' ~ item.fqdn ~ '=no') in sunbeam_cluster_members.stdout
+      ('microcluster ' ~ item.fqdn ~ '=yes') in pve_sunbeam_cluster_members.stdout
+      and ('member ' ~ item.fqdn ~ '=no') in pve_sunbeam_cluster_members.stdout
 
 - name: Report the removed half-joined members
   ansible.builtin.debug:
     msg: >-
       {{ item.item.fqdn }} was removed from the cluster daemon (rc={{ item.rc }});
       it can now join normally.
-  loop: "{{ sunbeam_join_remove_half_joined.results | default([]) }}"
+  loop: "{{ pve_sunbeam_join_remove_half_joined.results | default([]) }}"
   loop_control:
     label: "{{ item.item.fqdn | default('unknown') }}"
   when: not (item.skipped | default(false) | bool)
@@ -122,14 +122,14 @@
 - name: Read the current join wrapper inside every worker CT
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
       - cat
-      - "{{ sunbeam_join_wrapper_path }}"
-  loop: "{{ sunbeam_worker_nodes }}"
-  register: sunbeam_join_wrapper_state
+      - "{{ pve_sunbeam_join_wrapper_path }}"
+  loop: "{{ pve_sunbeam_worker_nodes }}"
+  register: pve_sunbeam_join_wrapper_state
   changed_when: false
   failed_when: false
   loop_control:
@@ -138,20 +138,20 @@
 - name: Stage the join wrapper on the PVE host
   ansible.builtin.template:
     src: sunbeam-join-node.sh.j2
-    dest: "{{ sunbeam_staging_dir }}/sunbeam-join-node.sh"
+    dest: "{{ pve_sunbeam_staging_dir }}/sunbeam-join-node.sh"
     mode: "0755"
 
 - name: Push the join wrapper into the worker CTs that differ
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - push
       - "{{ item.item.vmid }}"
-      - "{{ sunbeam_staging_dir }}/sunbeam-join-node.sh"
-      - "{{ sunbeam_join_wrapper_path }}"
+      - "{{ pve_sunbeam_staging_dir }}/sunbeam-join-node.sh"
+      - "{{ pve_sunbeam_join_wrapper_path }}"
       - --perms
       - "0755"
-  loop: "{{ sunbeam_join_wrapper_state.results }}"
+  loop: "{{ pve_sunbeam_join_wrapper_state.results }}"
   when: >-
     (item.stdout | default('') | trim)
     != (lookup('template', 'sunbeam-join-node.sh.j2') | trim)
@@ -161,14 +161,14 @@
 - name: Ensure no stale join token remains on the primary
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - rm
       - -f
-      - "{{ sunbeam_join_token_primary_path }}"
-  loop: "{{ sunbeam_worker_nodes }}"
+      - "{{ pve_sunbeam_join_token_primary_path }}"
+  loop: "{{ pve_sunbeam_worker_nodes }}"
   vars:
     vmid: "{{ item.vmid }}"
   changed_when: false
@@ -178,32 +178,32 @@
 - name: Generate a join token on the primary for every pending node
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - su
       - "-"
-      - "{{ sunbeam_node_user }}"
+      - "{{ pve_sunbeam_node_user }}"
       - -c
-      - "sunbeam cluster add {{ sunbeam_node_names[item.vmid | string] | default(item.hostname) }} --output {{ sunbeam_join_token_primary_path }}"
-  loop: "{{ sunbeam_worker_nodes }}"
+      - "sunbeam cluster add {{ pve_sunbeam_node_names[item.vmid | string] | default(item.hostname) }} --output {{ pve_sunbeam_join_token_primary_path }}"
+  loop: "{{ pve_sunbeam_worker_nodes }}"
   vars:
     vmid: "{{ item.vmid }}"
-  when: "'member ' ~ item.fqdn ~ '=yes' not in sunbeam_cluster_members.stdout"
-  register: sunbeam_join_token_add
+  when: "'member ' ~ item.fqdn ~ '=yes' not in pve_sunbeam_cluster_members.stdout"
+  register: pve_sunbeam_join_token_add
   loop_control:
     label: "{{ item.fqdn }}"
 
 - name: Pull each join token from the primary into the PVE staging area
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - pull
-      - "{{ sunbeam_primary_node.vmid }}"
-      - "{{ sunbeam_join_token_primary_path }}"
-      - "{{ sunbeam_staging_dir }}/{{ item.item.vmid }}-join-token.asc"
-  loop: "{{ sunbeam_join_token_add.results }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_join_token_primary_path }}"
+      - "{{ pve_sunbeam_staging_dir }}/{{ item.item.vmid }}-join-token.asc"
+  loop: "{{ pve_sunbeam_join_token_add.results }}"
   vars:
     vmid: "{{ item.item.vmid }}"
   when: item.rc is defined and item.rc == 0
@@ -213,11 +213,11 @@
 
 - name: Tighten the staging permissions of the pulled tokens
   ansible.builtin.file:
-    path: "{{ sunbeam_staging_dir }}/{{ item.item.vmid }}-join-token.asc"
+    path: "{{ pve_sunbeam_staging_dir }}/{{ item.item.vmid }}-join-token.asc"
     owner: root
     group: root
     mode: "0600"
-  loop: "{{ sunbeam_join_token_add.results }}"
+  loop: "{{ pve_sunbeam_join_token_add.results }}"
   when: item.rc is defined and item.rc == 0
   loop_control:
     label: "{{ item.item.fqdn }}"
@@ -225,14 +225,14 @@
 - name: Remove the join token from the primary
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - rm
       - -f
-      - "{{ sunbeam_join_token_primary_path }}"
-  loop: "{{ sunbeam_join_token_add.results }}"
+      - "{{ pve_sunbeam_join_token_primary_path }}"
+  loop: "{{ pve_sunbeam_join_token_add.results }}"
   vars:
     vmid: "{{ item.item.vmid }}"
   when: item.rc is defined and item.rc == 0
@@ -242,10 +242,10 @@
 
 - name: Assert every pending node has a staged join token before joining any of them
   ansible.builtin.stat:
-    path: "{{ sunbeam_staging_dir }}/{{ item.item.vmid }}-join-token.asc"
-  loop: "{{ sunbeam_join_token_add.results }}"
+    path: "{{ pve_sunbeam_staging_dir }}/{{ item.item.vmid }}-join-token.asc"
+  loop: "{{ pve_sunbeam_join_token_add.results }}"
   when: item.rc is defined and item.rc == 0
-  register: sunbeam_join_token_staged
+  register: pve_sunbeam_join_token_staged
   loop_control:
     label: "{{ item.item.fqdn }}"
 
@@ -257,29 +257,29 @@
     fail_msg: >-
       A node has no usable join token staged on the PVE host, so this run stops
       before joining anything rather than half-joining the cluster. Look for
-      `<vmid>-join-token.asc` in {{ sunbeam_staging_dir }}/: a missing file means
+      `<vmid>-join-token.asc` in {{ pve_sunbeam_staging_dir }}/: a missing file means
       `sunbeam cluster add` produced none, an empty one means the node is already
       a member of the cluster daemon (see the half-joined gate above). The staged
       tokens are left in place, so the run can simply be repeated.
-  loop: "{{ sunbeam_join_token_staged.results | default([]) | selectattr('stat', 'defined') | list }}"
+  loop: "{{ pve_sunbeam_join_token_staged.results | default([]) | selectattr('stat', 'defined') | list }}"
   loop_control:
     label: "{{ item.item.item.fqdn }}"
 
 - name: Push each join token into its worker CT
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - push
       - "{{ item.item.vmid }}"
-      - "{{ sunbeam_staging_dir }}/{{ item.item.vmid }}-join-token.asc"
-      - "{{ sunbeam_join_token_path }}"
+      - "{{ pve_sunbeam_staging_dir }}/{{ item.item.vmid }}-join-token.asc"
+      - "{{ pve_sunbeam_join_token_path }}"
       - --user
-      - "{{ sunbeam_node_user }}"
+      - "{{ pve_sunbeam_node_user }}"
       - --group
-      - "{{ sunbeam_node_user }}"
+      - "{{ pve_sunbeam_node_user }}"
       - --perms
       - "0600"
-  loop: "{{ sunbeam_join_token_add.results }}"
+  loop: "{{ pve_sunbeam_join_token_add.results }}"
   when: item.rc is defined and item.rc == 0
   loop_control:
     label: "{{ item.item.fqdn }}"
@@ -287,20 +287,20 @@
 - name: Join each pending node to the cluster
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.item.vmid }}"
       - --
       - su
       - "-"
-      - "{{ sunbeam_node_user }}"
+      - "{{ pve_sunbeam_node_user }}"
       - -c
-      - "{{ sunbeam_join_wrapper_path }} {{ item.item.role }}"
-  loop: "{{ sunbeam_join_token_add.results }}"
+      - "{{ pve_sunbeam_join_wrapper_path }} {{ item.item.role }}"
+  loop: "{{ pve_sunbeam_join_token_add.results }}"
   when: item.rc is defined and item.rc == 0
-  register: sunbeam_join_run
-  async: "{{ sunbeam_join_timeout }}"
-  poll: "{{ sunbeam_poll_interval }}"
+  register: pve_sunbeam_join_run
+  async: "{{ pve_sunbeam_join_timeout }}"
+  poll: "{{ pve_sunbeam_poll_interval }}"
   failed_when: false
   loop_control:
     label: "{{ item.item.fqdn }}"
@@ -312,7 +312,7 @@
       the verdict -- a node can do its whole join and still exit non-zero when a
       charm hook is slow or briefly in error (see the note on the join task). The
       membership assertions after the re-read decide whether the node is in.
-  loop: "{{ sunbeam_join_run.results | default([]) }}"
+  loop: "{{ pve_sunbeam_join_run.results | default([]) }}"
   loop_control:
     label: "{{ item.item.item.fqdn | default('unknown') }}"
   when: not (item.skipped | default(false) | bool)
@@ -320,23 +320,23 @@
 - name: Remove the join token from the worker CTs that joined successfully
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.item.item.vmid }}"
       - --
       - rm
       - -f
-      - "{{ sunbeam_join_token_path }}"
-  loop: "{{ sunbeam_join_run.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list }}"
+      - "{{ pve_sunbeam_join_token_path }}"
+  loop: "{{ pve_sunbeam_join_run.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list }}"
   changed_when: false
   loop_control:
     label: "{{ item.item.item.fqdn }}"
 
 - name: Remove the pulled join tokens of the nodes that joined successfully
   ansible.builtin.file:
-    path: "{{ sunbeam_staging_dir }}/{{ item.item.item.vmid }}-join-token.asc"
+    path: "{{ pve_sunbeam_staging_dir }}/{{ item.item.item.vmid }}-join-token.asc"
     state: absent
-  loop: "{{ sunbeam_join_run.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list }}"
+  loop: "{{ pve_sunbeam_join_run.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list }}"
   loop_control:
     label: "{{ item.item.item.fqdn }}"
   changed_when: false
@@ -344,47 +344,47 @@
 - name: Re-read the cluster membership from the primary
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'check-cluster-members.sh.j2') }}"
-  register: sunbeam_cluster_members_after
+  register: pve_sunbeam_cluster_members_after
   changed_when: false
   failed_when: false
 
 - name: Require a readable membership snapshot after joining
   ansible.builtin.assert:
     that:
-      - sunbeam_cluster_members_after.rc == 0
-      - "'membership=ok' in sunbeam_cluster_members_after.stdout"
+      - pve_sunbeam_cluster_members_after.rc == 0
+      - "'membership=ok' in pve_sunbeam_cluster_members_after.stdout"
     fail_msg: >-
-      The membership could not be re-read from {{ sunbeam_primary_node.fqdn }} after the
+      The membership could not be re-read from {{ pve_sunbeam_primary_node.fqdn }} after the
       join, so the result is unknown:
-      {{ sunbeam_cluster_members_after.stdout | default('') | trim }}
+      {{ pve_sunbeam_cluster_members_after.stdout | default('') | trim }}
 
 - name: Assert every planned node is now a cluster member
   ansible.builtin.assert:
     that:
-      - "('member ' ~ item.fqdn ~ '=yes') in sunbeam_cluster_members_after.stdout"
+      - "('member ' ~ item.fqdn ~ '=yes') in pve_sunbeam_cluster_members_after.stdout"
     fail_msg: >-
       {{ item.fqdn }} is still not a member of the Sunbeam cluster. The join CLI
       reported
-      {{ (sunbeam_join_run.results | default([])
+      {{ (pve_sunbeam_join_run.results | default([])
           | selectattr('item.item.fqdn', 'eq', item.fqdn)
           | map(attribute='rc') | first) | default('n/a (no join ran for it)') }}
-      for that node; check the logs under {{ sunbeam_node_log_dir }}/ inside its CT
-      and `sunbeam cluster list` on {{ sunbeam_primary_node.fqdn }}. A node that
+      for that node; check the logs under {{ pve_sunbeam_node_log_dir }}/ inside its CT
+      and `sunbeam cluster list` on {{ pve_sunbeam_primary_node.fqdn }}. A node that
       the cluster daemon already knows but Sunbeam does not is a join that died
       half-way -- see the half-joined gate at the top of this stage.
-  loop: "{{ sunbeam_nodes }}"
+  loop: "{{ pve_sunbeam_nodes }}"
   loop_control:
     label: "{{ item.fqdn }}"
 
 - name: Report join result
   ansible.builtin.debug:
     msg:
-      - "membership snapshot (at start of this run): {{ sunbeam_cluster_members.stdout_lines }}"
-      - "membership snapshot (after this run): {{ sunbeam_cluster_members_after.stdout_lines }}"
+      - "membership snapshot (at start of this run): {{ pve_sunbeam_cluster_members.stdout_lines }}"
+      - "membership snapshot (after this run): {{ pve_sunbeam_cluster_members_after.stdout_lines }}"

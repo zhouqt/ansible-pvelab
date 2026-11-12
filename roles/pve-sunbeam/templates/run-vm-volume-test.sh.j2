@@ -1,25 +1,25 @@
 #!/bin/bash
 set -uo pipefail
 
-user={{ sunbeam_node_user }}
-rc_path={{ sunbeam_admin_openrc_path }}
-log={{ sunbeam_node_log_dir }}/vm-volume-test.log
-mkdir -p {{ sunbeam_node_log_dir }}
+user={{ pve_sunbeam_node_user }}
+rc_path={{ pve_sunbeam_admin_openrc_path }}
+log={{ pve_sunbeam_node_log_dir }}/vm-volume-test.log
+mkdir -p {{ pve_sunbeam_node_log_dir }}
 
-img_name={{ sunbeam_vm_test_image_name }}
-img_url={{ sunbeam_vm_test_cirros_url }}
-vol={{ sunbeam_vm_test_volume_name }}
-srv={{ sunbeam_vm_test_name }}
-flavor={{ sunbeam_vm_test_flavor }}
-net={{ sunbeam_vm_test_network }}
-size={{ sunbeam_vm_test_volume_size_gb }}
-img_file={{ sunbeam_node_home }}/{{ sunbeam_vm_test_image_name }}.img
-keep={{ 'yes' if sunbeam_vm_test_keep else 'no' }}
-ping={{ 'yes' if sunbeam_vm_test_ping else 'no' }}
-ping_timeout={{ sunbeam_vm_test_ping_timeout | int }}
-fip_net={{ sunbeam_external_network.openstack_name }}
-sg={{ sunbeam_vm_test_security_group }}
-tag={{ sunbeam_vm_test_security_group }}
+img_name={{ pve_sunbeam_vm_test_image_name }}
+img_url={{ pve_sunbeam_vm_test_cirros_url }}
+vol={{ pve_sunbeam_vm_test_volume_name }}
+srv={{ pve_sunbeam_vm_test_name }}
+flavor={{ pve_sunbeam_vm_test_flavor }}
+net={{ pve_sunbeam_vm_test_network }}
+size={{ pve_sunbeam_vm_test_volume_size_gb }}
+img_file={{ pve_sunbeam_node_home }}/{{ pve_sunbeam_vm_test_image_name }}.img
+keep={{ 'yes' if pve_sunbeam_vm_test_keep else 'no' }}
+ping={{ 'yes' if pve_sunbeam_vm_test_ping else 'no' }}
+ping_timeout={{ pve_sunbeam_vm_test_ping_timeout | int }}
+fip_net={{ pve_sunbeam_external_network.openstack_name }}
+sg={{ pve_sunbeam_vm_test_security_group }}
+tag={{ pve_sunbeam_vm_test_security_group }}
 
 run() { su - "$user" -c ". $rc_path && $*" ; }
 

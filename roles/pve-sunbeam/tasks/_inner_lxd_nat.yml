@@ -1,43 +1,43 @@
 ---
 - name: Read whether the inner LXD masquerades the traffic of its own containers
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ sunbeam_primary_node.vmid }}", "--", bash, "-s"]
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ pve_sunbeam_primary_node.vmid }}", "--", bash, "-s"]
     stdin: "{{ lookup('template', 'check-inner-lxd-nat.sh.j2') }}"
-  register: sunbeam_inner_lxd_nat
+  register: pve_sunbeam_inner_lxd_nat
   changed_when: false
   failed_when: false
 
 - name: Restart the inner LXD when its NAT rules are missing
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ sunbeam_primary_node.vmid }}", "--", snap, restart, lxd]
-  when: "'NAT=missing' in (sunbeam_inner_lxd_nat.stdout | default(''))"
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ pve_sunbeam_primary_node.vmid }}", "--", snap, restart, lxd]
+  when: "'NAT=missing' in (pve_sunbeam_inner_lxd_nat.stdout | default(''))"
   changed_when: true
 
 - name: Re-read the inner LXD NAT state after the restart
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ sunbeam_primary_node.vmid }}", "--", bash, "-s"]
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ pve_sunbeam_primary_node.vmid }}", "--", bash, "-s"]
     stdin: "{{ lookup('template', 'check-inner-lxd-nat.sh.j2') }}"
-  register: sunbeam_inner_lxd_nat_after
+  register: pve_sunbeam_inner_lxd_nat_after
   changed_when: false
   failed_when: false
   retries: 15
   delay: 2
-  until: "'NAT=ok' in (sunbeam_inner_lxd_nat_after.stdout | default(''))"
-  when: "'NAT=missing' in (sunbeam_inner_lxd_nat.stdout | default(''))"
+  until: "'NAT=ok' in (pve_sunbeam_inner_lxd_nat_after.stdout | default(''))"
+  when: "'NAT=missing' in (pve_sunbeam_inner_lxd_nat.stdout | default(''))"
 
 - name: Assert the inner LXD masquerades the traffic of its own containers
   ansible.builtin.assert:
     that:
       - >-
         'NAT=ok' in (
-          (sunbeam_inner_lxd_nat_after.stdout | default(''))
-          if not (sunbeam_inner_lxd_nat_after.skipped | default(false) | bool)
-          else (sunbeam_inner_lxd_nat.stdout | default('')))
+          (pve_sunbeam_inner_lxd_nat_after.stdout | default(''))
+          if not (pve_sunbeam_inner_lxd_nat_after.skipped | default(false) | bool)
+          else (pve_sunbeam_inner_lxd_nat.stdout | default('')))
     fail_msg: >-
-      The inner LXD on {{ sunbeam_primary_node.fqdn }} does not masquerade the traffic
-      of its containers (state: {{ sunbeam_inner_lxd_nat.stdout | default('') | trim }}
-      {{ '-> still ' ~ (sunbeam_inner_lxd_nat_after.stdout | default('') | trim)
-         if not (sunbeam_inner_lxd_nat_after.skipped | default(false) | bool) else '' }}).
+      The inner LXD on {{ pve_sunbeam_primary_node.fqdn }} does not masquerade the traffic
+      of its containers (state: {{ pve_sunbeam_inner_lxd_nat.stdout | default('') | trim }}
+      {{ '-> still ' ~ (pve_sunbeam_inner_lxd_nat_after.stdout | default('') | trim)
+         if not (pve_sunbeam_inner_lxd_nat_after.skipped | default(false) | bool) else '' }}).
       The Juju controller is one of those containers and cannot reach charmhub in
       this state, so the bootstrap stage would fail with an i/o timeout from the
       juju terraform provider. Check `nft list ruleset` inside the CT and

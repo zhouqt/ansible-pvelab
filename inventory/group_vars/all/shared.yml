@@ -1,5 +1,11 @@
 ---
 
+pve_common_host: pve-host
+pve_common_ssh_port: 2222
+pve_common_storage: pve-thin-pool
+
+pve_common_no_proxy: "127.0.0.1,localhost,192.168.11.0/24"
+
 apt_mirror: "cn.archive.ubuntu.com"
 
 openstack_region: "RegionOne"

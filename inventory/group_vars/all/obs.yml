@@ -1,92 +1,92 @@
 ---
-pve_obs_hub_bridge: pub11
-pve_obs_hub_prefix: "192.168.11"
-pve_obs_hub_cidr: "192.168.11.0/24"
-pve_obs_hub_gateway: "192.168.11.1"
-pve_obs_hub_snat_to_source: "10.1.1.200"
-pve_obs_hub_nameserver: "8.8.8.8"
-pve_obs_hub_cts:
+pve_obs_cos_hub_bridge: pub11
+pve_obs_cos_hub_prefix: "192.168.11"
+pve_obs_cos_hub_cidr: "192.168.11.0/24"
+pve_obs_cos_hub_gateway: "192.168.11.1"
+pve_obs_cos_hub_snat_to_source: "10.1.1.200"
+pve_obs_cos_hub_nameserver: "8.8.8.8"
+pve_obs_cos_hub_cts:
   - {name: obs-cos-ctrl,    vmid: 1002, ip: "192.168.11.21", series: jammy,  group: cos, cores: 2, memory: 2048,  disk: 20}
   - {name: obs-cos-k8s,     vmid: 1003, ip: "192.168.11.22", series: jammy,  group: cos, cores: 6, memory: 12288, disk: 60}
   - {name: obs-lma-ctrl,    vmid: 1004, ip: "192.168.11.23", series: focal,  group: lma, cores: 2, memory: 2048,  disk: 20}
   - {name: obs-lma-nagios,  vmid: 1005, ip: "192.168.11.24", series: bionic, group: lma, cores: 1, memory: 2048,  disk: 20, snap: false}
   - {name: obs-lma-grafana, vmid: 1006, ip: "192.168.11.25", series: focal,  group: lma, cores: 2, memory: 3072,  disk: 30}
-pve_obs_hub_ct_groups: [cos]
-pve_obs_hub_templates:
+pve_obs_cos_hub_ct_groups: [cos]
+pve_obs_cos_hub_templates:
   jammy: "local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
   focal: "local:vztmpl/ubuntu-focal-cloudimg-rootfs_20.04-6_amd64.tar.xz"
   bionic: "local:vztmpl/ubuntu-bionic-cloudimg-rootfs_18.04-1_amd64.tar.xz"
-pve_obs_hub_juju_client_vmid: "{{ pve_yoga_juju_client_vmid }}"
-pve_obs_hub_juju_client_user: "{{ pve_yoga_juju_client_user }}"
-pve_obs_hub_juju_data: "{{ pve_yoga_juju_data }}"
-pve_obs_hub_juju_bin: "{{ pve_yoga_juju_bin }}"
-pve_obs_hub_juju_channel: "{{ pve_yoga_juju_channel }}"
-pve_obs_hub_stage_dir: "/home/{{ pve_obs_hub_juju_client_user }}/obs-hub"
-pve_obs_hub_cos_controller: obs-cos-ctrl
-pve_obs_hub_cos_controller_vmid: 1002
-pve_obs_hub_cos_controller_ip: "192.168.11.21"
-pve_obs_hub_k8s_vmid: 1003
-pve_obs_hub_k8s_ip: "192.168.11.22"
-pve_obs_hub_k8s_cloud: hub-k8s
-pve_obs_hub_manual_cloud: manual
-pve_obs_hub_k8s_channel: "1.32-classic/stable"
-pve_obs_hub_storage_class: local-path
-pve_obs_hub_lb_enabled: true
-pve_obs_hub_lb_pool_name: obs-hub
-pve_obs_hub_lb_pool_addresses: ["192.168.11.28/32"]
-pve_obs_hub_vip: "{{ pve_obs_hub_lb_pool_addresses[0] | regex_replace('/.*$', '') }}"
-pve_obs_hub_http_proxy: "http://192.168.11.1:12345"
-pve_obs_hub_k8s_service_cidr: "10.152.183.0/24"
-pve_obs_hub_k8s_api_ip: "10.152.183.1"
-pve_obs_hub_k8s_cluster_domain: "cluster.local"
-pve_obs_hub_no_proxy: "127.0.0.1,localhost,::1,{{ pve_obs_hub_k8s_api_ip }},{{ pve_obs_hub_k8s_service_cidr }},192.168.0.0/16,10.0.0.0/8,.{{ pve_obs_hub_k8s_cluster_domain }},{{ pve_obs_hub_vip }}"
-pve_obs_hub_cos_model: cos-lite
-pve_obs_hub_cos_model_ref: "{{ pve_obs_hub_cos_controller }}:admin/{{ pve_obs_hub_cos_model }}"
-pve_obs_hub_bundle: "{{ playbook_dir }}/bundles/cos-lite-hub.yaml"
-pve_obs_hub_cos_applications: [traefik, alertmanager, grafana, catalogue, prometheus, loki]
-pve_obs_hub_offers_declared:
+pve_obs_cos_hub_juju_client_vmid: "{{ pve_openstack_juju_client_vmid }}"
+pve_obs_cos_hub_juju_client_user: "{{ pve_openstack_juju_client_user }}"
+pve_obs_cos_hub_juju_data: "{{ pve_openstack_juju_data }}"
+pve_obs_cos_hub_juju_bin: "{{ pve_openstack_juju_bin }}"
+pve_obs_cos_hub_juju_channel: "{{ pve_openstack_juju_channel }}"
+pve_obs_cos_hub_stage_dir: "/home/{{ pve_obs_cos_hub_juju_client_user }}/obs-hub"
+pve_obs_cos_hub_cos_controller: obs-cos-ctrl
+pve_obs_cos_hub_cos_controller_vmid: 1002
+pve_obs_cos_hub_cos_controller_ip: "192.168.11.21"
+pve_obs_cos_hub_k8s_vmid: 1003
+pve_obs_cos_hub_k8s_ip: "192.168.11.22"
+pve_obs_cos_hub_k8s_cloud: hub-k8s
+pve_obs_cos_hub_manual_cloud: manual
+pve_obs_cos_hub_k8s_channel: "1.32-classic/stable"
+pve_obs_cos_hub_storage_class: local-path
+pve_obs_cos_hub_lb_enabled: true
+pve_obs_cos_hub_lb_pool_name: obs-hub
+pve_obs_cos_hub_lb_pool_addresses: ["192.168.11.28/32"]
+pve_obs_cos_hub_vip: "{{ pve_obs_cos_hub_lb_pool_addresses[0] | regex_replace('/.*$', '') }}"
+pve_obs_cos_hub_http_proxy: "http://192.168.11.1:12345"
+pve_obs_cos_hub_k8s_service_cidr: "10.152.183.0/24"
+pve_obs_cos_hub_k8s_api_ip: "10.152.183.1"
+pve_obs_cos_hub_k8s_cluster_domain: "cluster.local"
+pve_obs_cos_hub_no_proxy: "127.0.0.1,localhost,::1,{{ pve_obs_cos_hub_k8s_api_ip }},{{ pve_obs_cos_hub_k8s_service_cidr }},192.168.0.0/16,10.0.0.0/8,.{{ pve_obs_cos_hub_k8s_cluster_domain }},{{ pve_obs_cos_hub_vip }}"
+pve_obs_cos_hub_cos_model: cos-lite
+pve_obs_cos_hub_cos_model_ref: "{{ pve_obs_cos_hub_cos_controller }}:admin/{{ pve_obs_cos_hub_cos_model }}"
+pve_obs_cos_hub_bundle: "{{ repo_root }}/bundles/cos-lite-hub.yaml"
+pve_obs_cos_hub_cos_applications: [traefik, alertmanager, grafana, catalogue, prometheus, loki]
+pve_obs_cos_hub_offers_declared:
   - {app: prometheus, endpoint: receive-remote-write}
   - {app: loki,       endpoint: logging}
   - {app: grafana,    endpoint: grafana-dashboard}
-pve_obs_hub_infra_model: hub-infra
-pve_obs_hub_monitor_k8s_node: true
-pve_obs_hub_monitor_controller: true
-pve_obs_hub_cos_proxy_channel: "3.0/stable"
-pve_obs_hub_nrpe_channel: "latest/stable"
-pve_obs_hub_grafana_agent_channel: "2/stable"
-pve_obs_hub_infra_relations:
+pve_obs_cos_hub_infra_model: hub-infra
+pve_obs_cos_hub_monitor_k8s_node: true
+pve_obs_cos_hub_monitor_controller: true
+pve_obs_cos_hub_cos_proxy_channel: "3.0/stable"
+pve_obs_cos_hub_nrpe_channel: "latest/stable"
+pve_obs_cos_hub_grafana_agent_channel: "2/stable"
+pve_obs_cos_hub_infra_relations:
   - "nrpe:general-info cos-proxy:juju-info"
   - "nrpe:monitors cos-proxy:monitors"
   - "cos-proxy:cos-agent grafana-agent:cos-agent"
   - "grafana-agent:send-remote-write prometheus"
   - "grafana-agent:logging-consumer loki"
   - "grafana-agent:grafana-dashboards-provider grafana"
-pve_obs_hub_infra_consumes: [prometheus, loki, grafana]
-pve_obs_hub_infra_applications: [cos-proxy, nrpe, grafana-agent]
-pve_obs_hub_settle_budget_seconds: 2700
-pve_obs_hub_settle_interval: 15
+pve_obs_cos_hub_infra_consumes: [prometheus, loki, grafana]
+pve_obs_cos_hub_infra_applications: [cos-proxy, nrpe, grafana-agent]
+pve_obs_cos_hub_settle_budget_seconds: 2700
+pve_obs_cos_hub_settle_interval: 15
 
-pve_lma_controller_name: pve-lma-ctrl
-pve_lma_controller_vmid: 1004
-pve_lma_controller_ip: "192.168.11.23"
-pve_lma_nagios_vmid: 1005
-pve_lma_nagios_ip: "192.168.11.24"
-pve_lma_juju_bin: /snap/bin/juju
-pve_lma_juju_data: "{{ pve_obs_hub_juju_data }}"
-pve_lma_juju_client_vmid: "{{ pve_obs_hub_juju_client_vmid }}"
-pve_lma_juju_client_user: "{{ pve_obs_hub_juju_client_user }}"
-pve_lma_bootstrap_series: focal
-pve_lma_juju_db_channel: "4.4/stable"
-pve_lma_model: lma-hub
-pve_lma_model_ref: "{{ pve_lma_controller_name }}:admin/{{ pve_lma_model }}"
-pve_lma_hub_ct_groups: [lma]
-pve_lma_l2_enabled: false
-pve_lma_l2_vmid: 1006
-pve_lma_nagios_channel: stable
-pve_lma_nagios_series: bionic
-pve_lma_nrpe_channel: stable
-pve_lma_bionic_template_name: ubuntu-bionic-cloudimg-rootfs_18.04-1_amd64.tar.xz
-pve_lma_bionic_image_url: >-
+pve_obs_lma_hub_controller_name: pve-lma-ctrl
+pve_obs_lma_hub_controller_vmid: 1004
+pve_obs_lma_hub_controller_ip: "192.168.11.23"
+pve_obs_lma_hub_nagios_vmid: 1005
+pve_obs_lma_hub_nagios_ip: "192.168.11.24"
+pve_obs_lma_hub_juju_bin: /snap/bin/juju
+pve_obs_lma_hub_juju_data: "{{ pve_obs_cos_hub_juju_data }}"
+pve_obs_lma_hub_juju_client_vmid: "{{ pve_obs_cos_hub_juju_client_vmid }}"
+pve_obs_lma_hub_juju_client_user: "{{ pve_obs_cos_hub_juju_client_user }}"
+pve_obs_lma_hub_bootstrap_series: focal
+pve_obs_lma_hub_juju_db_channel: "4.4/stable"
+pve_obs_lma_hub_model: lma-hub
+pve_obs_lma_hub_model_ref: "{{ pve_obs_lma_hub_controller_name }}:admin/{{ pve_obs_lma_hub_model }}"
+pve_obs_lma_hub_ct_groups: [lma]
+pve_obs_lma_hub_l2_enabled: false
+pve_obs_lma_hub_l2_vmid: 1006
+pve_obs_lma_hub_nagios_channel: stable
+pve_obs_lma_hub_nagios_series: bionic
+pve_obs_lma_hub_nrpe_channel: stable
+pve_obs_lma_hub_bionic_template_name: ubuntu-bionic-cloudimg-rootfs_18.04-1_amd64.tar.xz
+pve_obs_lma_hub_bionic_image_url: >-
   https://cloud-images.ubuntu.com/releases/bionic/release/ubuntu-18.04-server-cloudimg-amd64-root.tar.xz
-pve_lma_settle_budget_seconds: 2400
-pve_lma_settle_interval: 15
+pve_obs_lma_hub_settle_budget_seconds: 2400
+pve_obs_lma_hub_settle_interval: 15

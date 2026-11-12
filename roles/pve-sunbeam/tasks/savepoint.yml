@@ -5,62 +5,62 @@
 - name: Require an explicit opt-in before taking a savepoint
   ansible.builtin.assert:
     that:
-      - sunbeam_savepoint_take | bool
+      - pve_sunbeam_savepoint_take | bool
     fail_msg: >-
-      Taking a savepoint is opt-in: pass -e sunbeam_savepoint_take=true.
+      Taking a savepoint is opt-in: pass -e pve_sunbeam_savepoint_take=true.
 
 - name: Require a usable savepoint name
   ansible.builtin.assert:
     that:
-      - sunbeam_env_id | length > 0
-      - sunbeam_savepoint_tag | length > 0
-      - sunbeam_savepoint_prefix is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$')
+      - pve_sunbeam_env_id | length > 0
+      - pve_sunbeam_savepoint_tag | length > 0
+      - pve_sunbeam_savepoint_prefix is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$')
     fail_msg: >-
-      sunbeam_env_id / sunbeam_savepoint_tag must be set and
-      sunbeam_savepoint_prefix ('{{ sunbeam_savepoint_prefix | default("") }}')
+      pve_sunbeam_env_id / pve_sunbeam_savepoint_tag must be set and
+      pve_sunbeam_savepoint_prefix ('{{ pve_sunbeam_savepoint_prefix | default("") }}')
       must be a valid LVM name: letters, digits, '.', '_' and '-', starting with
       a letter or digit, at most 80 characters.
 
 - name: Refuse to snapshot when the thin pool is too full
   ansible.builtin.shell: |
     set -euo pipefail
-    pct=$(lvs --noheadings -o data_percent "{{ sunbeam_pve_storage }}/{{ sunbeam_pve_thinpool_lv }}" | tr -d ' ')
-    meta=$(lvs --noheadings -o metadata_percent "{{ sunbeam_pve_storage }}/{{ sunbeam_pve_thinpool_lv }}" | tr -d ' ')
+    pct=$(lvs --noheadings -o data_percent "{{ pve_sunbeam_storage }}/{{ pve_sunbeam_thinpool_lv }}" | tr -d ' ')
+    meta=$(lvs --noheadings -o metadata_percent "{{ pve_sunbeam_storage }}/{{ pve_sunbeam_thinpool_lv }}" | tr -d ' ')
     echo "POOL_DATA_PERCENT=$pct"
     echo "POOL_META_PERCENT=$meta"
-    awk -v p="$pct" -v max="{{ sunbeam_thinpool_max_data_percent }}" 'BEGIN { exit !(p+0 < max+0) }'
+    awk -v p="$pct" -v max="{{ pve_sunbeam_thinpool_max_data_percent }}" 'BEGIN { exit !(p+0 < max+0) }'
   args:
     executable: /bin/bash
-  register: sunbeam_savepoint_pool
+  register: pve_sunbeam_savepoint_pool
   changed_when: false
   failed_when: false
 
 - name: Explain a refused savepoint
   ansible.builtin.fail:
     msg: >-
-      The thin pool {{ sunbeam_pve_storage }}/{{ sunbeam_pve_thinpool_lv }} is at
-      or above the {{ sunbeam_thinpool_max_data_percent }}% data gate
-      ({{ sunbeam_savepoint_pool.stdout }}). A savepoint makes every later write
+      The thin pool {{ pve_sunbeam_storage }}/{{ pve_sunbeam_thinpool_lv }} is at
+      or above the {{ pve_sunbeam_thinpool_max_data_percent }}% data gate
+      ({{ pve_sunbeam_savepoint_pool.stdout }}). A savepoint makes every later write
       to the origin land in this pool, so taking one now could fill it for every
       other guest on the host. Free space first (tear down an unused
       environment), then retry.
-  when: sunbeam_savepoint_pool.rc != 0
+  when: pve_sunbeam_savepoint_pool.rc != 0
 
 - name: Define the savepoint member lists
   ansible.builtin.set_fact:
-    sunbeam_savepoint_guests: >-
+    pve_sunbeam_savepoint_guests: >-
       {%- set out = [] -%}
-      {%- for n in sunbeam_nodes -%}
+      {%- for n in pve_sunbeam_nodes -%}
       {%-   set _ = out.append({'hostname': n.hostname, 'vmid': n.vmid | int,
-                                  'base': sunbeam_savepoint_prefix ~ '-' ~ n.hostname}) -%}
+                                  'base': pve_sunbeam_savepoint_prefix ~ '-' ~ n.hostname}) -%}
       {%- endfor -%}
       {{ out }}
-    sunbeam_savepoint_osds: >-
+    pve_sunbeam_savepoint_osds: >-
       {%- set out = [] -%}
-      {%- for n in sunbeam_nodes -%}
+      {%- for n in pve_sunbeam_nodes -%}
       {%-   set _ = out.append({'hostname': n.hostname, 'vmid': n.vmid | int,
                                   'origin': n.osd_pve_lv | basename,
-                                  'base': sunbeam_savepoint_prefix ~ '-osd-' ~ n.vmid}) -%}
+                                  'base': pve_sunbeam_savepoint_prefix ~ '-osd-' ~ n.vmid}) -%}
       {%- endfor -%}
       {{ out }}
 
@@ -69,115 +69,115 @@
     set -euo pipefail
     vmid={{ item.vmid }}
     base="{{ item.base }}"
-    if lvs --noheadings -o lv_name "{{ sunbeam_pve_storage }}/$base" >/dev/null 2>&1; then
+    if lvs --noheadings -o lv_name "{{ pve_sunbeam_storage }}/$base" >/dev/null 2>&1; then
       echo "SAVEPOINT-SKIP $base already exists"
       exit 0
     fi
-    origin=$(pct config "$vmid" | sed -n 's/^rootfs: *{{ sunbeam_pve_storage }}:\([^,]*\).*/\1/p')
+    origin=$(pct config "$vmid" | sed -n 's/^rootfs: *{{ pve_sunbeam_storage }}:\([^,]*\).*/\1/p')
     [ -n "$origin" ] || { echo "SAVEPOINT-FAIL $vmid: cannot parse the rootfs volume name" >&2; exit 1; }
-    lvs --noheadings -o lv_name "{{ sunbeam_pve_storage }}/$origin" >/dev/null 2>&1 \
+    lvs --noheadings -o lv_name "{{ pve_sunbeam_storage }}/$origin" >/dev/null 2>&1 \
       || { echo "SAVEPOINT-FAIL rootfs volume $origin does not exist" >&2; exit 1; }
-    lvcreate --yes --snapshot --name "$base" "{{ sunbeam_pve_storage }}/$origin"
+    lvcreate --yes --snapshot --name "$base" "{{ pve_sunbeam_storage }}/$origin"
     echo "SAVEPOINT-TAKEN $base from $origin"
   args:
     executable: /bin/bash
-  loop: "{{ sunbeam_savepoint_guests }}"
+  loop: "{{ pve_sunbeam_savepoint_guests }}"
   loop_control:
     label: "{{ item.hostname }} ({{ item.vmid }})"
-  register: sunbeam_savepoint_guest_result
-  changed_when: "'SAVEPOINT-TAKEN' in sunbeam_savepoint_guest_result.stdout"
+  register: pve_sunbeam_savepoint_guest_result
+  changed_when: "'SAVEPOINT-TAKEN' in pve_sunbeam_savepoint_guest_result.stdout"
 
 - name: Snapshot each OSD thin LV
   ansible.builtin.shell: |
     set -euo pipefail
     origin="{{ item.origin }}"
     base="{{ item.base }}"
-    if lvs --noheadings -o lv_name "{{ sunbeam_pve_storage }}/$base" >/dev/null 2>&1; then
+    if lvs --noheadings -o lv_name "{{ pve_sunbeam_storage }}/$base" >/dev/null 2>&1; then
       echo "SAVEPOINT-SKIP $base already exists"
       exit 0
     fi
-    lvs --noheadings -o lv_name "{{ sunbeam_pve_storage }}/$origin" >/dev/null 2>&1 \
+    lvs --noheadings -o lv_name "{{ pve_sunbeam_storage }}/$origin" >/dev/null 2>&1 \
       || { echo "SAVEPOINT-FAIL OSD volume $origin does not exist" >&2; exit 1; }
-    lvcreate --yes --snapshot --name "$base" "{{ sunbeam_pve_storage }}/$origin"
+    lvcreate --yes --snapshot --name "$base" "{{ pve_sunbeam_storage }}/$origin"
     echo "SAVEPOINT-TAKEN $base from $origin"
   args:
     executable: /bin/bash
-  loop: "{{ sunbeam_savepoint_osds }}"
+  loop: "{{ pve_sunbeam_savepoint_osds }}"
   loop_control:
     label: "{{ item.hostname }} ({{ item.origin }})"
-  register: sunbeam_savepoint_osd_result
-  changed_when: "'SAVEPOINT-TAKEN' in sunbeam_savepoint_osd_result.stdout"
-  when: sunbeam_savepoint_include_osd | bool
+  register: pve_sunbeam_savepoint_osd_result
+  changed_when: "'SAVEPOINT-TAKEN' in pve_sunbeam_savepoint_osd_result.stdout"
+  when: pve_sunbeam_savepoint_include_osd | bool
 
 - name: Capture the state this savepoint describes
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -c
       - |
         echo "### FSID"
-        {{ sunbeam_microceph_ceph_bin }} fsid 2>&1
+        {{ pve_sunbeam_microceph_ceph_bin }} fsid 2>&1
         echo "### HEALTH"
-        {{ sunbeam_microceph_ceph_bin }} -s 2>&1
+        {{ pve_sunbeam_microceph_ceph_bin }} -s 2>&1
         echo "### CLUSTER"
-        su - {{ sunbeam_node_user }} -c 'sunbeam cluster list --format yaml' 2>&1
-  register: sunbeam_savepoint_state
+        su - {{ pve_sunbeam_node_user }} -c 'sunbeam cluster list --format yaml' 2>&1
+  register: pve_sunbeam_savepoint_state
   changed_when: false
 
 - name: Record the current time
   ansible.builtin.command: date -u +%Y-%m-%dT%H:%M:%SZ
-  register: sunbeam_savepoint_taken_at
+  register: pve_sunbeam_savepoint_taken_at
   changed_when: false
 
 - name: Check whether the savepoint metadata already exists
   ansible.builtin.stat:
-    path: "{{ sunbeam_savepoint_metadata_dir }}/{{ sunbeam_savepoint_prefix }}.txt"
-  register: sunbeam_savepoint_meta_stat
+    path: "{{ pve_sunbeam_savepoint_metadata_dir }}/{{ pve_sunbeam_savepoint_prefix }}.txt"
+  register: pve_sunbeam_savepoint_meta_stat
 
 - name: Record the savepoint metadata on the PVE host
   ansible.builtin.copy:
-    dest: "{{ sunbeam_savepoint_metadata_dir }}/{{ sunbeam_savepoint_prefix }}.txt"
+    dest: "{{ pve_sunbeam_savepoint_metadata_dir }}/{{ pve_sunbeam_savepoint_prefix }}.txt"
     owner: root
     group: root
     mode: "0600"
     content: |
-      env_id={{ sunbeam_env_id }}
-      tag={{ sunbeam_savepoint_tag }}
-      name={{ sunbeam_savepoint_name }}
-      prefix={{ sunbeam_savepoint_prefix }}
-      host={{ sunbeam_host }}
-      taken={{ sunbeam_savepoint_taken_at.stdout }}
-      include_osd={{ sunbeam_savepoint_include_osd }}
-      ceph_fsid={{ sunbeam_savepoint_state.stdout | regex_findall('(?ms)### FSID\n(\S+)') | first | default('') }}
-      ceph_pgs={{ sunbeam_savepoint_state.stdout | regex_findall('pgs: +(\d+) ') | first | default('') }}
-      {% for g in sunbeam_savepoint_guests %}
+      env_id={{ pve_sunbeam_env_id }}
+      tag={{ pve_sunbeam_savepoint_tag }}
+      name={{ pve_sunbeam_savepoint_name }}
+      prefix={{ pve_sunbeam_savepoint_prefix }}
+      host={{ pve_sunbeam_host }}
+      taken={{ pve_sunbeam_savepoint_taken_at.stdout }}
+      include_osd={{ pve_sunbeam_savepoint_include_osd }}
+      ceph_fsid={{ pve_sunbeam_savepoint_state.stdout | regex_findall('(?ms)### FSID\n(\S+)') | first | default('') }}
+      ceph_pgs={{ pve_sunbeam_savepoint_state.stdout | regex_findall('pgs: +(\d+) ') | first | default('') }}
+      {% for g in pve_sunbeam_savepoint_guests %}
       guest hostname={{ g.hostname }} vmid={{ g.vmid }} base={{ g.base }}
       {% endfor %}
-      {% if sunbeam_savepoint_include_osd | bool %}
-      {% for o in sunbeam_savepoint_osds %}
+      {% if pve_sunbeam_savepoint_include_osd | bool %}
+      {% for o in pve_sunbeam_savepoint_osds %}
       osd hostname={{ o.hostname }} vmid={{ o.vmid }} origin={{ o.origin }} base={{ o.base }}
       {% endfor %}
       {% endif %}
       --- cluster at savepoint time ---
-      {{ sunbeam_savepoint_state.stdout }}
-  when: not sunbeam_savepoint_meta_stat.stat.exists
+      {{ pve_sunbeam_savepoint_state.stdout }}
+  when: not pve_sunbeam_savepoint_meta_stat.stat.exists
 
 - name: Note that the metadata is left as it was
   ansible.builtin.debug:
     msg: >-
-      {{ sunbeam_savepoint_metadata_dir }}/{{ sunbeam_savepoint_prefix }}.txt
+      {{ pve_sunbeam_savepoint_metadata_dir }}/{{ pve_sunbeam_savepoint_prefix }}.txt
       already exists and is left untouched (the snapshot bases are immutable;
       the file records when they were taken).
-  when: sunbeam_savepoint_meta_stat.stat.exists
+  when: pve_sunbeam_savepoint_meta_stat.stat.exists
 
 - name: Report the savepoint result
   ansible.builtin.debug:
     msg:
-      - "savepoint: {{ sunbeam_savepoint_prefix }}-*"
-      - "guest volumes: {{ sunbeam_savepoint_guests | length }}{% if sunbeam_savepoint_include_osd | bool %} + OSD volumes: {{ sunbeam_savepoint_osds | length }}{% else %} (OSD snapshots disabled!){% endif %}"
-      - "metadata: {{ sunbeam_savepoint_metadata_dir }}/{{ sunbeam_savepoint_prefix }}.txt"
-      - "restore with: ansible-playbook playbooks/sunbeam/ops/02-savepoint-restore.yml -e sunbeam_savepoint_restore=true{% if sunbeam_savepoint_name | length > 0 %} -e sunbeam_savepoint_name={{ sunbeam_savepoint_name }}{% endif %}"
+      - "savepoint: {{ pve_sunbeam_savepoint_prefix }}-*"
+      - "guest volumes: {{ pve_sunbeam_savepoint_guests | length }}{% if pve_sunbeam_savepoint_include_osd | bool %} + OSD volumes: {{ pve_sunbeam_savepoint_osds | length }}{% else %} (OSD snapshots disabled!){% endif %}"
+      - "metadata: {{ pve_sunbeam_savepoint_metadata_dir }}/{{ pve_sunbeam_savepoint_prefix }}.txt"
+      - "restore with: ansible-playbook playbooks/sunbeam/ops/02-savepoint-restore.yml -e pve_sunbeam_savepoint_restore=true{% if pve_sunbeam_savepoint_name | length > 0 %} -e pve_sunbeam_savepoint_name={{ pve_sunbeam_savepoint_name }}{% endif %}"

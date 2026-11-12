@@ -1,46 +1,46 @@
 ---
 - name: Verify PVE storage is configured
   ansible.builtin.command: pvesm status
-  register: pve_storage_inventory
+  register: pve_env1_storage_inventory
   changed_when: false
 
 - name: Check whether MAAS controller CT already exists
-  ansible.builtin.command: "pct status {{ pve_maas_vmid }}"
-  register: pve_maas_status
+  ansible.builtin.command: "pct status {{ pve_env1_maas_vmid }}"
+  register: pve_env1_maas_status
   failed_when: false
   changed_when: false
 
 - name: Assert MAAS CT and PVE storage are ready
   ansible.builtin.assert:
     that:
-      - "pve_storage in pve_storage_inventory.stdout"
-      - pve_maas_status.rc == 0
-    fail_msg: "run --tags pve-env1-maas first and confirm {{ pve_storage }} is usable."
+      - "pve_common_storage in pve_env1_storage_inventory.stdout"
+      - pve_env1_maas_status.rc == 0
+    fail_msg: "run --tags pve-env1-maas first and confirm {{ pve_common_storage }} is usable."
 
 - name: Check PVE local focal template inventory
   ansible.builtin.command: pveam list local
-  register: pve_template_inventory
+  register: pve_env1_template_inventory
   changed_when: false
 
 - name: Require focal template before building workload machines
   ansible.builtin.assert:
     that:
-      - pve_focal_template in pve_template_inventory.stdout
-    fail_msg: "{{ pve_focal_template }} is missing; prepare the focal template first."
+      - pve_env1_focal_template in pve_env1_template_inventory.stdout
+    fail_msg: "{{ pve_env1_focal_template }} is missing; prepare the focal template first."
 
 - name: Verify Juju client SSH identity is present
   ansible.builtin.command:
     argv:
       - pct
       - exec
-      - "{{ pve_juju_client_vmid }}"
+      - "{{ pve_env1_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_juju_client_user }}"
+      - "{{ pve_env1_juju_client_user }}"
       - -c
       - test -s ~/.ssh/id_ed25519.pub
-  register: pve_juju_client_key_check
+  register: pve_env1_juju_client_key_check
   changed_when: false
 
 - name: Verify Juju client has the required private key
@@ -48,14 +48,14 @@
     argv:
       - pct
       - exec
-      - "{{ pve_juju_client_vmid }}"
+      - "{{ pve_env1_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_juju_client_user }}"
+      - "{{ pve_env1_juju_client_user }}"
       - -c
       - test -s ~/.ssh/id_ed25519
-  register: pve_juju_client_private_key_check
+  register: pve_env1_juju_client_private_key_check
   changed_when: false
 
 - name: Read available Juju models
@@ -63,21 +63,21 @@
     argv:
       - pct
       - exec
-      - "{{ pve_juju_client_vmid }}"
+      - "{{ pve_env1_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_juju_client_user }}"
+      - "{{ pve_env1_juju_client_user }}"
       - -c
-      - "{{ pve_juju_bin }} models --controller {{ pve_juju_controller_name }} --format json"
-  register: pve_workload_juju_models
+      - "{{ pve_env1_juju_bin }} models --controller {{ pve_env1_juju_controller_name }} --format json"
+  register: pve_env1_workload_juju_models
   changed_when: false
 
 - name: Require Juju model listing to succeed
   ansible.builtin.assert:
     that:
-      - pve_workload_juju_models.rc == 0
-      - "'models' in (pve_workload_juju_models.stdout | from_json)"
+      - pve_env1_workload_juju_models.rc == 0
+      - "'models' in (pve_env1_workload_juju_models.stdout | from_json)"
     fail_msg: "cannot read the Juju model inventory; refusing to register workload guests while the model state is unknown."
 
 - name: Read current OpenStack Juju machine inventory
@@ -85,56 +85,56 @@
     argv:
       - pct
       - exec
-      - "{{ pve_juju_client_vmid }}"
+      - "{{ pve_env1_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_juju_client_user }}"
+      - "{{ pve_env1_juju_client_user }}"
       - -c
-      - "{{ pve_juju_bin }} status -m {{ pve_juju_controller_name }}:openstack --format json"
-  register: pve_workload_openstack_status
+      - "{{ pve_env1_juju_bin }} status -m {{ pve_env1_juju_controller_name }}:openstack --format json"
+  register: pve_env1_workload_openstack_status
   changed_when: false
 
 - name: Fail safely if the OpenStack Juju status command fails
   ansible.builtin.assert:
     that:
-      - pve_workload_openstack_status.rc == 0
-      - "'machines' in (pve_workload_openstack_status.stdout | from_json)"
+      - pve_env1_workload_openstack_status.rc == 0
+      - "'machines' in (pve_env1_workload_openstack_status.stdout | from_json)"
     fail_msg: "cannot read the OpenStack Juju model status; refusing to change PVE based on an incomplete machine inventory."
 
 - name: Require the openstack Juju model to exist
   ansible.builtin.assert:
     that:
-      - "'models' in (pve_workload_juju_models.stdout | from_json)"
+      - "'models' in (pve_env1_workload_juju_models.stdout | from_json)"
       - >-
-        ((pve_workload_juju_models.stdout | from_json).models
+        ((pve_env1_workload_juju_models.stdout | from_json).models
          | selectattr('short-name', 'equalto', 'openstack') | list | length) == 1
     fail_msg: "run --tags pve-env1-juju-ctrl first to create the Juju controller and the openstack model."
 
 - name: Validate the topology table shape
   ansible.builtin.assert:
     that:
-      - pve_ussuri_topology | length > 0
-      - pve_ussuri_topology | map(attribute='vmid') | unique | length == pve_ussuri_topology | length
-      - pve_ussuri_topology | map(attribute='hostname') | unique | length == pve_ussuri_topology | length
-      - "pve_ussuri_topology | map(attribute='kind') | unique | sort == ['ct', 'kvm']"
-      - pve_ussuri_workload_cts | length >= 1
-      - pve_ussuri_workload_kvms | length == 1
-      - "'openstack' in pve_ussuri_teardown_models"
-    fail_msg: "pve_ussuri_topology is invalid: vmid/hostname must be unique, kind may only be ct/kvm, and there must be exactly one KVM guest."
+      - pve_env1_topology | length > 0
+      - pve_env1_topology | map(attribute='vmid') | unique | length == pve_env1_topology | length
+      - pve_env1_topology | map(attribute='hostname') | unique | length == pve_env1_topology | length
+      - "pve_env1_topology | map(attribute='kind') | unique | sort == ['ct', 'kvm']"
+      - pve_env1_workload_cts | length >= 1
+      - pve_env1_workload_kvms | length == 1
+      - "'openstack' in pve_env1_teardown_models"
+    fail_msg: "pve_env1_topology is invalid: vmid/hostname must be unique, kind may only be ct/kvm, and there must be exactly one KVM."
 
 - name: Require every haproxy-writing API charm to appear exactly once
   ansible.builtin.assert:
     that:
       - >-
-        (pve_ussuri_topology | rejectattr('writer', 'none') | map(attribute='writer') | list)
+        (pve_env1_topology | rejectattr('writer', 'none') | map(attribute='writer') | list)
         | unique | length
-        == (pve_ussuri_topology | rejectattr('writer', 'none') | list | length)
+        == (pve_env1_topology | rejectattr('writer', 'none') | list | length)
     fail_msg: "the same haproxy writer appears on several machines; each writer must live on exactly one machine."
 
 - name: Require the expected replica counts and contiguous unit indexes
   vars:
-    pve_ussuri_expected_units:
+    pve_env1_expected_units:
       mysql-innodb-cluster: 3
       ovn-central: 3
       ceph-mon: 3
@@ -144,14 +144,14 @@
   ansible.builtin.assert:
     that:
       - >-
-        (pve_ussuri_machine_of_unit.keys() | select('match', '^' ~ item.key ~ '/[0-9]+$') | list | length)
+        (pve_env1_machine_of_unit.keys() | select('match', '^' ~ item.key ~ '/[0-9]+$') | list | length)
         == item.value
       - >-
-        (pve_ussuri_machine_of_unit.keys() | select('match', '^' ~ item.key ~ '/[0-9]+$')
+        (pve_env1_machine_of_unit.keys() | select('match', '^' ~ item.key ~ '/[0-9]+$')
          | map('regex_replace', '^.*/', '') | map('int') | list | sort)
         == range(item.value) | list
     fail_msg: "the unit numbers of {{ item.key }} must be the contiguous range 0..{{ item.value | int - 1 }}, exactly {{ item.value }} of them."
-  loop: "{{ pve_ussuri_expected_units | dict2items }}"
+  loop: "{{ pve_env1_expected_units | dict2items }}"
   loop_control:
     label: "{{ item.key }} × {{ item.value }}"
 
@@ -159,9 +159,9 @@
   ansible.builtin.assert:
     that:
       - >-
-        (pve_ussuri_machine_of_unit.keys() | select('match', '^' ~ item ~ '/[0-9]+$')
-         | map('extract', pve_ussuri_machine_of_unit) | list) | unique | length
-        == (pve_ussuri_machine_of_unit.keys() | select('match', '^' ~ item ~ '/[0-9]+$') | list | length)
+        (pve_env1_machine_of_unit.keys() | select('match', '^' ~ item ~ '/[0-9]+$')
+         | map('extract', pve_env1_machine_of_unit) | list) | unique | length
+        == (pve_env1_machine_of_unit.keys() | select('match', '^' ~ item ~ '/[0-9]+$') | list | length)
     fail_msg: "the replicas of {{ item }} land on the same machine; replicas must be spread across machines."
   loop:
     - mysql-innodb-cluster
@@ -176,7 +176,7 @@
       - item.uplink | bool
     fail_msg: "VMID {{ item.vmid }} runs nova-compute but has no dedicated br-ex uplink (uplink: true)."
   when: item.units | select('match', '^nova-compute/[0-9]+$') | list | length > 0
-  loop: "{{ pve_ussuri_topology }}"
+  loop: "{{ pve_env1_topology }}"
   loop_control:
     label: "vmid {{ item.vmid }} {{ item.hostname }}"
 
@@ -187,80 +187,80 @@
         not (item.writer is not none and item.writer == 'cinder'
              and (item.units | select('match', '^nova-compute/[0-9]+$') | list | length) > 0)
     fail_msg: "VMID {{ item.vmid }} hosts both cinder and nova-compute; their ceph keyrings would overwrite each other."
-  loop: "{{ pve_ussuri_topology }}"
+  loop: "{{ pve_env1_topology }}"
   loop_control:
     label: "vmid {{ item.vmid }} {{ item.hostname }}"
 
 - name: Derive the workload registration addresses from the topology
   ansible.builtin.set_fact:
-    pve_workload_registration_ips: >-
+    pve_env1_workload_registration_ips: >-
       {%- set ns = namespace(out=[]) -%}
-      {%- for v in pve_ussuri_workload_vmids -%}
-      {%-   set ns.out = ns.out + [pve_juju_network_spaces[0].cidr
-             | regex_replace('\\.0/24$', '.' ~ ((v | int) - (pve_ussuri_ip_offset | int)))] -%}
+      {%- for v in pve_env1_workload_vmids -%}
+      {%-   set ns.out = ns.out + [pve_env1_juju_network_spaces[0].cidr
+             | regex_replace('\\.0/24$', '.' ~ ((v | int) - (pve_env1_ip_offset | int)))] -%}
       {%- endfor -%}
       {{ ns.out }}
 
 - name: Validate already-registered Juju machines against the topology addresses
   ansible.builtin.assert:
     that:
-      - item.value.get('dns-name', '') in pve_workload_registration_ips
+      - item.value.get('dns-name', '') in pve_env1_workload_registration_ips
     fail_msg: >-
       Juju machine {{ item.key }} ({{ item.value.get('dns-name', '') }}) is not in the address set declared by the topology table;
-      the machine map of the existing model disagrees with pve_ussuri_topology; refusing to change PVE on top of it.
-  loop: "{{ (pve_workload_openstack_status.stdout | from_json).machines | dict2items }}"
+      the machine mapping of the existing model disagrees with pve_env1_topology; refusing to keep changing PVE on top of it.
+  loop: "{{ (pve_env1_workload_openstack_status.stdout | from_json).machines | dict2items }}"
   loop_control:
     label: "Juju machine {{ item.key }}"
 
 - name: Build the Juju workload CT inventory from the topology
   ansible.builtin.set_fact:
-    pve_workload_containers: >-
+    pve_env1_workload_containers: >-
       {%- set ns = namespace(out=[]) -%}
-      {%- for e in pve_ussuri_workload_cts -%}
-      {%-   set last = (e.vmid | int) - (pve_ussuri_ip_offset | int) -%}
+      {%- for e in pve_env1_workload_cts -%}
+      {%-   set last = (e.vmid | int) - (pve_env1_ip_offset | int) -%}
       {%-   set ns.out = ns.out + [{
             'vmid': e.vmid | int,
             'hostname': e.hostname,
-            'ip': pve_juju_network_spaces[0].cidr | regex_replace('\\.0/24$', '.' ~ last),
+            'ip': pve_env1_juju_network_spaces[0].cidr | regex_replace('\\.0/24$', '.' ~ last),
             'tags': 'juju,openstack',
             'uplink': e.uplink | bool,
-            'secondary_networks': pve_ussuri_secondary_network_ips[e.vmid | string]}] -%}
+            'secondary_networks': pve_env1_secondary_network_ips[e.vmid | string]}] -%}
       {%- endfor -%}
       {{ ns.out }}
 
 - name: Validate the derived CT inventory against the topology
   ansible.builtin.assert:
     that:
-      - pve_workload_containers | length == pve_ussuri_workload_cts | length
-      - (pve_workload_containers | map(attribute='vmid') | unique | list | length) == (pve_workload_containers | length)
+      - pve_env1_workload_containers | length == pve_env1_workload_cts | length
+      - (pve_env1_workload_containers | map(attribute='vmid') | unique | list | length) == (pve_env1_workload_containers | length)
       - item.secondary_networks is mapping
       - (item.secondary_networks.keys() | list | sort) == ['internal', 'oam', 'storage']
-      - (item.secondary_networks.oam.split('.') | last | int) == (item.vmid | int) - (pve_ussuri_ip_offset | int)
-      - (item.secondary_networks.internal.split('.') | last | int) == (item.vmid | int) - (pve_ussuri_ip_offset | int)
-      - (item.secondary_networks.storage.split('.') | last | int) == (item.vmid | int) - (pve_ussuri_ip_offset | int)
-      - (item.ip.split('.') | last | int) == (item.vmid | int) - (pve_ussuri_ip_offset | int)
+      - (item.secondary_networks.oam.split('.') | last | int) == (item.vmid | int) - (pve_env1_ip_offset | int)
+      - (item.secondary_networks.internal.split('.') | last | int) == (item.vmid | int) - (pve_env1_ip_offset | int)
+      - (item.secondary_networks.storage.split('.') | last | int) == (item.vmid | int) - (pve_env1_ip_offset | int)
+      - (item.ip.split('.') | last | int) == (item.vmid | int) - (pve_env1_ip_offset | int)
     fail_msg: >-
       the derived address of VMID {{ item.vmid }} ({{ item.hostname }}) does not follow "last octet = vmid -
-      {{ pve_ussuri_ip_offset }}" pattern, or the secondary subnet layout is malformed.
-  loop: "{{ pve_workload_containers }}"
+      {{ pve_env1_ip_offset }}" pattern, or the secondary subnet addresses are malformed.
+  loop: "{{ pve_env1_workload_containers }}"
   loop_control:
     label: "VMID {{ item.vmid }} {{ item.hostname }}"
 
 - name: Check for existing Juju workload CTs
   ansible.builtin.command: "pct config {{ item.vmid }}"
-  register: pve_workload_ct_configs
+  register: pve_env1_workload_ct_configs
   failed_when: false
   changed_when: false
-  loop: "{{ pve_workload_containers }}"
+  loop: "{{ pve_env1_workload_containers }}"
   loop_control:
     label: "{{ item.vmid }} {{ item.hostname }}"
 
 - name: Check workload VMIDs are not occupied by KVM guests
   ansible.builtin.command: "qm status {{ item.vmid }}"
-  register: pve_workload_qm_status
+  register: pve_env1_workload_qm_status
   failed_when: false
   changed_when: false
-  loop: "{{ pve_workload_containers }}"
+  loop: "{{ pve_env1_workload_containers }}"
   loop_control:
     label: "{{ item.vmid }} {{ item.hostname }}"
 
@@ -269,7 +269,7 @@
     that:
       - item.rc != 0
     fail_msg: "VMID {{ item.item.vmid }} is taken by a KVM VM; refusing to create or reuse a workload guest."
-  loop: "{{ pve_workload_qm_status.results }}"
+  loop: "{{ pve_env1_workload_qm_status.results }}"
   loop_control:
     label: "{{ item.item.vmid }}"
 
@@ -279,7 +279,7 @@
       - "item.rc != 0 or ('hostname: ' ~ item.item.hostname) in item.stdout"
       - "item.rc != 0 or ('ip=' ~ item.item.ip ~ '/24') in item.stdout"
     fail_msg: "VMID {{ item.item.vmid }} is already a CT with a different config; refusing to overwrite or reuse it."
-  loop: "{{ pve_workload_ct_configs.results }}"
+  loop: "{{ pve_env1_workload_ct_configs.results }}"
   loop_control:
     label: "{{ item.item.vmid }} {{ item.item.hostname }}"
 
@@ -288,40 +288,40 @@
     that:
       - >-
         item.rc != 0 or
-        (item.stdout_lines | select('search', 'bridge=' ~ pve_juju_network_spaces[0].bridge)
+        (item.stdout_lines | select('search', 'bridge=' ~ pve_env1_juju_network_spaces[0].bridge)
         | select('search', 'ip=' ~ item.item.ip | regex_escape ~ '/24')
-        | select('search', 'gw=' ~ pve_ussuri_gateway | regex_escape)
+        | select('search', 'gw=' ~ pve_env1_gateway | regex_escape)
         | list | length) == 1
       - >-
         item.rc != 0 or
-        (item.stdout_lines | select('search', 'bridge=' ~ pve_juju_network_spaces[1].bridge)
+        (item.stdout_lines | select('search', 'bridge=' ~ pve_env1_juju_network_spaces[1].bridge)
         | select('search', 'ip=' ~ item.item.secondary_networks.oam ~ '/24')
         | list | length) == 1
       - >-
         item.rc != 0 or
-        (item.stdout_lines | select('search', 'bridge=' ~ pve_juju_network_spaces[2].bridge)
+        (item.stdout_lines | select('search', 'bridge=' ~ pve_env1_juju_network_spaces[2].bridge)
         | select('search', 'ip=' ~ item.item.secondary_networks.internal ~ '/24')
         | list | length) == 1
       - >-
         item.rc != 0 or
-        (item.stdout_lines | select('search', 'bridge=' ~ pve_juju_network_spaces[3].bridge)
+        (item.stdout_lines | select('search', 'bridge=' ~ pve_env1_juju_network_spaces[3].bridge)
         | select('search', 'ip=' ~ item.item.secondary_networks.storage ~ '/24')
         | list | length) == 1
     fail_msg: "the oam/internal/storage NICs of VMID {{ item.item.vmid }} do not match the addresses/bridges the topology declares; refusing to reuse it."
-  loop: "{{ pve_workload_ct_configs.results | selectattr('item.tags', 'search', 'openstack') | list }}"
+  loop: "{{ pve_env1_workload_ct_configs.results | selectattr('item.tags', 'search', 'openstack') | list }}"
   loop_control:
     label: "{{ item.item.vmid }} {{ item.item.hostname }}"
 
 - name: Validate PVE compute uplink variable invariants
   ansible.builtin.assert:
     that:
-      - pve_compute_uplink_bridge in pve_juju_network_spaces | map(attribute='bridge') | list
-      - pve_compute_uplink_pve_net_index | int == 4
-      - pve_compute_uplink_guest_interface is match('^ens[0-9]+$')
-      - pve_compute_uplink_vmids | length > 0
-      - (pve_compute_uplink_vmids | difference(pve_ussuri_workload_vmids)) | length == 0
-      - (pve_compute_uplink_vmids | difference(pve_ussuri_compute_ct_vmids) | sort)
-        == (pve_ussuri_workload_kvms | map(attribute='vmid') | list | sort)
+      - pve_env1_compute_uplink_bridge in pve_env1_juju_network_spaces | map(attribute='bridge') | list
+      - pve_env1_compute_uplink_pve_net_index | int == 4
+      - pve_env1_compute_uplink_guest_interface is match('^ens[0-9]+$')
+      - pve_env1_compute_uplink_vmids | length > 0
+      - (pve_env1_compute_uplink_vmids | difference(pve_env1_workload_vmids)) | length == 0
+      - (pve_env1_compute_uplink_vmids | difference(pve_env1_compute_ct_vmids) | sort)
+        == (pve_env1_workload_kvms | map(attribute='vmid') | list | sort)
     fail_msg: >-
       the dedicated uplink must be net4 on a compute node and free of L3; guests with an uplink may only come from
       entries marked uplink: true (pct adds the NIC for CTs, kvm-workload.yml does it for KVM guests).
@@ -336,10 +336,10 @@
           (item.stdout_lines | select('match', '^net4:') | list | length) == 1
           and
           (item.stdout_lines | select('match', '^net4:') | first)
-            is search('name=' ~ pve_compute_uplink_guest_interface ~ '(?:,|$)')
+            is search('name=' ~ pve_env1_compute_uplink_guest_interface ~ '(?:,|$)')
           and
           (item.stdout_lines | select('match', '^net4:') | first)
-            is search('bridge=' ~ pve_compute_uplink_bridge ~ '(?:,|$)')
+            is search('bridge=' ~ pve_env1_compute_uplink_bridge ~ '(?:,|$)')
           and
           (item.stdout_lines | select('match', '^net4:') | first) is search('ip=manual(?:,|$)')
           and
@@ -347,23 +347,23 @@
         )
     fail_msg: >-
       compute CT VMID {{ item.item.vmid }} already has net4, but it is not the L3-free
-      {{ pve_compute_uplink_guest_interface }}->{{ pve_compute_uplink_bridge }} uplink; refusing to overwrite it.
+      {{ pve_env1_compute_uplink_guest_interface }}→{{ pve_env1_compute_uplink_bridge }} uplink; refusing to overwrite it.
   loop: >-
-    {{ pve_workload_ct_configs.results
-       | selectattr('item.vmid', 'in', pve_ussuri_compute_ct_vmids) | list }}
+    {{ pve_env1_workload_ct_configs.results
+       | selectattr('item.vmid', 'in', pve_env1_compute_ct_vmids) | list }}
   loop_control:
     label: "CT {{ item.item.vmid }}"
 
 - name: Read runtime state of existing compute CTs missing the uplink NIC
   ansible.builtin.command: "pct status {{ item.item.vmid }}"
-  register: pve_compute_uplink_ct_status
+  register: pve_env1_compute_uplink_ct_status
   changed_when: false
   when:
     - item.rc == 0
     - (item.stdout_lines | select('match', '^net4:') | list | length) == 0
   loop: >-
-    {{ pve_workload_ct_configs.results
-       | selectattr('item.vmid', 'in', pve_ussuri_compute_ct_vmids) | list }}
+    {{ pve_env1_workload_ct_configs.results
+       | selectattr('item.vmid', 'in', pve_env1_compute_ct_vmids) | list }}
   loop_control:
     label: "CT {{ item.item.vmid }}"
 
@@ -371,13 +371,13 @@
   ansible.builtin.assert:
     that:
       - '"status: stopped" in item.stdout'
-      - pve_start_existing_compute_after_uplink | bool
+      - pve_env1_start_existing_compute_after_uplink | bool
     fail_msg: >-
       CT {{ item.item.item.vmid }} needs its dedicated pub11 uplink but is either running, or
-      pve_start_existing_compute_after_uplink is false. Stop it in a controlled maintenance window
-      and rerun with -e pve_start_existing_compute_after_uplink=true to authorize NIC addition and
+      pve_env1_start_existing_compute_after_uplink is false. Stop it in a controlled maintenance window
+      and rerun with -e pve_env1_start_existing_compute_after_uplink=true to authorize NIC addition and
       the normal pve-env1-machines startup stage.
-  loop: "{{ pve_compute_uplink_ct_status.results | default([]) | selectattr('skipped', 'undefined') | list }}"
+  loop: "{{ pve_env1_compute_uplink_ct_status.results | default([]) | selectattr('skipped', 'undefined') | list }}"
   loop_control:
     label: "CT {{ item.item.item.vmid }}"
 
@@ -388,8 +388,8 @@
       - set
       - "{{ item.item.item.vmid }}"
       - --net4
-      - "name={{ pve_compute_uplink_guest_interface }},bridge={{ pve_compute_uplink_bridge }},ip=manual"
-  loop: "{{ pve_compute_uplink_ct_status.results | default([]) | selectattr('skipped', 'undefined') | list }}"
+      - "name={{ pve_env1_compute_uplink_guest_interface }},bridge={{ pve_env1_compute_uplink_bridge }},ip=manual"
+  loop: "{{ pve_env1_compute_uplink_ct_status.results | default([]) | selectattr('skipped', 'undefined') | list }}"
   loop_control:
     label: "CT {{ item.item.item.vmid }}"
 
@@ -398,14 +398,14 @@
     argv:
       - pct
       - exec
-      - "{{ pve_juju_client_vmid }}"
+      - "{{ pve_env1_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_juju_client_user }}"
+      - "{{ pve_env1_juju_client_user }}"
       - -c
       - cat ~/.ssh/id_ed25519.pub
-  register: pve_juju_client_pubkey
+  register: pve_env1_juju_client_pubkey
   changed_when: false
 
 - name: Check whether the Juju client key is authorized on the MAAS CT
@@ -413,12 +413,12 @@
     argv:
       - pct
       - exec
-      - "{{ pve_juju_client_vmid }}"
+      - "{{ pve_env1_juju_client_vmid }}"
       - --
       - bash
       - -lc
-      - "grep -qxF {{ pve_juju_client_pubkey.stdout | quote }} /home/{{ pve_juju_client_user }}/.ssh/authorized_keys"
-  register: pve_juju_client_key_authorized
+      - "grep -qxF {{ pve_env1_juju_client_pubkey.stdout | quote }} /home/{{ pve_env1_juju_client_user }}/.ssh/authorized_keys"
+  register: pve_env1_juju_client_key_authorized
   failed_when: false
   changed_when: false
 
@@ -427,22 +427,22 @@
     argv:
       - pct
       - exec
-      - "{{ pve_juju_client_vmid }}"
+      - "{{ pve_env1_juju_client_vmid }}"
       - --
       - bash
       - -lc
       - >-
-        install -d -m 0700 -o {{ pve_juju_client_user }} -g {{ pve_juju_client_user }} /home/{{ pve_juju_client_user }}/.ssh;
-        touch /home/{{ pve_juju_client_user }}/.ssh/authorized_keys;
-        grep -qxF {{ pve_juju_client_pubkey.stdout | quote }} /home/{{ pve_juju_client_user }}/.ssh/authorized_keys
-        || printf '%s\\n' {{ pve_juju_client_pubkey.stdout | quote }} >> /home/{{ pve_juju_client_user }}/.ssh/authorized_keys;
-        chown {{ pve_juju_client_user }}:{{ pve_juju_client_user }} /home/{{ pve_juju_client_user }}/.ssh/authorized_keys;
-        chmod 0600 /home/{{ pve_juju_client_user }}/.ssh/authorized_keys
-  when: pve_juju_client_key_authorized.rc != 0
+        install -d -m 0700 -o {{ pve_env1_juju_client_user }} -g {{ pve_env1_juju_client_user }} /home/{{ pve_env1_juju_client_user }}/.ssh;
+        touch /home/{{ pve_env1_juju_client_user }}/.ssh/authorized_keys;
+        grep -qxF {{ pve_env1_juju_client_pubkey.stdout | quote }} /home/{{ pve_env1_juju_client_user }}/.ssh/authorized_keys
+        || printf '%s\\n' {{ pve_env1_juju_client_pubkey.stdout | quote }} >> /home/{{ pve_env1_juju_client_user }}/.ssh/authorized_keys;
+        chown {{ pve_env1_juju_client_user }}:{{ pve_env1_juju_client_user }} /home/{{ pve_env1_juju_client_user }}/.ssh/authorized_keys;
+        chmod 0600 /home/{{ pve_env1_juju_client_user }}/.ssh/authorized_keys
+  when: pve_env1_juju_client_key_authorized.rc != 0
 
 - name: Copy Juju client public key to PVE for workload bootstrapping
   ansible.builtin.copy:
-    content: "{{ pve_juju_client_pubkey.stdout | trim }}\n"
+    content: "{{ pve_env1_juju_client_pubkey.stdout | trim }}\n"
     dest: /root/juju-client.pub
     owner: root
     group: root
@@ -467,47 +467,47 @@
       echo "EXISTS-SKIP $vmid $hostname"
       exit 0
     fi
-    networks=(--net0 "name=eth0,bridge={{ pve_juju_network_spaces[0].bridge }},ip=${ip}/24,gw={{ pve_ussuri_gateway }}")
+    networks=(--net0 "name=eth0,bridge={{ pve_env1_juju_network_spaces[0].bridge }},ip=${ip}/24,gw={{ pve_env1_gateway }}")
     if [[ "$tags" == *openstack* ]]; then
       networks+=(
-        --net1 "name=eth1,bridge={{ pve_juju_network_spaces[1].bridge }},ip={{ item.secondary_networks.oam }}/24"
-        --net2 "name=eth2,bridge={{ pve_juju_network_spaces[2].bridge }},ip={{ item.secondary_networks.internal }}/24"
-        --net3 "name=eth3,bridge={{ pve_juju_network_spaces[3].bridge }},ip={{ item.secondary_networks.storage }}/24"
+        --net1 "name=eth1,bridge={{ pve_env1_juju_network_spaces[1].bridge }},ip={{ item.secondary_networks.oam }}/24"
+        --net2 "name=eth2,bridge={{ pve_env1_juju_network_spaces[2].bridge }},ip={{ item.secondary_networks.internal }}/24"
+        --net3 "name=eth3,bridge={{ pve_env1_juju_network_spaces[3].bridge }},ip={{ item.secondary_networks.storage }}/24"
       )
       if [[ "{{ item.uplink | bool }}" == "True" ]]; then
-        networks+=(--net4 "name={{ pve_compute_uplink_guest_interface }},bridge={{ pve_compute_uplink_bridge }},ip=manual")
+        networks+=(--net4 "name={{ pve_env1_compute_uplink_guest_interface }},bridge={{ pve_env1_compute_uplink_bridge }},ip=manual")
       fi
     fi
-    pct create "$vmid" '{{ pve_focal_template }}' \
+    pct create "$vmid" '{{ pve_env1_focal_template }}' \
       --hostname "$hostname" --ostype ubuntu --cores 2 --memory 4096 --swap 0 \
-      --rootfs '{{ pve_storage }}:16' --unprivileged 0 --features nesting=1,fuse=1 \
+      --rootfs '{{ pve_common_storage }}:16' --unprivileged 0 --features nesting=1,fuse=1 \
       "${networks[@]}" \
       --nameserver 8.8.8.8 --tags "$tags" --onboot 1 --startup 'order=3' --start 0 \
       >"/var/tmp/ctcreate-${vmid}.log" 2>&1
     echo "CREATE-OK $vmid $hostname"
   args:
     executable: /bin/bash
-  loop: "{{ pve_workload_containers }}"
+  loop: "{{ pve_env1_workload_containers }}"
   loop_control:
     label: "{{ item.vmid }} {{ item.hostname }} {{ item.ip }}"
 
 - name: Read compute CT configurations after optional uplink NIC addition or creation
   ansible.builtin.command: "pct config {{ item }}"
-  register: pve_compute_uplink_ct_configs_after
+  register: pve_env1_compute_uplink_ct_configs_after
   changed_when: false
-  loop: "{{ pve_ussuri_compute_ct_vmids }}"
+  loop: "{{ pve_env1_compute_ct_vmids }}"
   loop_control:
     label: "CT {{ item }}"
 
 - name: Verify compute CT uplink NIC configuration after provisioning
   ansible.builtin.assert:
     that:
-      - "item.stdout is search('(?m)^net4: .*name=' ~ pve_compute_uplink_guest_interface ~ '(?:,|$)')"
-      - "item.stdout is search('(?m)^net4: .*bridge=' ~ pve_compute_uplink_bridge ~ '(?:,|$)')"
+      - "item.stdout is search('(?m)^net4: .*name=' ~ pve_env1_compute_uplink_guest_interface ~ '(?:,|$)')"
+      - "item.stdout is search('(?m)^net4: .*bridge=' ~ pve_env1_compute_uplink_bridge ~ '(?:,|$)')"
       - "item.stdout is search('(?m)^net4: .*ip=manual(?:,|$)')"
       - "item.stdout is not search('(?m)^net4: .*gw=')"
     fail_msg: "the dedicated uplink config of CT {{ item.item }} was not written persistently; refusing to register machines."
-  loop: "{{ pve_compute_uplink_ct_configs_after.results }}"
+  loop: "{{ pve_env1_compute_uplink_ct_configs_after.results }}"
   loop_control:
     label: "CT {{ item.item }}"
 
@@ -523,15 +523,15 @@
   ansible.builtin.command:
     argv:
       - /root/ussuri-setup-osd-lv.sh
-      - "{{ pve_ussuri_osd_spec }}"
+      - "{{ pve_env1_osd_spec }}"
   environment:
-    OSD_LV_PREFIX: "{{ pve_ussuri_osd_lv_prefix }}"
-    OSD_SIZE_MB: "{{ pve_ussuri_osd_size_mb }}"
-    OSD_THINPOOL: "{{ pve_ussuri_osd_thinpool }}"
-    OSD_THINPOOL_MAX_DATA_PERCENT: "{{ pve_ussuri_osd_thinpool_max_data_percent }}"
-  register: pve_ussuri_osd_lv
-  changed_when: "'USSURI-SETUP-OSD-LV-DONE' in pve_ussuri_osd_lv.stdout"
-  when: pve_ussuri_osd_spec | trim | length > 0
+    OSD_LV_PREFIX: "{{ pve_env1_osd_lv_prefix }}"
+    OSD_SIZE_MB: "{{ pve_env1_osd_size_mb }}"
+    OSD_THINPOOL: "{{ pve_env1_osd_thinpool }}"
+    OSD_THINPOOL_MAX_DATA_PERCENT: "{{ pve_env1_osd_thinpool_max_data_percent }}"
+  register: pve_env1_osd_lv
+  changed_when: "'USSURI-SETUP-OSD-LV-DONE' in pve_env1_osd_lv.stdout"
+  when: pve_env1_osd_spec | trim | length > 0
 
 - name: Copy the cap.drop baseline writer to the PVE host
   ansible.builtin.copy:
@@ -556,29 +556,29 @@
       - /root/ussuri-set-capdrop.py
       - "{{ item.vmid }}"
       - USSURI WORKLOAD SETTINGS
-  loop: "{{ pve_workload_containers }}"
+  loop: "{{ pve_env1_workload_containers }}"
   loop_control:
     label: "{{ item.vmid }} {{ item.hostname }}"
-  register: pve_ussuri_capdrop
-  changed_when: "'CHANGED' in pve_ussuri_capdrop.stdout"
+  register: pve_env1_capdrop
+  changed_when: "'CHANGED' in pve_env1_capdrop.stdout"
 
 - name: Give every workload container its own SMBIOS system UUID
   ansible.builtin.include_role:
     name: pve-common-ct-uuid
   vars:
-    pve_ct_system_uuid_items: "{{ pve_workload_containers | map(attribute='vmid') | list }}"
-    pve_ct_system_uuid_apply_live: true
+    pve_common_ct_uuid_items: "{{ pve_env1_workload_containers | map(attribute='vmid') | list }}"
+    pve_common_ct_uuid_apply_live: true
 
 - name: Pass through /dev/net/tun and /dev/kvm to the compute LXC containers
   ansible.builtin.command:
     argv:
       - /root/ussuri-ct-vm-devices.sh
       - "{{ item }}"
-  loop: "{{ pve_ussuri_compute_ct_vmids }}"
+  loop: "{{ pve_env1_compute_ct_vmids }}"
   loop_control:
     label: "CT {{ item }}"
-  register: pve_ussuri_ct_vm_devices
-  changed_when: "'ADDED' in pve_ussuri_ct_vm_devices.stdout"
+  register: pve_env1_ct_vm_devices
+  changed_when: "'ADDED' in pve_env1_ct_vm_devices.stdout"
   tags: pve-ussuri-ct-vm-devices
 
 - name: Start workload LXC containers
@@ -591,11 +591,11 @@
     fi
   args:
     executable: /bin/bash
-  loop: "{{ pve_workload_containers }}"
+  loop: "{{ pve_env1_workload_containers }}"
   loop_control:
     label: "{{ item.vmid }} {{ item.hostname }}"
-  register: pve_workload_ct_start
-  changed_when: "'STARTED ' in pve_workload_ct_start.stdout"
+  register: pve_env1_workload_ct_start
+  changed_when: "'STARTED ' in pve_env1_workload_ct_start.stdout"
 
 - name: Initialize workload CTs and authorize the Juju client
   ansible.builtin.shell: |
@@ -612,23 +612,23 @@
     exit 1
   args:
     executable: /bin/bash
-  loop: "{{ pve_workload_containers }}"
+  loop: "{{ pve_env1_workload_containers }}"
   loop_control:
     label: "{{ item.vmid }} {{ item.hostname }}"
 
 - name: Create the KVM workload VMs declared in the topology
   ansible.builtin.include_tasks: kvm-workload.yml
   vars:
-    pve_kvm: >-
+    pve_env1_kvm: >-
       {{ {'vmid': item.vmid | int,
           'hostname': item.hostname,
-          'cores': pve_ussuri_kvm_cores,
-          'memory': pve_ussuri_kvm_memory,
-          'disk': pve_ussuri_kvm_disk,
-          'ip': pve_juju_network_spaces[0].cidr
-                | regex_replace('\.0/24$', '.' ~ ((item.vmid | int) - (pve_ussuri_ip_offset | int)))} }}
-    pve_kvm_secondary_networks: "{{ pve_ussuri_secondary_network_ips[item.vmid | string] }}"
-  loop: "{{ pve_ussuri_workload_kvms }}"
+          'cores': pve_env1_kvm_cores,
+          'memory': pve_env1_kvm_memory,
+          'disk': pve_env1_kvm_disk,
+          'ip': pve_env1_juju_network_spaces[0].cidr
+                | regex_replace('\.0/24$', '.' ~ ((item.vmid | int) - (pve_env1_ip_offset | int)))} }}
+    pve_env1_kvm_secondary_networks: "{{ pve_env1_secondary_network_ips[item.vmid | string] }}"
+  loop: "{{ pve_env1_workload_kvms }}"
   loop_control:
     label: "VMID {{ item.vmid }} {{ item.hostname }}"
 
@@ -645,7 +645,7 @@
     argv:
       - pct
       - push
-      - "{{ pve_juju_client_vmid }}"
+      - "{{ pve_env1_juju_client_vmid }}"
       - /root/add-juju-machine.sh
       - /usr/local/sbin/add-juju-machine.sh
       - --perms
@@ -663,12 +663,12 @@
 - name: Seed the MAAS controller IP in Juju client known_hosts
   ansible.builtin.shell: |
     set -euo pipefail
-    ip={{ pve_maas_ip }}
+    ip={{ pve_env1_maas_ip }}
     tmp=$(mktemp)
     trap 'rm -f "$tmp"' EXIT
     for attempt in $(seq 1 12); do
       if ssh-keyscan -T 3 -H "$ip" >"$tmp" 2>/dev/null && [ -s "$tmp" ]; then
-        pct exec {{ pve_juju_client_vmid }} -- su - {{ pve_juju_client_user }} -c \
+        pct exec {{ pve_env1_juju_client_vmid }} -- su - {{ pve_env1_juju_client_user }} -c \
           "install -d -m 0700 ~/.ssh; touch ~/.ssh/known_hosts; \
            ssh-keygen -R \"$ip\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; \
            ssh-keygen -R \"[$ip]:22\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; \
@@ -686,10 +686,10 @@
 - name: Seed the controller host key in Juju client known_hosts
   ansible.builtin.shell: |
     set -euo pipefail
-    ip={{ pve_juju_controller_ip }}
+    ip={{ pve_env1_juju_controller_ip }}
     keyscan=$(ssh-keyscan -H "$ip" 2>/dev/null)
     [[ -n "$keyscan" ]] || { echo "SSH did not become available on Juju controller $ip" >&2; exit 1; }
-    printf '%s\n' "$keyscan" | pct exec {{ pve_juju_client_vmid }} -- su - {{ pve_juju_client_user }} -c \
+    printf '%s\n' "$keyscan" | pct exec {{ pve_env1_juju_client_vmid }} -- su - {{ pve_env1_juju_client_user }} -c \
       "install -d -m 0700 ~/.ssh; touch ~/.ssh/known_hosts; \
        ssh-keygen -R \"$ip\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; \
        ssh-keygen -R \"[$ip]:22\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; \
@@ -701,15 +701,15 @@
 - name: Register and verify PVE workload machine IDs
   ansible.builtin.command: /root/register-workload-machines.sh
   environment:
-    CLIENT_VMID: "{{ pve_juju_client_vmid }}"
-    CLIENT_USER: "{{ pve_juju_client_user }}"
-    JUJU_BIN: "{{ pve_juju_bin }}"
+    CLIENT_VMID: "{{ pve_env1_juju_client_vmid }}"
+    CLIENT_USER: "{{ pve_env1_juju_client_user }}"
+    JUJU_BIN: "{{ pve_env1_juju_bin }}"
     MODEL: openstack
-    WORKLOAD_VMIDS: "{{ pve_ussuri_workload_vmids | join(' ') }}"
-    IP_OFFSET: "{{ pve_ussuri_ip_offset }}"
-    PRIMARY_PREFIX: "{{ pve_juju_network_spaces[0].cidr | regex_replace('\\.0/24$', '') }}"
-  register: pve_workload_registration
-  changed_when: "'JUJU-WORKLOAD-MAPPING-CHANGED' in pve_workload_registration.stdout"
+    WORKLOAD_VMIDS: "{{ pve_env1_workload_vmids | join(' ') }}"
+    IP_OFFSET: "{{ pve_env1_ip_offset }}"
+    PRIMARY_PREFIX: "{{ pve_env1_juju_network_spaces[0].cidr | regex_replace('\\.0/24$', '') }}"
+  register: pve_env1_workload_registration
+  changed_when: "'JUJU-WORKLOAD-MAPPING-CHANGED' in pve_env1_workload_registration.stdout"
 
 - name: Install the env1 static name resolution map into every guest
   ansible.builtin.include_tasks: hosts-sync.yml

@@ -1,6 +1,6 @@
 ---
 
-sunbeam_valid_stages:
+pve_sunbeam_valid_stages:
   - status
   - pve-env1-prepare
   - system-uuid
@@ -20,102 +20,102 @@ sunbeam_valid_stages:
   - savepoint-restore
   - teardown
 
-sunbeam_readonly_stages: [status, verify]
+pve_sunbeam_readonly_stages: [status, verify]
 
-sunbeam_staging_dir: /root/.ansible/sunbeam-staging
+pve_sunbeam_staging_dir: /root/.ansible/sunbeam-staging
 
-sunbeam_confirm_pve_create: false
-sunbeam_confirm_cluster_bootstrap: false
-sunbeam_confirm_cluster_join: false
-sunbeam_confirm_external_changes: false
-sunbeam_confirm_ceph_osd: false
-sunbeam_confirm_tls: false
-sunbeam_confirm_observability: false
-sunbeam_confirm_promtail_tune: false
-sunbeam_confirm_logging_tune: false
-sunbeam_confirm_teardown: false
-sunbeam_confirm_system_uuid: false
-sunbeam_system_uuid_apply_live: false
-sunbeam_system_uuid_restart_services: []
+pve_sunbeam_confirm_pve_create: false
+pve_sunbeam_confirm_cluster_bootstrap: false
+pve_sunbeam_confirm_cluster_join: false
+pve_sunbeam_confirm_external_changes: false
+pve_sunbeam_confirm_ceph_osd: false
+pve_sunbeam_confirm_tls: false
+pve_sunbeam_confirm_observability: false
+pve_sunbeam_confirm_promtail_tune: false
+pve_sunbeam_confirm_logging_tune: false
+pve_sunbeam_confirm_teardown: false
+pve_sunbeam_confirm_system_uuid: false
+pve_sunbeam_system_uuid_apply_live: false
+pve_sunbeam_system_uuid_restart_services: []
 
-sunbeam_allow_unreadable_cluster_state: false
-sunbeam_join_remove_half_joined_nodes: false
-sunbeam_repair_openrc: false
-sunbeam_ceph_remove_bootstrap_osd: false
-sunbeam_pve_preflight_only: false
-sunbeam_loop_reap_stale_csi_devices: false
+pve_sunbeam_allow_unreadable_cluster_state: false
+pve_sunbeam_join_remove_half_joined_nodes: false
+pve_sunbeam_repair_openrc: false
+pve_sunbeam_ceph_remove_bootstrap_osd: false
+pve_sunbeam_preflight_only: false
+pve_sunbeam_loop_reap_stale_csi_devices: false
 
-sunbeam_k8s_loadbalancer_cidr: ""
+pve_sunbeam_k8s_loadbalancer_cidr: ""
 
-sunbeam_proxy_enabled: false
-sunbeam_proxy_allow_unreachable: false
+pve_sunbeam_proxy_enabled: false
+pve_sunbeam_proxy_allow_unreachable: false
 
-sunbeam_snapd_store_proxy_url: ""
+pve_sunbeam_snapd_store_proxy_url: ""
 
-sunbeam_containerd_registry_proxy_url: ""
+pve_sunbeam_containerd_registry_proxy_url: ""
 
-sunbeam_thinpool_max_data_percent: 90
-sunbeam_ct_rootfs_warn_percent: 85
+pve_sunbeam_thinpool_max_data_percent: 90
+pve_sunbeam_ct_rootfs_warn_percent: 85
 
-sunbeam_snap_hold_forever: true
-sunbeam_hold_snapd_deb: true
+pve_sunbeam_snap_hold_forever: true
+pve_sunbeam_hold_snapd_deb: true
 
-sunbeam_baseline_enforced: true
+pve_sunbeam_baseline_enforced: true
 
-sunbeam_vm_volume_test: false
-sunbeam_vm_test_keep: false
-sunbeam_health_require_all_active: false
+pve_sunbeam_vm_volume_test: false
+pve_sunbeam_vm_test_keep: false
+pve_sunbeam_health_require_all_active: false
 
-sunbeam_savepoint_take: false
-sunbeam_savepoint_restore: false
-sunbeam_savepoint_include_osd: true
-sunbeam_savepoint_repair_network: true
-sunbeam_savepoint_verify_openstack: true
-sunbeam_savepoint_verify_fip_ping: true
-sunbeam_savepoint_preflight_only: false
-sunbeam_savepoint_detach_guest_loops: true
-sunbeam_savepoint_repair_mon: true
-sunbeam_savepoint_metadata_dir: /root
-sunbeam_restore_timeout: 1800
-sunbeam_restore_first_window: 60
-sunbeam_savepoint_run_verify: true
-sunbeam_restore_juju_recovery_rounds: 10
-sunbeam_restore_juju_recovery_delay: 20
-sunbeam_restore_settle_timeout: 600
-sunbeam_restore_gateway_timeout: 360
-sunbeam_restore_gateway_poll_interval: 10
+pve_sunbeam_savepoint_take: false
+pve_sunbeam_savepoint_restore: false
+pve_sunbeam_savepoint_include_osd: true
+pve_sunbeam_savepoint_repair_network: true
+pve_sunbeam_savepoint_verify_openstack: true
+pve_sunbeam_savepoint_verify_fip_ping: true
+pve_sunbeam_savepoint_preflight_only: false
+pve_sunbeam_savepoint_detach_guest_loops: true
+pve_sunbeam_savepoint_repair_mon: true
+pve_sunbeam_savepoint_metadata_dir: /root
+pve_sunbeam_restore_timeout: 1800
+pve_sunbeam_restore_first_window: 60
+pve_sunbeam_savepoint_run_verify: true
+pve_sunbeam_restore_juju_recovery_rounds: 10
+pve_sunbeam_restore_juju_recovery_delay: 20
+pve_sunbeam_restore_settle_timeout: 600
+pve_sunbeam_restore_gateway_timeout: 360
+pve_sunbeam_restore_gateway_poll_interval: 10
 
-sunbeam_force_node_prepare: false
+pve_sunbeam_force_node_prepare: false
 
-sunbeam_force_configure: false
+pve_sunbeam_force_configure: false
 
-sunbeam_force_tls: false
+pve_sunbeam_force_tls: false
 
-sunbeam_force_observability: false
-sunbeam_obs_enable_timeout: 5400
-sunbeam_obs_settle_timeout: 1800
-sunbeam_obs_settle_interval: 30
-sunbeam_obs_min_rawfile_headroom_gib: 5
-sunbeam_obs_logging_tune: true
-sunbeam_obs_logrotate_keep_files: 240
-sunbeam_obs_logrotate_maxage_days: 1
+pve_sunbeam_force_observability: false
+pve_sunbeam_obs_enable_timeout: 5400
+pve_sunbeam_obs_settle_timeout: 1800
+pve_sunbeam_obs_settle_interval: 30
+pve_sunbeam_obs_min_rawfile_headroom_gib: 5
+pve_sunbeam_obs_logging_tune: true
+pve_sunbeam_obs_logrotate_keep_files: 240
+pve_sunbeam_obs_logrotate_maxage_days: 1
 
-sunbeam_bootstrap_timeout: 7200
-sunbeam_join_timeout: 5400
-sunbeam_configure_timeout: 7200
-sunbeam_tls_timeout: 1800
-sunbeam_poll_interval: 30
+pve_sunbeam_bootstrap_timeout: 7200
+pve_sunbeam_join_timeout: 5400
+pve_sunbeam_configure_timeout: 7200
+pve_sunbeam_tls_timeout: 1800
+pve_sunbeam_poll_interval: 30
 
-sunbeam_microceph_bin: /snap/bin/microceph
-sunbeam_microceph_ceph_bin: /snap/bin/microceph.ceph
-sunbeam_snap_python: /snap/openstack/current/bin/python3
+pve_sunbeam_microceph_bin: /snap/bin/microceph
+pve_sunbeam_microceph_ceph_bin: /snap/bin/microceph.ceph
+pve_sunbeam_snap_python: /snap/openstack/current/bin/python3
 
-sunbeam_juju_openstack_model: openstack
-sunbeam_juju_machines_model: admin/openstack-machines
+pve_sunbeam_juju_openstack_model: openstack
+pve_sunbeam_juju_machines_model: admin/openstack-machines
 
-sunbeam_pct_bin: /usr/sbin/pct
-sunbeam_ip_bin: /usr/sbin/ip
-sunbeam_lvs_bin: /usr/sbin/lvs
-sunbeam_udevadm_bin: /usr/bin/udevadm
+pve_sunbeam_pct_bin: /usr/sbin/pct
+pve_sunbeam_ip_bin: /usr/sbin/ip
+pve_sunbeam_lvs_bin: /usr/sbin/lvs
+pve_sunbeam_udevadm_bin: /usr/bin/udevadm
 
-sunbeam_osd_udev_rules_path: /etc/udev/rules.d/70-pve-ceph-osd.rules
+pve_sunbeam_osd_udev_rules_path: /etc/udev/rules.d/70-pve-ceph-osd.rules

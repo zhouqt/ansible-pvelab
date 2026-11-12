@@ -1,8 +1,8 @@
 #!/bin/bash
 set -u
 
-user={{ sunbeam_node_user }}
-hostname={{ sunbeam_primary_node.hostname }}
+user={{ pve_sunbeam_node_user }}
+hostname={{ pve_sunbeam_primary_node.hostname }}
 
 out=$(su - "$user" -c 'sunbeam cluster list --format yaml' 2>&1)
 rc=$?

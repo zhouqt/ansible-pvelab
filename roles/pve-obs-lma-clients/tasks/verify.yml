@@ -4,12 +4,12 @@
   ansible.builtin.shell: |
     set -uo pipefail
     status=$(mktemp); confs=$(mktemp)
-    {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
-      su - {{ pve_obs_hub_juju_client_user }} -c \
-      "{{ pve_lma_clients_juju_cmd }} status -m {{ pve_lma_clients_model }} --format json" > "$status"
-    {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
-      su - {{ pve_obs_hub_juju_client_user }} -c \
-      "{{ pve_lma_juju_cmd }} exec -m {{ pve_lma_model_ref }} --unit nagios/0 -- bash -c 'ls /etc/nagios3/conf.d/ | grep ^juju-host_'" > "$confs" 2>/dev/null || true
+    {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_juju_client_vmid }} -- \
+      su - {{ pve_obs_cos_hub_juju_client_user }} -c \
+      "{{ pve_obs_lma_clients_juju_cmd }} status -m {{ pve_obs_lma_clients_model }} --format json" > "$status"
+    {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_juju_client_vmid }} -- \
+      su - {{ pve_obs_cos_hub_juju_client_user }} -c \
+      "{{ pve_obs_lma_hub_juju_cmd }} exec -m {{ pve_obs_lma_hub_model_ref }} --unit nagios/0 -- bash -c 'ls /etc/nagios3/conf.d/ | grep ^juju-host_'" > "$confs" 2>/dev/null || true
     python3 - "$status" "$confs" <<'PY'
     import json, re, sys
 
@@ -57,23 +57,23 @@
     exit "$rc"
   args:
     executable: /bin/bash
-  register: pve_lma_clients_verify
-  until: pve_lma_clients_verify.rc == 0
-  failed_when: pve_lma_clients_verify.rc != 0
+  register: pve_obs_lma_clients_verify
+  until: pve_obs_lma_clients_verify.rc == 0
+  failed_when: pve_obs_lma_clients_verify.rc != 0
   retries: 30
   delay: 20
   changed_when: false
 
 - name: Show the environment-side wiring summary
   ansible.builtin.debug:
-    msg: "{{ pve_lma_clients_verify.stdout_lines }}"
+    msg: "{{ pve_obs_lma_clients_verify.stdout_lines }}"
 
 - name: Require nrpe on the environment units to allow the hub nagios address
   ansible.builtin.shell: |
     set -uo pipefail
-    unit=$({{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
-      su - {{ pve_obs_hub_juju_client_user }} -c \
-      "{{ pve_lma_clients_juju_cmd }} status -m {{ pve_lma_clients_model }} --format json" \
+    unit=$({{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_juju_client_vmid }} -- \
+      su - {{ pve_obs_cos_hub_juju_client_user }} -c \
+      "{{ pve_obs_lma_clients_juju_cmd }} status -m {{ pve_obs_lma_clients_model }} --format json" \
       | python3 -c "
     import json,sys
     apps=json.load(sys.stdin).get('applications') or {}
@@ -85,14 +85,14 @@
     raise SystemExit(1)
     ")
     echo "sample unit: $unit"
-    {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
-      su - {{ pve_obs_hub_juju_client_user }} -c \
-      "{{ pve_lma_clients_juju_cmd }} exec -m {{ pve_lma_clients_model }} --unit $unit -- grep ^allowed_hosts /etc/nagios/nrpe.cfg"
+    {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_juju_client_vmid }} -- \
+      su - {{ pve_obs_cos_hub_juju_client_user }} -c \
+      "{{ pve_obs_lma_clients_juju_cmd }} exec -m {{ pve_obs_lma_clients_model }} --unit $unit -- grep ^allowed_hosts /etc/nagios/nrpe.cfg"
   args:
     executable: /bin/bash
-  register: pve_lma_clients_allowed
-  until: pve_lma_nagios_ip in pve_lma_clients_allowed.stdout
-  failed_when: pve_lma_nagios_ip not in pve_lma_clients_allowed.stdout
+  register: pve_obs_lma_clients_allowed
+  until: pve_obs_lma_hub_nagios_ip in pve_obs_lma_clients_allowed.stdout
+  failed_when: pve_obs_lma_hub_nagios_ip not in pve_obs_lma_clients_allowed.stdout
   retries: 20
   delay: 15
   changed_when: false
@@ -101,19 +101,19 @@
   ansible.builtin.shell: |
     set -uo pipefail
     jrun() {
-      {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
-        su - {{ pve_obs_hub_juju_client_user }} -c "$1"
+      {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_juju_client_vmid }} -- \
+        su - {{ pve_obs_cos_hub_juju_client_user }} -c "$1"
     }
-    addr=$(jrun "{{ pve_lma_juju_cmd }} exec -m {{ pve_lma_model_ref }} --unit nagios/0 -- bash -c 'grep -h -m1 -E \"^[[:space:]]*address[[:space:]]\" /etc/nagios3/conf.d/juju-host_juju-*.cfg'" \
+    addr=$(jrun "{{ pve_obs_lma_hub_juju_cmd }} exec -m {{ pve_obs_lma_hub_model_ref }} --unit nagios/0 -- bash -c 'grep -h -m1 -E \"^[[:space:]]*address[[:space:]]\" /etc/nagios3/conf.d/juju-host_juju-*.cfg'" \
       | sed -E 's/^unit-[^:]+: *//' | awk '{print $2}' | head -1)
     echo "target address: $addr"
     [ -n "$addr" ] || { echo "NO-HOST-DEFINITION" >&2; exit 1; }
-    jrun "{{ pve_lma_juju_cmd }} exec -m {{ pve_lma_model_ref }} --unit nagios/0 -- /usr/lib/nagios/plugins/check_nrpe -H $addr -c check_reboot"
+    jrun "{{ pve_obs_lma_hub_juju_cmd }} exec -m {{ pve_obs_lma_hub_model_ref }} --unit nagios/0 -- /usr/lib/nagios/plugins/check_nrpe -H $addr -c check_reboot"
   args:
     executable: /bin/bash
-  register: pve_lma_clients_nrpe_probe
-  until: "'OK' in pve_lma_clients_nrpe_probe.stdout"
-  failed_when: "'OK' not in pve_lma_clients_nrpe_probe.stdout"
+  register: pve_obs_lma_clients_nrpe_probe
+  until: "'OK' in pve_obs_lma_clients_nrpe_probe.stdout"
+  failed_when: "'OK' not in pve_obs_lma_clients_nrpe_probe.stdout"
   retries: 10
   delay: 15
   changed_when: false
@@ -121,8 +121,8 @@
 - name: Report the environment-side acceptance evidence
   ansible.builtin.debug:
     msg:
-      - "model        : {{ pve_lma_clients_model }}"
-      - "nrpe units   : {{ pve_lma_clients_verify.stdout_lines | select('match', 'NRPE-UNITS') | first | default('?') }}"
-      - "nagios host defs: {{ pve_lma_clients_verify.stdout_lines | select('match', 'NAGIOS-HOST-FILES') | first | default('?') }}"
-      - "allowed_hosts: {{ pve_lma_clients_allowed.stdout_lines | last | default('') | trim }}"
-      - "check_nrpe   : {{ pve_lma_clients_nrpe_probe.stdout | trim }}"
+      - "model        : {{ pve_obs_lma_clients_model }}"
+      - "nrpe units   : {{ pve_obs_lma_clients_verify.stdout_lines | select('match', 'NRPE-UNITS') | first | default('?') }}"
+      - "nagios host defs: {{ pve_obs_lma_clients_verify.stdout_lines | select('match', 'NAGIOS-HOST-FILES') | first | default('?') }}"
+      - "allowed_hosts: {{ pve_obs_lma_clients_allowed.stdout_lines | last | default('') | trim }}"
+      - "check_nrpe   : {{ pve_obs_lma_clients_nrpe_probe.stdout | trim }}"

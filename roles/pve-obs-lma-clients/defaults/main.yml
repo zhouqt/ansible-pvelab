@@ -1,13 +1,13 @@
 ---
-pve_obs_hub_pct_bin: /usr/sbin/pct
+pve_obs_cos_hub_pct_bin: /usr/sbin/pct
 
-pve_lma_clients_enable_osc: true
+pve_obs_lma_clients_enable_osc: true
 
-pve_lma_clients_skip_wait: false
+pve_obs_lma_clients_skip_wait: false
 
-pve_lma_clients_osc_snapd_workaround: true
+pve_obs_lma_clients_osc_snapd_workaround: true
 
-pve_lma_clients_allow_any_series: false
+pve_obs_lma_clients_allow_any_series: false
 
-pve_lma_clients_nrpe_channel: "{{ pve_lma_nrpe_channel }}"
-pve_lma_clients_osc_channel: stable
+pve_obs_lma_clients_nrpe_channel: "{{ pve_obs_lma_hub_nrpe_channel }}"
+pve_obs_lma_clients_osc_channel: stable

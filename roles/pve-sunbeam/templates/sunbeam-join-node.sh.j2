@@ -2,7 +2,7 @@
 set -euo pipefail
 
 role=${1:?Usage: sunbeam-join-node.sh <role>}
-token_file={{ sunbeam_join_token_path }}
+token_file={{ pve_sunbeam_join_token_path }}
 
 [[ -s "$token_file" ]] || { echo "join token file missing: $token_file" >&2; exit 1; }
 [[ $(stat -c '%a' "$token_file") == 600 ]] || { echo "join token file must be mode 0600" >&2; exit 1; }

@@ -3,46 +3,46 @@
 - name: Require an explicit opt-in before rebuilding from seed snapshots
   ansible.builtin.assert:
     that:
-      - pve_yoga_seed_restore | bool
+      - pve_openstack_seed_restore | bool
     fail_msg: >-
       a rebuild from the seed is refused by default (it overwrites the root disks of same-named guests). Once you are sure, add
-      -e pve_yoga_seed_restore=true.
+      -e pve_openstack_seed_restore=true.
 
 - name: Require a seed name
   ansible.builtin.assert:
     that:
-      - pve_yoga_seed_restore_name | length > 0
-      - pve_yoga_seed_restore_name is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,30}$')
-    fail_msg: "pve_yoga_seed_restore_name is required and may only contain letters, digits and . _ -."
+      - pve_openstack_seed_restore_name | length > 0
+      - pve_openstack_seed_restore_name is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,30}$')
+    fail_msg: "pve_openstack_seed_restore_name is required and may only contain letters, digits and . _ -."
 
 - name: Define the seed member lists
   ansible.builtin.set_fact:
-    pve_yoga_seed_prefix: "sp-{{ pve_yoga_env_slug }}-{{ pve_yoga_seed_restore_name }}"
+    pve_openstack_seed_prefix: "sp-{{ pve_openstack_env_slug }}-{{ pve_openstack_seed_restore_name }}"
 
 - name: Require every seed base volume to exist
   ansible.builtin.shell: |
     set -euo pipefail
     missing=""
     for role in ctrl m01 m02 m03 m04 m05 m06 osd0 osd1 osd2 osd3; do
-      lvs --noheadings -o lv_name "pve-thin-pool/{{ pve_yoga_seed_prefix }}-$role" >/dev/null 2>&1 \
+      lvs --noheadings -o lv_name "pve-thin-pool/{{ pve_openstack_seed_prefix }}-$role" >/dev/null 2>&1 \
         || missing="$missing $role"
     done
     [ -z "$missing" ] || { echo "SEED-MISSING:$missing" >&2; exit 1; }
-    echo "SEED-BASES-OK {{ pve_yoga_seed_prefix }}"
+    echo "SEED-BASES-OK {{ pve_openstack_seed_prefix }}"
   args:
     executable: /bin/bash
   changed_when: false
 
 - name: Check whether the controller container still exists
-  ansible.builtin.command: "pct config {{ pve_yoga_controller_vmid }}"
-  register: pve_yoga_seed_ctrl_conf
+  ansible.builtin.command: "pct config {{ pve_openstack_controller_vmid }}"
+  register: pve_openstack_seed_ctrl_conf
   failed_when: false
   changed_when: false
 
 - name: Build the guest skeletons with the cold-install stages
   when:
-    - pve_yoga_seed_ctrl_conf.rc != 0
-    - pve_yoga_seed_restore_build_skeletons | bool
+    - pve_openstack_seed_ctrl_conf.rc != 0
+    - pve_openstack_seed_restore_build_skeletons | bool
   block:
     - name: Create the Juju controller container
       ansible.builtin.include_role:
@@ -56,7 +56,7 @@
   ansible.builtin.shell: |
     set -euo pipefail
     missing=""
-    for vmid in {{ ([pve_yoga_controller_vmid | int] + pve_yoga_workload_vmids | map('int') | list) | join(' ') }}; do
+    for vmid in {{ ([pve_openstack_controller_vmid | int] + pve_openstack_workload_vmids | map('int') | list) | join(' ') }}; do
       pct config "$vmid" >/dev/null 2>&1 || qm config "$vmid" >/dev/null 2>&1 || missing="$missing $vmid"
     done
     [ -z "$missing" ] || { echo "SKELETON-MISSING:$missing" >&2; exit 1; }
@@ -69,22 +69,22 @@
   ansible.builtin.include_role:
     name: pve-openstack-savepoint-restore
   vars:
-    pve_yoga_savepoint_restore: true
-    pve_yoga_savepoint_name: "{{ pve_yoga_seed_restore_name }}"
-    pve_yoga_savepoint_restore_run_recovery: false
+    pve_openstack_savepoint_restore: true
+    pve_openstack_savepoint_name: "{{ pve_openstack_seed_restore_name }}"
+    pve_openstack_savepoint_restore_run_recovery: false
 
 - name: Re-seed the Juju client known_hosts from the restored guests
   ansible.builtin.shell: |
     set -euo pipefail
-    for vmid in {{ pve_yoga_workload_vmids | join(' ') }}; do
-      ip="{{ pve_yoga_public_prefix }}.$((vmid - {{ pve_yoga_ip_offset }}))"
+    for vmid in {{ pve_openstack_workload_vmids | join(' ') }}; do
+      ip="{{ pve_openstack_public_prefix }}.$((vmid - {{ pve_openstack_ip_offset }}))"
       key=
       for _ in $(seq 1 60); do
         key=$(ssh-keyscan -T 3 -H "$ip" 2>/dev/null) && [[ -n "$key" ]] && break
         sleep 5
       done
       [[ -n "$key" ]] || { echo "ERROR: SSH not available on $ip" >&2; exit 1; }
-      printf '%s\n' "$key" | pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c \
+      printf '%s\n' "$key" | pct exec {{ pve_openstack_juju_client_vmid }} -- su - {{ pve_openstack_juju_client_user }} -c \
         "install -d -m 0700 ~/.ssh; touch ~/.ssh/known_hosts; ssh-keygen -R \"$ip\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; ssh-keygen -R \"[$ip]:22\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; cat >> ~/.ssh/known_hosts"
     done
   args:
@@ -93,7 +93,7 @@
 
 - name: Rebuild the Juju client store on the shared client container
   ansible.builtin.include_tasks: client-store.yml
-  when: pve_yoga_seed_restore_client_store | bool
+  when: pve_openstack_seed_restore_client_store | bool
 
 - name: Hand off to the recovery role
   ansible.builtin.include_role:

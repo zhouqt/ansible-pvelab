@@ -2,23 +2,23 @@
 
 - name: Assemble the env1 guest name map (vmid -> hostname)
   ansible.builtin.set_fact:
-    pve_ussuri_guest_names: >-
-      {{ pve_ussuri_workload_cts | items2dict(key_name='vmid', value_name='hostname')
-         | combine(pve_ussuri_workload_kvms | items2dict(key_name='vmid', value_name='hostname')) }}
-    pve_ussuri_hosts_ct_vmids: "{{ pve_ussuri_workload_cts | map(attribute='vmid') | list }}"
+    pve_env1_guest_names: >-
+      {{ pve_env1_workload_cts | items2dict(key_name='vmid', value_name='hostname')
+         | combine(pve_env1_workload_kvms | items2dict(key_name='vmid', value_name='hostname')) }}
+    pve_env1_hosts_ct_vmids: "{{ pve_env1_workload_cts | map(attribute='vmid') | list }}"
 
 - name: Build the managed env1 /etc/hosts block
   ansible.builtin.set_fact:
-    pve_ussuri_hosts_block: |
-      {% for vmid, name in pve_ussuri_guest_names.items() | sort %}
-      {% for net in pve_juju_network_spaces %}
-      {{ net.cidr | regex_replace('\.0/24$', '') }}.{{ vmid | int - pve_ussuri_ip_offset }} {{ name }}
+    pve_env1_hosts_block: |
+      {% for vmid, name in pve_env1_guest_names.items() | sort %}
+      {% for net in pve_env1_juju_network_spaces %}
+      {{ net.cidr | regex_replace('\.0/24$', '') }}.{{ vmid | int - pve_env1_ip_offset }} {{ name }}
       {% endfor %}
       {% endfor %}
 
 - name: Write the managed env1 /etc/hosts block on the PVE host
   ansible.builtin.copy:
-    content: "{{ pve_ussuri_hosts_block }}"
+    content: "{{ pve_env1_hosts_block }}"
     dest: /root/ussuri-hosts.block
     owner: root
     group: root
@@ -35,7 +35,7 @@
 - name: Install the static name map into every env1 container guest
   ansible.builtin.shell: |
     set -euo pipefail
-    for vmid in {{ pve_ussuri_hosts_ct_vmids | join(' ') }}; do
+    for vmid in {{ pve_env1_hosts_ct_vmids | join(' ') }}; do
       pct push "$vmid" /root/ussuri-hosts.block /root/ussuri-hosts.block
       pct push "$vmid" /root/ussuri-hosts-sync.sh /root/ussuri-hosts-sync.sh --perms 0700
       pct exec "$vmid" -- bash /root/ussuri-hosts-sync.sh /root/ussuri-hosts.block
@@ -50,34 +50,34 @@
     argv:
       - pct
       - exec
-      - "{{ pve_juju_client_vmid }}"
+      - "{{ pve_env1_juju_client_vmid }}"
       - --
       - install
       - -d
       - -o
-      - "{{ pve_juju_client_user }}"
+      - "{{ pve_env1_juju_client_user }}"
       - -g
-      - "{{ pve_juju_client_user }}"
+      - "{{ pve_env1_juju_client_user }}"
       - -m
       - "0755"
-      - "{{ pve_ussuri_client_stage_dir }}"
+      - "{{ pve_env1_client_stage_dir }}"
   changed_when: false
 
 - name: Install the static name map into the env1 KVM guests
   ansible.builtin.shell: |
     set -euo pipefail
-    pct push {{ pve_juju_client_vmid }} /root/ussuri-hosts.block {{ pve_ussuri_client_stage_dir }}/ussuri-hosts.block
-    pct push {{ pve_juju_client_vmid }} /root/ussuri-hosts-sync.sh {{ pve_ussuri_client_stage_dir }}/ussuri-hosts-sync.sh --perms 0700
-    pct exec {{ pve_juju_client_vmid }} -- chown {{ pve_juju_client_user }}:{{ pve_juju_client_user }} {{ pve_ussuri_client_stage_dir }}/ussuri-hosts.block {{ pve_ussuri_client_stage_dir }}/ussuri-hosts-sync.sh
-    pct exec {{ pve_juju_client_vmid }} -- su - {{ pve_juju_client_user }} -c '
+    pct push {{ pve_env1_juju_client_vmid }} /root/ussuri-hosts.block {{ pve_env1_client_stage_dir }}/ussuri-hosts.block
+    pct push {{ pve_env1_juju_client_vmid }} /root/ussuri-hosts-sync.sh {{ pve_env1_client_stage_dir }}/ussuri-hosts-sync.sh --perms 0700
+    pct exec {{ pve_env1_juju_client_vmid }} -- chown {{ pve_env1_juju_client_user }}:{{ pve_env1_juju_client_user }} {{ pve_env1_client_stage_dir }}/ussuri-hosts.block {{ pve_env1_client_stage_dir }}/ussuri-hosts-sync.sh
+    pct exec {{ pve_env1_juju_client_vmid }} -- su - {{ pve_env1_juju_client_user }} -c '
       set -e
-      for vmid in {{ pve_ussuri_workload_kvms | map(attribute="vmid") | join(" ") }}; do
-        ip={{ pve_ussuri_public_prefix }}.$((vmid - {{ pve_ussuri_ip_offset }}))
-        scp -o StrictHostKeyChecking=no -q {{ pve_ussuri_client_stage_dir }}/ussuri-hosts.block {{ pve_ussuri_client_stage_dir }}/ussuri-hosts-sync.sh ubuntu@$ip:/tmp/
+      for vmid in {{ pve_env1_workload_kvms | map(attribute="vmid") | join(" ") }}; do
+        ip={{ pve_env1_public_prefix }}.$((vmid - {{ pve_env1_ip_offset }}))
+        scp -o StrictHostKeyChecking=no -q {{ pve_env1_client_stage_dir }}/ussuri-hosts.block {{ pve_env1_client_stage_dir }}/ussuri-hosts-sync.sh ubuntu@$ip:/tmp/
         ssh -o StrictHostKeyChecking=no -q ubuntu@$ip "sudo bash /tmp/ussuri-hosts-sync.sh /tmp/ussuri-hosts.block"
         rm -f /tmp/ussuri-hosts.block /tmp/ussuri-hosts-sync.sh
       done
-      rm -f {{ pve_ussuri_client_stage_dir }}/ussuri-hosts.block {{ pve_ussuri_client_stage_dir }}/ussuri-hosts-sync.sh
+      rm -f {{ pve_env1_client_stage_dir }}/ussuri-hosts.block {{ pve_env1_client_stage_dir }}/ussuri-hosts-sync.sh
     '
   args:
     executable: /bin/bash
@@ -87,13 +87,13 @@
   ansible.builtin.shell: |
     set -euo pipefail
     rc=0
-    {% for vmid, name in pve_ussuri_guest_names.items() | sort %}
-    {% for net in pve_juju_network_spaces %}
-    ip={{ net.cidr | regex_replace('\.0/24$', '') }}.{{ vmid | int - pve_ussuri_ip_offset }}
-    {% if vmid in pve_ussuri_hosts_ct_vmids %}
+    {% for vmid, name in pve_env1_guest_names.items() | sort %}
+    {% for net in pve_env1_juju_network_spaces %}
+    ip={{ net.cidr | regex_replace('\.0/24$', '') }}.{{ vmid | int - pve_env1_ip_offset }}
+    {% if vmid in pve_env1_hosts_ct_vmids %}
     got=$(pct exec {{ vmid }} -- getent hosts "$ip" | awk '{print $2}' | head -1)
     {% else %}
-    got=$(pct exec {{ pve_juju_client_vmid }} -- su - {{ pve_juju_client_user }} -c \
+    got=$(pct exec {{ pve_env1_juju_client_vmid }} -- su - {{ pve_env1_juju_client_user }} -c \
       "ssh -o StrictHostKeyChecking=no -o BatchMode=yes -q ubuntu@$ip 'getent hosts $ip' | awk '{print \$2}' | head -1")
     {% endif %}
     if [ "$got" != "{{ name }}" ]; then

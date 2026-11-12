@@ -1,12 +1,12 @@
 #!/bin/bash
 set -uo pipefail
-export JUJU_DATA={{ pve_lma_juju_data }}
-JUJU={{ pve_lma_juju_bin }}
-MODEL={{ pve_lma_model_ref }}
+export JUJU_DATA={{ pve_obs_lma_hub_juju_data }}
+JUJU={{ pve_obs_lma_hub_juju_bin }}
+MODEL={{ pve_obs_lma_hub_model_ref }}
 UNIT=nagios/0
 CFG=/etc/nagios3/conf.d/zz-pve-lma-hub-hosts.cfg
 CACHE=/var/cache/nagios3/objects.cache
-B64='{{ pve_lma_hub_hosts_cfg_b64 }}'
+B64='{{ pve_obs_lma_hub_hosts_cfg_b64 }}'
 want=$(printf '%s' "$B64" | base64 -d | sha256sum | awk '{print $1}')
 
 jrun() { $JUJU exec -m "$MODEL" --unit "$UNIT" -- "$@"; }

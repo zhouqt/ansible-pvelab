@@ -2,42 +2,42 @@
 core:
   config:
     bootstrap:
-      management_cidr: "{{ sunbeam_management_cidr }}"
-    database: "{{ sunbeam_database_topology }}"
-    region: "{{ sunbeam_region }}"
+      management_cidr: "{{ pve_sunbeam_management_cidr }}"
+    database: "{{ pve_sunbeam_database_topology }}"
+    region: "{{ pve_sunbeam_region }}"
     k8s-addons:
-      loadbalancer: "{{ sunbeam_k8s_loadbalancer_range }}"
+      loadbalancer: "{{ pve_sunbeam_k8s_loadbalancer_range }}"
     external-networks:
-      {{ sunbeam_external_network.name }}:
-        cidr: "{{ sunbeam_external_network.cidr }}"
-        gateway: "{{ sunbeam_external_network.gateway }}"
-        range: "{{ sunbeam_external_network.floating_range }}"
-        network_type: "{{ sunbeam_external_network.network_type }}"
-        segmentation_id: {{ sunbeam_external_network.segmentation_id }}
+      {{ pve_sunbeam_external_network.name }}:
+        cidr: "{{ pve_sunbeam_external_network.cidr }}"
+        gateway: "{{ pve_sunbeam_external_network.gateway }}"
+        range: "{{ pve_sunbeam_external_network.floating_range }}"
+        network_type: "{{ pve_sunbeam_external_network.network_type }}"
+        segmentation_id: {{ pve_sunbeam_external_network.segmentation_id }}
         nics:
-{% for node in sunbeam_nodes %}
-{% set node_name = (sunbeam_node_names | default({})).get(node.vmid | string, node.hostname) %}
-          {{ node_name }}: {{ sunbeam_manifest_external_nic }}
+{% for node in pve_sunbeam_nodes %}
+{% set node_name = (pve_sunbeam_node_names | default({})).get(node.vmid | string, node.hostname) %}
+          {{ node_name }}: {{ pve_sunbeam_manifest_external_nic }}
 {% endfor %}
-{% if sunbeam_proxy_enabled | bool %}
+{% if pve_sunbeam_proxy_enabled | bool %}
     proxy:
       proxy_required: true
-      http_proxy: "{{ sunbeam_proxy_url }}"
-      https_proxy: "{{ sunbeam_proxy_url }}"
-      no_proxy: "{{ sunbeam_proxy_no_proxy_effective }}"
+      http_proxy: "{{ pve_sunbeam_proxy_url }}"
+      https_proxy: "{{ pve_sunbeam_proxy_url }}"
+      no_proxy: "{{ pve_sunbeam_proxy_no_proxy_effective }}"
 {% endif %}
     user:
       run_demo_setup: true
-      username: "{{ sunbeam_demo_username }}"
-      password: "{{ sunbeam_demo_password }}"
-      cidr: "{{ sunbeam_tenant_cidr }}"
-      nameservers: "{{ sunbeam_dns_nameservers }}"
+      username: "{{ pve_sunbeam_demo_username }}"
+      password: "{{ pve_sunbeam_demo_password }}"
+      cidr: "{{ pve_sunbeam_tenant_cidr }}"
+      nameservers: "{{ pve_sunbeam_dns_nameservers }}"
       security_group_rules: true
       remote_access_location: remote
-      physnet: "{{ sunbeam_external_network.name }}"
+      physnet: "{{ pve_sunbeam_external_network.name }}"
     microceph_config:
-{% for n in sunbeam_nodes %}
-{% set node_name = (sunbeam_node_names | default({})).get(n.vmid | string, n.hostname) %}
+{% for n in pve_sunbeam_nodes %}
+{% set node_name = (pve_sunbeam_node_names | default({})).get(n.vmid | string, n.hostname) %}
       {{ node_name }}:
         osd_devices: {{ [n.osd_microceph_device] | to_json }}
 {% endfor %}

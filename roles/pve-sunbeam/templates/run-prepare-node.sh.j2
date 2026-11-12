@@ -2,13 +2,13 @@
 set -uo pipefail
 
 mode=${1:-}
-log={{ sunbeam_node_log_dir }}/node-prepare.log
-mkdir -p {{ sunbeam_node_log_dir }}
+log={{ pve_sunbeam_node_log_dir }}/node-prepare.log
+mkdir -p {{ pve_sunbeam_node_log_dir }}
 
 if [ "$mode" = "--bootstrap" ]; then
-    su - {{ sunbeam_node_user }} -c 'sunbeam prepare-node-script --bootstrap | bash' >"$log" 2>&1
+    su - {{ pve_sunbeam_node_user }} -c 'sunbeam prepare-node-script --bootstrap | bash' >"$log" 2>&1
 else
-    su - {{ sunbeam_node_user }} -c 'sunbeam prepare-node-script | bash' >"$log" 2>&1
+    su - {{ pve_sunbeam_node_user }} -c 'sunbeam prepare-node-script | bash' >"$log" 2>&1
 fi
 rc=$?
 

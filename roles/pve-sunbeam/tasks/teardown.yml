@@ -5,95 +5,95 @@
 - name: Require an explicit opt-in before destroying anything
   ansible.builtin.assert:
     that:
-      - sunbeam_confirm_teardown | bool
+      - pve_sunbeam_confirm_teardown | bool
     fail_msg: >-
-      This stage destroys the containers of {{ sunbeam_env_id }}. To confirm, pass
-      -e sunbeam_confirm_teardown=true.
+      This stage destroys the containers of {{ pve_sunbeam_env_id }}. To confirm, pass
+      -e pve_sunbeam_confirm_teardown=true.
 
 - name: Require the savepoint that has to survive the teardown
   ansible.builtin.assert:
     that:
-      - sunbeam_env_id | length > 0
-      - sunbeam_savepoint_tag | length > 0
-      - sunbeam_savepoint_name | length > 0
-      - sunbeam_savepoint_prefix is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$')
+      - pve_sunbeam_env_id | length > 0
+      - pve_sunbeam_savepoint_tag | length > 0
+      - pve_sunbeam_savepoint_name | length > 0
+      - pve_sunbeam_savepoint_prefix is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$')
     fail_msg: >-
-      sunbeam_env_id / sunbeam_savepoint_tag must be set, and
-      sunbeam_savepoint_name must name the savepoint this teardown keeps
-      (e.g. -e sunbeam_savepoint_name=fix1); the current value is
-      '{{ sunbeam_savepoint_name | default("") }}'.
+      pve_sunbeam_env_id / pve_sunbeam_savepoint_tag must be set, and
+      pve_sunbeam_savepoint_name must name the savepoint this teardown keeps
+      (e.g. -e pve_sunbeam_savepoint_name=fix1); the current value is
+      '{{ pve_sunbeam_savepoint_name | default("") }}'.
 
 - name: List the savepoint base volumes of this environment
   ansible.builtin.shell: |
     set -uo pipefail
-    lvs --noheadings -o lv_name "{{ sunbeam_pve_storage }}" 2>/dev/null \
+    lvs --noheadings -o lv_name "{{ pve_sunbeam_storage }}" 2>/dev/null \
       | awk '{print $1}' \
-      | grep -E '^sp-{{ sunbeam_savepoint_tag }}-{{ sunbeam_env_id }}-' \
+      | grep -E '^sp-{{ pve_sunbeam_savepoint_tag }}-{{ pve_sunbeam_env_id }}-' \
       | sort
   args:
     executable: /bin/bash
-  register: sunbeam_teardown_sp_before
+  register: pve_sunbeam_teardown_sp_before
   changed_when: false
   failed_when: false
 
 - name: Record the archive of this environment
   ansible.builtin.set_fact:
-    sunbeam_teardown_sp_list: "{{ sunbeam_teardown_sp_before.stdout_lines | map('trim') | reject('equalto', '') | list }}"
+    pve_sunbeam_teardown_sp_list: "{{ pve_sunbeam_teardown_sp_before.stdout_lines | map('trim') | reject('equalto', '') | list }}"
 
 - name: Require a non-empty archive
   ansible.builtin.assert:
     that:
-      - sunbeam_teardown_sp_list | length > 0
+      - pve_sunbeam_teardown_sp_list | length > 0
     fail_msg: >-
       No savepoint base volume matching
-      'sp-{{ sunbeam_savepoint_tag }}-{{ sunbeam_env_id }}-' exists in
-      {{ sunbeam_pve_storage }}. A teardown without an archive would leave
+      'sp-{{ pve_sunbeam_savepoint_tag }}-{{ pve_sunbeam_env_id }}-' exists in
+      {{ pve_sunbeam_storage }}. A teardown without an archive would leave
       nothing to restore from.
 
 - name: Require the named savepoint to be complete
   ansible.builtin.shell: |
     set -uo pipefail
     missing=""
-    {% for n in sunbeam_nodes %}
-    for lv in "{{ sunbeam_savepoint_prefix }}-{{ n.hostname }}" "{{ sunbeam_savepoint_prefix }}-osd-{{ n.vmid }}"; do
-      lvs --noheadings -o lv_name "{{ sunbeam_pve_storage }}/$lv" >/dev/null 2>&1 \
+    {% for n in pve_sunbeam_nodes %}
+    for lv in "{{ pve_sunbeam_savepoint_prefix }}-{{ n.hostname }}" "{{ pve_sunbeam_savepoint_prefix }}-osd-{{ n.vmid }}"; do
+      lvs --noheadings -o lv_name "{{ pve_sunbeam_storage }}/$lv" >/dev/null 2>&1 \
         || missing="$missing $lv"
     done
     {% endfor %}
     [ -z "$missing" ] || { echo "SAVEPOINT-MISSING:$missing" >&2; exit 1; }
-    echo "SAVEPOINT-BASES-OK {{ sunbeam_savepoint_prefix }}"
+    echo "SAVEPOINT-BASES-OK {{ pve_sunbeam_savepoint_prefix }}"
   args:
     executable: /bin/bash
   changed_when: false
-  register: sunbeam_teardown_bases
+  register: pve_sunbeam_teardown_bases
   failed_when: false
 
 - name: Refuse to destroy anything when the named savepoint is incomplete
   ansible.builtin.assert:
     that:
-      - sunbeam_teardown_bases.rc == 0
+      - pve_sunbeam_teardown_bases.rc == 0
     fail_msg: >-
-      The savepoint {{ sunbeam_savepoint_prefix }} is incomplete:
-      {{ sunbeam_teardown_bases.stdout }}. A teardown would destroy the running
+      The savepoint {{ pve_sunbeam_savepoint_prefix }} is incomplete:
+      {{ pve_sunbeam_teardown_bases.stdout }}. A teardown would destroy the running
       environment without leaving a complete archive behind.
 
 - name: Report what the teardown is going to keep
   ansible.builtin.debug:
     msg:
-      - "environment: {{ sunbeam_env_id }} ({{ sunbeam_savepoint_tag }})"
-      - "savepoint to restore from: {{ sunbeam_savepoint_prefix }}"
-      - "archive kept ({{ sunbeam_teardown_sp_list | length }} volumes): {{ sunbeam_teardown_sp_list }}"
+      - "environment: {{ pve_sunbeam_env_id }} ({{ pve_sunbeam_savepoint_tag }})"
+      - "savepoint to restore from: {{ pve_sunbeam_savepoint_prefix }}"
+      - "archive kept ({{ pve_sunbeam_teardown_sp_list | length }} volumes): {{ pve_sunbeam_teardown_sp_list }}"
 
 - name: Define the teardown order (workers first, primary last)
   ansible.builtin.set_fact:
-    sunbeam_teardown_order: "{{ sunbeam_worker_nodes + [sunbeam_primary_node] }}"
+    pve_sunbeam_teardown_order: "{{ pve_sunbeam_worker_nodes + [pve_sunbeam_primary_node] }}"
 
 - name: Stop the guests
   ansible.builtin.shell: |
     set -uo pipefail
-    pct_bin={{ sunbeam_pct_bin | quote }}
+    pct_bin={{ pve_sunbeam_pct_bin | quote }}
     fail=0
-    for vmid in {{ sunbeam_teardown_order | map(attribute='vmid') | join(' ') }}; do
+    for vmid in {{ pve_sunbeam_teardown_order | map(attribute='vmid') | join(' ') }}; do
       (
         if "$pct_bin" status "$vmid" 2>/dev/null | grep -q 'status: running'; then
           "$pct_bin" shutdown "$vmid" --timeout 300 || true
@@ -119,13 +119,13 @@
   ansible.builtin.shell: |
     set -uo pipefail
     vmid={{ item.vmid }}
-    pct_bin={{ sunbeam_pct_bin | quote }}
-    storage={{ sunbeam_pve_storage | quote }}
+    pct_bin={{ pve_sunbeam_pct_bin | quote }}
+    storage={{ pve_sunbeam_storage | quote }}
     conf="/etc/pve/lxc/${vmid}.conf"
     rootdir="/var/lib/lxc/${vmid}"
 
     origin=$("$pct_bin" config "$vmid" 2>/dev/null \
-      | sed -n 's/^rootfs: *{{ sunbeam_pve_storage }}:\([^,]*\).*/\1/p')
+      | sed -n 's/^rootfs: *{{ pve_sunbeam_storage }}:\([^,]*\).*/\1/p')
     echo "TEARDOWN-ROOTFS $vmid ${origin:-unknown}"
 
     if ! "$pct_bin" destroy "$vmid"; then
@@ -146,22 +146,22 @@
     echo "TEARDOWN-DESTROYED $vmid"
   args:
     executable: /bin/bash
-  loop: "{{ sunbeam_teardown_order }}"
+  loop: "{{ pve_sunbeam_teardown_order }}"
   loop_control:
     label: "{{ item.hostname }} ({{ item.vmid }})"
-  register: sunbeam_teardown_destroy
-  changed_when: "'TEARDOWN-DESTROYED' in sunbeam_teardown_destroy.stdout"
+  register: pve_sunbeam_teardown_destroy
+  changed_when: "'TEARDOWN-DESTROYED' in pve_sunbeam_teardown_destroy.stdout"
 
 - name: Report the destruction
   ansible.builtin.debug:
-    msg: "{{ sunbeam_teardown_destroy.stdout_lines | default([]) }}"
+    msg: "{{ pve_sunbeam_teardown_destroy.stdout_lines | default([]) }}"
 
 - name: Verify the containers are gone
   ansible.builtin.shell: |
     set -uo pipefail
     fail=0
-    for vmid in {{ sunbeam_nodes | map(attribute='vmid') | join(' ') }}; do
-      if {{ sunbeam_pct_bin }} status "$vmid" >/dev/null 2>&1; then
+    for vmid in {{ pve_sunbeam_nodes | map(attribute='vmid') | join(' ') }}; do
+      if {{ pve_sunbeam_pct_bin }} status "$vmid" >/dev/null 2>&1; then
         echo "TEARDOWN-FAIL $vmid still exists" >&2
         fail=1
       fi
@@ -177,9 +177,9 @@
   ansible.builtin.shell: |
     set -uo pipefail
     missing=""
-    {% for n in sunbeam_nodes %}
+    {% for n in pve_sunbeam_nodes %}
     lv="{{ n.osd_pve_lv | basename }}"
-    lvs --noheadings -o lv_name "{{ sunbeam_pve_storage }}/$lv" >/dev/null 2>&1 \
+    lvs --noheadings -o lv_name "{{ pve_sunbeam_storage }}/$lv" >/dev/null 2>&1 \
       || missing="$missing $lv"
     {% endfor %}
     [ -z "$missing" ] || { echo "TEARDOWN-FAIL missing OSD volumes:$missing" >&2; exit 1; }
@@ -191,30 +191,30 @@
 - name: List the savepoint base volumes of this environment again
   ansible.builtin.shell: |
     set -uo pipefail
-    lvs --noheadings -o lv_name "{{ sunbeam_pve_storage }}" 2>/dev/null \
+    lvs --noheadings -o lv_name "{{ pve_sunbeam_storage }}" 2>/dev/null \
       | awk '{print $1}' \
-      | grep -E '^sp-{{ sunbeam_savepoint_tag }}-{{ sunbeam_env_id }}-' \
+      | grep -E '^sp-{{ pve_sunbeam_savepoint_tag }}-{{ pve_sunbeam_env_id }}-' \
       | sort
   args:
     executable: /bin/bash
-  register: sunbeam_teardown_sp_after
+  register: pve_sunbeam_teardown_sp_after
   changed_when: false
 
 - name: Assert that no savepoint base volume disappeared
   ansible.builtin.assert:
     that:
-      - sunbeam_teardown_sp_after.stdout_lines | map('trim') | reject('equalto', '') | list
-        == sunbeam_teardown_sp_list
+      - pve_sunbeam_teardown_sp_after.stdout_lines | map('trim') | reject('equalto', '') | list
+        == pve_sunbeam_teardown_sp_list
     fail_msg: >-
       The archive changed during the teardown. Before:
-      {{ sunbeam_teardown_sp_list }} -- after:
-      {{ sunbeam_teardown_sp_after.stdout_lines | map('trim') | reject('equalto', '') | list }}.
+      {{ pve_sunbeam_teardown_sp_list }} -- after:
+      {{ pve_sunbeam_teardown_sp_after.stdout_lines | map('trim') | reject('equalto', '') | list }}.
       A savepoint base volume must never be removed by a teardown.
 
 - name: Report the state that survives the teardown
   ansible.builtin.debug:
     msg:
-      - "containers destroyed: {{ sunbeam_nodes | map(attribute='vmid') | list }}"
-      - "savepoint base volumes kept: {{ sunbeam_teardown_sp_list | length }}"
-      - "host-side SMBIOS registry: {{ pve_ct_system_uuid_registry_file | default('/etc/pve/priv/ansible-pve/ct-system-uuid.conf') }}"
+      - "containers destroyed: {{ pve_sunbeam_nodes | map(attribute='vmid') | list }}"
+      - "savepoint base volumes kept: {{ pve_sunbeam_teardown_sp_list | length }}"
+      - "host-side SMBIOS registry: {{ pve_common_ct_uuid_registry_file | default('/etc/pve/priv/ansible-pve/ct-system-uuid.conf') }}"
       - "next: playbooks/sunbeam/stages/02-pve-prepare.yml to rebuild the containers, then playbooks/sunbeam/ops/02-savepoint-restore.yml"

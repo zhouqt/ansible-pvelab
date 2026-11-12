@@ -4,6 +4,6 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -qq
 
-apt-get install -y -qq "snapd={{ sunbeam_snapd_deb_version }}*"
+apt-get install -y -qq "snapd={{ pve_sunbeam_snapd_deb_version }}*"
 
 echo "SNAPD_INSTALLED=$(dpkg-query -W -f '${Version}' snapd)"

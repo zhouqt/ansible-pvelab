@@ -3,19 +3,19 @@
 - name: Refuse to remove the legacy juju client while any environment still points at it
   ansible.builtin.assert:
     that:
-      - pve_yoga_juju_client_user != 'jujuyoga'
-      - "'jujuyoga' not in pve_yoga_juju_data"
-      - "'jujuyoga' not in pve_yoga_juju_stage_dir"
+      - pve_openstack_juju_client_user != 'jujuyoga'
+      - "'jujuyoga' not in pve_openstack_juju_data"
+      - "'jujuyoga' not in pve_openstack_juju_stage_dir"
     fail_msg: >-
-      the current config still points at the legacy user (pve_yoga_juju_client_user={{ pve_yoga_juju_client_user }},
-      pve_yoga_juju_data={{ pve_yoga_juju_data }},stage={{ pve_yoga_juju_stage_dir }}).
-      switch the client to the ubuntu home first (see pve_yoga_juju_client_* in inventory/group_vars/all/openstack.yml),
+      the current config still points at the legacy user (pve_openstack_juju_client_user={{ pve_openstack_juju_client_user }},
+      pve_openstack_juju_data={{ pve_openstack_juju_data }},stage={{ pve_openstack_juju_stage_dir }}).
+      switch the client to the ubuntu home first (see pve_openstack_juju_client_* in inventory/group_vars/all/openstack.yml),
       then clean up the leftover user.
 
 - name: Remove the legacy jujuyoga user and its juju client store inside the client CT
   ansible.builtin.shell: |
     set -u
-    pct exec {{ pve_yoga_juju_client_vmid }} -- bash -c '
+    pct exec {{ pve_openstack_juju_client_vmid }} -- bash -c '
       set -u
       changed=0
       if id jujuyoga >/dev/null 2>&1; then
@@ -36,5 +36,5 @@
     '
   args:
     executable: /bin/bash
-  register: pve_yoga_teardown_legacy_client
-  changed_when: "'changed=1' in pve_yoga_teardown_legacy_client.stdout"
+  register: pve_openstack_teardown_legacy_client
+  changed_when: "'changed=1' in pve_openstack_teardown_legacy_client.stdout"

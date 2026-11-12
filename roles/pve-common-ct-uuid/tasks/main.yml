@@ -2,37 +2,37 @@
 
 - name: Install helpers and the boot-time self-heal unit
   ansible.builtin.include_tasks: _helpers.yml
-  when: not (pve_ct_system_uuid_verify_only | bool)
+  when: not (pve_common_ct_uuid_verify_only | bool)
 
 - name: Resolve the UUID table
   ansible.builtin.include_tasks: _resolve.yml
 
 - name: Print the effective UUID table
   ansible.builtin.debug:
-    msg: "{{ ['pve_ct_system_uuid_registry:'] + pve_ct_system_uuid_print_lines }}"
-  when: pve_ct_system_uuid_print_registry | bool
+    msg: "{{ ['pve_common_ct_uuid_registry:'] + pve_common_ct_uuid_print_lines }}"
+  when: pve_common_ct_uuid_print_registry | bool
 
 - name: Report check mode
   ansible.builtin.debug:
     msg: >-
-      check mode: resolved {{ pve_ct_system_uuid_targets | length }} UUID(s) but wrote
+      check mode: resolved {{ pve_common_ct_uuid_targets | length }} UUID(s) but wrote
       nothing. Re-run without --check to generate the DMI copies and edit the
       container configurations.
   when:
     - ansible_check_mode
-    - not (pve_ct_system_uuid_print_registry | bool)
+    - not (pve_common_ct_uuid_print_registry | bool)
 
 - name: Configure every container
   ansible.builtin.include_tasks: _container.yml
-  loop: "{{ pve_ct_system_uuid_targets }}"
+  loop: "{{ pve_common_ct_uuid_targets }}"
   loop_control:
     label: "vmid {{ item.vmid }} {{ item.system_uuid }}"
   when:
     - not ansible_check_mode
-    - not (pve_ct_system_uuid_print_registry | bool)
+    - not (pve_common_ct_uuid_print_registry | bool)
 
 - name: Verify the result
   ansible.builtin.include_tasks: _verify.yml
   when:
     - not ansible_check_mode
-    - not (pve_ct_system_uuid_print_registry | bool)
+    - not (pve_common_ct_uuid_print_registry | bool)

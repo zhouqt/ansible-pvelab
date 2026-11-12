@@ -1,14 +1,14 @@
 #!/bin/bash
 set -uo pipefail
 
-user={{ sunbeam_node_user }}
-rc_path={{ sunbeam_admin_openrc_path }}
-log={{ sunbeam_node_log_dir }}/flavors.log
-mkdir -p {{ sunbeam_node_log_dir }}
+user={{ pve_sunbeam_node_user }}
+rc_path={{ pve_sunbeam_admin_openrc_path }}
+log={{ pve_sunbeam_node_log_dir }}/flavors.log
+mkdir -p {{ pve_sunbeam_node_log_dir }}
 
-img_name={{ sunbeam_cirros_image_name }}
-img_url={{ sunbeam_cirros_image_url }}
-img_file={{ sunbeam_node_home }}/{{ sunbeam_cirros_image_name }}.img
+img_name={{ pve_sunbeam_cirros_image_name }}
+img_url={{ pve_sunbeam_cirros_image_url }}
+img_file={{ pve_sunbeam_node_home }}/{{ pve_sunbeam_cirros_image_name }}.img
 
 run() { su - "$user" -c ". $rc_path && $*" ; }
 
@@ -35,7 +35,7 @@ run() { su - "$user" -c ". $rc_path && $*" ; }
     echo "image $img_name -> $img_status"
 
     echo "== remove stock flavors that are never used =="
-{% for f in sunbeam_flavors_remove %}
+{% for f in pve_sunbeam_flavors_remove %}
     if run openstack flavor show {{ f }} >/dev/null 2>&1; then
         run openstack flavor delete {{ f }} && { echo "removed {{ f }}"; changes=$((changes + 1)); }
     else
@@ -62,7 +62,7 @@ run() { su - "$user" -c ". $rc_path && $*" ; }
         fi
         [ -n "$extras" ] && run openstack flavor set --property "$extras" "$name"
     done <<'FLAVORS'
-{% for f in sunbeam_flavors %}{{ f.name }}|{{ f.ram }}|{{ f.disk }}|{{ f.vcpus }}|{{ f.extras | default('') }}
+{% for f in pve_sunbeam_flavors %}{{ f.name }}|{{ f.ram }}|{{ f.disk }}|{{ f.vcpus }}|{{ f.extras | default('') }}
 {% endfor %}FLAVORS
 
     echo "== live flavor list =="

@@ -1,9 +1,9 @@
 #!/bin/bash
 set -u
 
-user={{ sunbeam_node_user }}
-openstack_model={{ sunbeam_juju_openstack_model }}
-machines_model={{ sunbeam_juju_machines_model }}
+user={{ pve_sunbeam_node_user }}
+openstack_model={{ pve_sunbeam_juju_openstack_model }}
+machines_model={{ pve_sunbeam_juju_machines_model }}
 settled=yes
 
 check_model() {
@@ -36,7 +36,7 @@ print(",".join(sorted(offenders)))
 }
 
 check_model "$openstack_model" ""
-check_model "$machines_model" "{{ sunbeam_known_blocked_applications | join(',') }}"
+check_model "$machines_model" "{{ pve_sunbeam_known_blocked_applications | join(',') }}"
 
 echo "SETTLED=$settled"
 exit 0

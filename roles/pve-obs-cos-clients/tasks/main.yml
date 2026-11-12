@@ -2,55 +2,55 @@
 
 - name: Define the Juju command prefix, model and charm base for this environment
   ansible.builtin.set_fact:
-    pve_yoga_obs_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
-    pve_yoga_obs_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
-    pve_yoga_obs_base: >-
-      ubuntu@{{ {'focal': '20.04', 'jammy': '22.04', 'noble': '24.04'}[pve_yoga_openstack_series] }}
-    pve_yoga_obs_hub_offers:
-      - "{{ pve_obs_hub_cos_controller }}:admin/{{ pve_obs_hub_cos_model }}.prometheus"
-      - "{{ pve_obs_hub_cos_controller }}:admin/{{ pve_obs_hub_cos_model }}.loki"
-      - "{{ pve_obs_hub_cos_controller }}:admin/{{ pve_obs_hub_cos_model }}.grafana"
+    pve_openstack_obs_juju_cmd: "JUJU_DATA={{ pve_openstack_juju_data }} {{ pve_openstack_juju_bin }}"
+    pve_openstack_obs_model: "{{ pve_openstack_controller_name }}:{{ pve_openstack_model_name }}"
+    pve_openstack_obs_base: >-
+      ubuntu@{{ {'focal': '20.04', 'jammy': '22.04', 'noble': '24.04'}[pve_openstack_series] }}
+    pve_openstack_obs_hub_offers:
+      - "{{ pve_obs_cos_hub_cos_controller }}:admin/{{ pve_obs_cos_hub_cos_model }}.prometheus"
+      - "{{ pve_obs_cos_hub_cos_controller }}:admin/{{ pve_obs_cos_hub_cos_model }}.loki"
+      - "{{ pve_obs_cos_hub_cos_controller }}:admin/{{ pve_obs_cos_hub_cos_model }}.grafana"
 
 - name: Require a jammy or noble environment
   ansible.builtin.assert:
     that:
-      - pve_yoga_openstack_series in pve_yoga_obs_series
+      - pve_openstack_series in pve_openstack_obs_series
     fail_msg: >-
-      this role only serves jammy / noble environments (currently pve_yoga_openstack_series={{
-      pve_yoga_openstack_series }}). For focal use --tags openstack-pve-lma-clients (the LMA route).
+      this role only serves jammy / noble environments (currently pve_openstack_series={{
+      pve_openstack_series }}). For focal use --tags openstack-pve-lma-clients (the LMA route).
 
 - name: Read the model uuid of this environment from the shared Juju store
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - cat
-      - "{{ pve_yoga_juju_data }}/models.yaml"
-  register: pve_yoga_obs_models_yaml
+      - "{{ pve_openstack_juju_data }}/models.yaml"
+  register: pve_openstack_obs_models_yaml
   changed_when: false
   failed_when: false
 
 - name: Pick out this environment's model uuid
   ansible.builtin.set_fact:
-    pve_yoga_obs_model_uuid: >-
-      {{ ((((pve_yoga_obs_models_yaml.stdout | default('', true)) | from_yaml)
+    pve_openstack_obs_model_uuid: >-
+      {{ ((((pve_openstack_obs_models_yaml.stdout | default('', true)) | from_yaml)
            | default({}, true))
           .get('controllers', {})
-          .get(pve_yoga_controller_name, {})
+          .get(pve_openstack_controller_name, {})
           .get('models', {})
-          .get('admin/' ~ pve_yoga_model_name, {})
+          .get('admin/' ~ pve_openstack_model_name, {})
           .get('uuid', '')) | default('', true) }}
 
 - name: Plan the COS wiring against the applications actually deployed
   ansible.builtin.shell: |
     set -uo pipefail
     status=$(mktemp)
-    {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
-      su - {{ pve_obs_hub_juju_client_user }} -c \
-      "{{ pve_yoga_obs_juju_cmd }} status -m {{ pve_yoga_obs_model }} --format json" > "$status"
-    python3 - "$status" "{{ lma_nrpe_targets | join(',') }}" "{{ pve_yoga_obs_place_on }}" <<'PY'
+    {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_juju_client_vmid }} -- \
+      su - {{ pve_obs_cos_hub_juju_client_user }} -c \
+      "{{ pve_openstack_obs_juju_cmd }} status -m {{ pve_openstack_obs_model }} --format json" > "$status"
+    python3 - "$status" "{{ lma_nrpe_targets | join(',') }}" "{{ pve_openstack_obs_place_on }}" <<'PY'
     import json, sys
     doc = json.load(open(sys.argv[1]))
     targets = [t for t in sys.argv[2].split(',') if t]
@@ -99,267 +99,267 @@
     exit "$rc"
   args:
     executable: /bin/bash
-  register: pve_yoga_obs_plan_raw
+  register: pve_openstack_obs_plan_raw
   changed_when: false
 
 - name: Keep the parsed plan
   ansible.builtin.set_fact:
-    pve_yoga_obs_plan: "{{ pve_yoga_obs_plan_raw.stdout | from_json }}"
+    pve_openstack_obs_plan: "{{ pve_openstack_obs_plan_raw.stdout | from_json }}"
 
 - name: Report the plan
   ansible.builtin.debug:
     msg:
-      - "model            : {{ pve_yoga_obs_model }}({{ pve_yoga_obs_plan.app_count }} app,uuid={{ pve_yoga_obs_model_uuid | default('?') }})"
-      - "nrpe attach targets : {{ pve_yoga_obs_plan.general_info | join(', ') }}"
-      - "missing targets  : {{ pve_yoga_obs_plan.missing_targets | join(', ') | default('-', true) }}"
-      - "principal placement: {{ pve_yoga_obs_plan.place_on }} -> machine {{ pve_yoga_obs_plan.place_machine }}"
-      - "consumed offers  : {{ pve_yoga_obs_plan.consumed | join(', ') | default('-', true) }}"
+      - "model            : {{ pve_openstack_obs_model }}({{ pve_openstack_obs_plan.app_count }} app,uuid={{ pve_openstack_obs_model_uuid | default('?') }})"
+      - "nrpe attach targets : {{ pve_openstack_obs_plan.general_info | join(', ') }}"
+      - "missing targets  : {{ pve_openstack_obs_plan.missing_targets | join(', ') | default('-', true) }}"
+      - "principal placement: {{ pve_openstack_obs_plan.place_on }} -> machine {{ pve_openstack_obs_plan.place_machine }}"
+      - "consumed offers  : {{ pve_openstack_obs_plan.consumed | join(', ') | default('-', true) }}"
 
 - name: Require a usable environment
   ansible.builtin.assert:
     that:
-      - pve_yoga_obs_plan.general_info | length > 0
-      - pve_yoga_obs_plan.place_machine is not none
-      - (not (pve_yoga_obs_enable_openstack_exporter | bool))
-        or (pve_yoga_obs_plan.keystone_identity_admin | bool)
+      - pve_openstack_obs_plan.general_info | length > 0
+      - pve_openstack_obs_plan.place_machine is not none
+      - (not (pve_openstack_obs_enable_openstack_exporter | bool))
+        or (pve_openstack_obs_plan.keystone_identity_admin | bool)
     fail_msg: >-
-      the model {{ pve_yoga_obs_model }} has no principal to attach nrpe to, or keystone does not provide the
+      the model {{ pve_openstack_obs_model }} has no principal to attach nrpe to, or keystone does not provide the
       the `identity-admin` endpoint (openstack-exporter needs it), or no machine to place it on --
       this env may not be fully deployed. Run `--tags openstack-pve-control-plane` first, then come back.
 
 - name: Deploy nrpe in the environment model
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
       - >-
-        {{ pve_yoga_obs_juju_cmd }} deploy nrpe -m {{ pve_yoga_obs_model }}
-        --base {{ pve_yoga_obs_base }} --channel {{ pve_yoga_obs_nrpe_channel }}
+        {{ pve_openstack_obs_juju_cmd }} deploy nrpe -m {{ pve_openstack_obs_model }}
+        --base {{ pve_openstack_obs_base }} --channel {{ pve_openstack_obs_nrpe_channel }}
   when:
-    - pve_yoga_obs_enable_nrpe | bool
-    - not pve_yoga_obs_plan.has_nrpe
-  register: pve_yoga_obs_deploy_nrpe
-  changed_when: pve_yoga_obs_deploy_nrpe.rc == 0
+    - pve_openstack_obs_enable_nrpe | bool
+    - not pve_openstack_obs_plan.has_nrpe
+  register: pve_openstack_obs_deploy_nrpe
+  changed_when: pve_openstack_obs_deploy_nrpe.rc == 0
 
 - name: Relate nrpe to every principal application (placement + system checks)
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
       - >-
-        {{ pve_yoga_obs_juju_cmd }} relate -m {{ pve_yoga_obs_model }}
+        {{ pve_openstack_obs_juju_cmd }} relate -m {{ pve_openstack_obs_model }}
         nrpe:general-info {{ item }}
-  loop: "{{ pve_yoga_obs_plan.general_info }}"
+  loop: "{{ pve_openstack_obs_plan.general_info }}"
   loop_control:
     label: "{{ item }}"
-  when: pve_yoga_obs_enable_nrpe | bool
-  register: pve_yoga_obs_relate_gi
+  when: pve_openstack_obs_enable_nrpe | bool
+  register: pve_openstack_obs_relate_gi
   failed_when: >-
-    pve_yoga_obs_relate_gi.rc != 0
-    and 'already exists' not in ((pve_yoga_obs_relate_gi.stderr | default(''))
-                                 ~ (pve_yoga_obs_relate_gi.stdout | default('')))
-  changed_when: pve_yoga_obs_relate_gi.rc == 0
+    pve_openstack_obs_relate_gi.rc != 0
+    and 'already exists' not in ((pve_openstack_obs_relate_gi.stderr | default(''))
+                                 ~ (pve_openstack_obs_relate_gi.stdout | default('')))
+  changed_when: pve_openstack_obs_relate_gi.rc == 0
 
 - name: Deploy cos-proxy on the keystone machine
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
       - >-
-        {{ pve_yoga_obs_juju_cmd }} deploy cos-proxy -m {{ pve_yoga_obs_model }}
-        --base {{ pve_yoga_obs_base }} --channel {{ pve_yoga_obs_cos_proxy_channel }}
-        --to {{ pve_yoga_obs_plan.place_machine }}
+        {{ pve_openstack_obs_juju_cmd }} deploy cos-proxy -m {{ pve_openstack_obs_model }}
+        --base {{ pve_openstack_obs_base }} --channel {{ pve_openstack_obs_cos_proxy_channel }}
+        --to {{ pve_openstack_obs_plan.place_machine }}
   when:
-    - pve_yoga_obs_enable_nrpe | bool
-    - not pve_yoga_obs_plan.has_cos_proxy
-  register: pve_yoga_obs_deploy_cos_proxy
-  changed_when: pve_yoga_obs_deploy_cos_proxy.rc == 0
+    - pve_openstack_obs_enable_nrpe | bool
+    - not pve_openstack_obs_plan.has_cos_proxy
+  register: pve_openstack_obs_deploy_cos_proxy
+  changed_when: pve_openstack_obs_deploy_cos_proxy.rc == 0
 
 - name: Relate nrpe to cos-proxy (placement + monitors)
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
-      - "{{ pve_yoga_obs_juju_cmd }} relate -m {{ pve_yoga_obs_model }} {{ item }}"
+      - "{{ pve_openstack_obs_juju_cmd }} relate -m {{ pve_openstack_obs_model }} {{ item }}"
   loop:
     - "nrpe:general-info cos-proxy:juju-info"
     - "nrpe:monitors cos-proxy:monitors"
   loop_control:
     label: "{{ item }}"
-  when: pve_yoga_obs_enable_nrpe | bool
-  register: pve_yoga_obs_relate_cos_proxy
+  when: pve_openstack_obs_enable_nrpe | bool
+  register: pve_openstack_obs_relate_cos_proxy
   failed_when: >-
-    pve_yoga_obs_relate_cos_proxy.rc != 0
-    and 'already exists' not in ((pve_yoga_obs_relate_cos_proxy.stderr | default(''))
-                                 ~ (pve_yoga_obs_relate_cos_proxy.stdout | default('')))
-  changed_when: pve_yoga_obs_relate_cos_proxy.rc == 0
+    pve_openstack_obs_relate_cos_proxy.rc != 0
+    and 'already exists' not in ((pve_openstack_obs_relate_cos_proxy.stderr | default(''))
+                                 ~ (pve_openstack_obs_relate_cos_proxy.stdout | default('')))
+  changed_when: pve_openstack_obs_relate_cos_proxy.rc == 0
 
 - name: Deploy openstack-exporter on the keystone machine
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
       - >-
-        {{ pve_yoga_obs_juju_cmd }} deploy openstack-exporter -m {{ pve_yoga_obs_model }}
-        --base {{ pve_yoga_obs_base }} --channel {{ pve_yoga_obs_openstack_exporter_channel }}
-        --to {{ pve_yoga_obs_plan.place_machine }}
+        {{ pve_openstack_obs_juju_cmd }} deploy openstack-exporter -m {{ pve_openstack_obs_model }}
+        --base {{ pve_openstack_obs_base }} --channel {{ pve_openstack_obs_openstack_exporter_channel }}
+        --to {{ pve_openstack_obs_plan.place_machine }}
   when:
-    - pve_yoga_obs_enable_openstack_exporter | bool
-    - not pve_yoga_obs_plan.has_openstack_exporter
-  register: pve_yoga_obs_deploy_exporter
-  changed_when: pve_yoga_obs_deploy_exporter.rc == 0
+    - pve_openstack_obs_enable_openstack_exporter | bool
+    - not pve_openstack_obs_plan.has_openstack_exporter
+  register: pve_openstack_obs_deploy_exporter
+  changed_when: pve_openstack_obs_deploy_exporter.rc == 0
 
 - name: Relate openstack-exporter to keystone's identity-admin
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
       - >-
-        {{ pve_yoga_obs_juju_cmd }} relate -m {{ pve_yoga_obs_model }}
+        {{ pve_openstack_obs_juju_cmd }} relate -m {{ pve_openstack_obs_model }}
         openstack-exporter:credentials keystone:identity-admin
-  when: pve_yoga_obs_enable_openstack_exporter | bool
-  register: pve_yoga_obs_relate_exporter
+  when: pve_openstack_obs_enable_openstack_exporter | bool
+  register: pve_openstack_obs_relate_exporter
   failed_when: >-
-    pve_yoga_obs_relate_exporter.rc != 0
-    and 'already exists' not in ((pve_yoga_obs_relate_exporter.stderr | default(''))
-                                 ~ (pve_yoga_obs_relate_exporter.stdout | default('')))
-  changed_when: pve_yoga_obs_relate_exporter.rc == 0
+    pve_openstack_obs_relate_exporter.rc != 0
+    and 'already exists' not in ((pve_openstack_obs_relate_exporter.stderr | default(''))
+                                 ~ (pve_openstack_obs_relate_exporter.stdout | default('')))
+  changed_when: pve_openstack_obs_relate_exporter.rc == 0
 
 - name: Deploy grafana-agent in the environment model
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
       - >-
-        {{ pve_yoga_obs_juju_cmd }} deploy grafana-agent -m {{ pve_yoga_obs_model }}
-        --base {{ pve_yoga_obs_base }} --channel {{ pve_yoga_obs_grafana_agent_channel }}
-  when: not pve_yoga_obs_plan.has_grafana_agent
-  register: pve_yoga_obs_deploy_agent
-  changed_when: pve_yoga_obs_deploy_agent.rc == 0
+        {{ pve_openstack_obs_juju_cmd }} deploy grafana-agent -m {{ pve_openstack_obs_model }}
+        --base {{ pve_openstack_obs_base }} --channel {{ pve_openstack_obs_grafana_agent_channel }}
+  when: not pve_openstack_obs_plan.has_grafana_agent
+  register: pve_openstack_obs_deploy_agent
+  changed_when: pve_openstack_obs_deploy_agent.rc == 0
 
 - name: Relate grafana-agent to the local COS sources
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
-      - "{{ pve_yoga_obs_juju_cmd }} relate -m {{ pve_yoga_obs_model }} {{ item }}"
+      - "{{ pve_openstack_obs_juju_cmd }} relate -m {{ pve_openstack_obs_model }} {{ item }}"
   loop: >-
-    {{ (['cos-proxy:cos-agent grafana-agent:cos-agent'] if (pve_yoga_obs_enable_nrpe | bool) else [])
-       + (['openstack-exporter:cos-agent grafana-agent:cos-agent'] if (pve_yoga_obs_enable_openstack_exporter | bool) else []) }}
+    {{ (['cos-proxy:cos-agent grafana-agent:cos-agent'] if (pve_openstack_obs_enable_nrpe | bool) else [])
+       + (['openstack-exporter:cos-agent grafana-agent:cos-agent'] if (pve_openstack_obs_enable_openstack_exporter | bool) else []) }}
   loop_control:
     label: "{{ item }}"
-  register: pve_yoga_obs_relate_local
+  register: pve_openstack_obs_relate_local
   failed_when: >-
-    pve_yoga_obs_relate_local.rc != 0
-    and 'already exists' not in ((pve_yoga_obs_relate_local.stderr | default(''))
-                                 ~ (pve_yoga_obs_relate_local.stdout | default('')))
-  changed_when: pve_yoga_obs_relate_local.rc == 0
+    pve_openstack_obs_relate_local.rc != 0
+    and 'already exists' not in ((pve_openstack_obs_relate_local.stderr | default(''))
+                                 ~ (pve_openstack_obs_relate_local.stdout | default('')))
+  changed_when: pve_openstack_obs_relate_local.rc == 0
 
 - name: Consume the COS offers published by the hub
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
-      - "{{ pve_yoga_obs_juju_cmd }} consume {{ item }} -m {{ pve_yoga_obs_model }}"
-  loop: "{{ pve_yoga_obs_hub_offers }}"
+      - "{{ pve_openstack_obs_juju_cmd }} consume {{ item }} -m {{ pve_openstack_obs_model }}"
+  loop: "{{ pve_openstack_obs_hub_offers }}"
   loop_control:
     label: "{{ item }}"
-  when: (item.split('.')[-1] | default('')) not in pve_yoga_obs_plan.consumed
-  register: pve_yoga_obs_consume
-  changed_when: pve_yoga_obs_consume.rc == 0
+  when: (item.split('.')[-1] | default('')) not in pve_openstack_obs_plan.consumed
+  register: pve_openstack_obs_consume
+  changed_when: pve_openstack_obs_consume.rc == 0
 
 - name: Relate grafana-agent to the hub's COS offers
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
-      - "{{ pve_yoga_obs_juju_cmd }} relate -m {{ pve_yoga_obs_model }} {{ item }}"
+      - "{{ pve_openstack_obs_juju_cmd }} relate -m {{ pve_openstack_obs_model }} {{ item }}"
   loop:
     - "grafana-agent:send-remote-write prometheus"
     - "grafana-agent:logging-consumer loki"
     - "grafana-agent:grafana-dashboards-provider grafana"
   loop_control:
     label: "{{ item }}"
-  register: pve_yoga_obs_relate_hub
+  register: pve_openstack_obs_relate_hub
   failed_when: >-
-    pve_yoga_obs_relate_hub.rc != 0
-    and 'already exists' not in ((pve_yoga_obs_relate_hub.stderr | default(''))
-                                 ~ (pve_yoga_obs_relate_hub.stdout | default('')))
-  changed_when: pve_yoga_obs_relate_hub.rc == 0
+    pve_openstack_obs_relate_hub.rc != 0
+    and 'already exists' not in ((pve_openstack_obs_relate_hub.stderr | default(''))
+                                 ~ (pve_openstack_obs_relate_hub.stdout | default('')))
+  changed_when: pve_openstack_obs_relate_hub.rc == 0
 
 - name: Wait for the COS clients to become active
   ansible.builtin.include_role:
     name: pve-obs-cos-hub
     tasks_from: wait-model-active
   vars:
-    obs_wait_model_ref: "{{ pve_yoga_obs_model }}"
+    obs_wait_model_ref: "{{ pve_openstack_obs_model }}"
     obs_wait_apps: >-
-      {{ (['nrpe', 'cos-proxy'] if pve_yoga_obs_enable_nrpe | bool else [])
-         + (['openstack-exporter'] if pve_yoga_obs_enable_openstack_exporter | bool else [])
+      {{ (['nrpe', 'cos-proxy'] if pve_openstack_obs_enable_nrpe | bool else [])
+         + (['openstack-exporter'] if pve_openstack_obs_enable_openstack_exporter | bool else [])
          + ['grafana-agent', 'prometheus', 'loki', 'grafana'] }}
-    obs_wait_label: "{{ pve_yoga_env_slug }} COS clients"
-    obs_wait_juju_cmd: "{{ pve_yoga_obs_juju_cmd }}"
-  when: not (pve_yoga_obs_skip_wait | bool)
+    obs_wait_label: "{{ pve_openstack_env_slug }} COS clients"
+    obs_wait_juju_cmd: "{{ pve_openstack_obs_juju_cmd }}"
+  when: not (pve_openstack_obs_skip_wait | bool)
 
 - name: Verify the COS wiring
   ansible.builtin.include_tasks: verify.yml

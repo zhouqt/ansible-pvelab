@@ -4,11 +4,11 @@
   ansible.builtin.shell: |
     set -uo pipefail
     status=$(mktemp)
-    {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
-      su - {{ pve_obs_hub_juju_client_user }} -c \
-      "{{ pve_yoga_obs_juju_cmd }} status -m {{ pve_yoga_obs_model }} --format json" > "$status"
-    python3 - "$status" "{{ pve_yoga_obs_enable_nrpe | bool }}" \
-                     "{{ pve_yoga_obs_enable_openstack_exporter | bool }}" <<'PY'
+    {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_juju_client_vmid }} -- \
+      su - {{ pve_obs_cos_hub_juju_client_user }} -c \
+      "{{ pve_openstack_obs_juju_cmd }} status -m {{ pve_openstack_obs_model }} --format json" > "$status"
+    python3 - "$status" "{{ pve_openstack_obs_enable_nrpe | bool }}" \
+                     "{{ pve_openstack_obs_enable_openstack_exporter | bool }}" <<'PY'
     import json, sys
 
     doc = json.load(open(sys.argv[1]))
@@ -64,14 +64,14 @@
     PY
   args:
     executable: /bin/bash
-  register: pve_yoga_obs_local
+  register: pve_openstack_obs_local
   changed_when: false
 
 - name: Wait for this environment's data to reach the hub
   ansible.builtin.shell: |
     set -uo pipefail
-    base='http://{{ pve_obs_hub_vip }}'
-    uuid='{{ pve_yoga_obs_model_uuid | default('', true) }}'
+    base='http://{{ pve_obs_cos_hub_vip }}'
+    uuid='{{ pve_openstack_obs_model_uuid | default('', true) }}'
     prom="${base}/cos-lite-prometheus-0/api/v1/query"
     count() {
       curl -sf --get --data-urlencode "$1" "$prom" 2>/dev/null | python3 -c '
@@ -111,32 +111,32 @@
     fi
   args:
     executable: /bin/bash
-  register: pve_yoga_obs_data
-  until: "'READY yes' in (pve_yoga_obs_data.stdout | default(''))"
-  retries: "{{ (pve_yoga_obs_verify_budget / pve_yoga_obs_verify_interval) | int }}"
-  delay: "{{ pve_yoga_obs_verify_interval }}"
+  register: pve_openstack_obs_data
+  until: "'READY yes' in (pve_openstack_obs_data.stdout | default(''))"
+  retries: "{{ (pve_openstack_obs_verify_budget / pve_openstack_obs_verify_interval) | int }}"
+  delay: "{{ pve_openstack_obs_verify_interval }}"
   failed_when: false
   changed_when: false
 
 - name: Report the COS verification
   ansible.builtin.debug:
     msg:
-      - "env side status : {{ 'OK' if pve_yoga_obs_local.rc | default(1) == 0 else 'FAILED' }}"
-      - "env side details: {{ pve_yoga_obs_local.stdout_lines | default([]) | join(' | ') }}"
-      - "hub side data   : {{ pve_yoga_obs_data.stdout_lines | default([]) | join(' | ') }}"
+      - "env side status : {{ 'OK' if pve_openstack_obs_local.rc | default(1) == 0 else 'FAILED' }}"
+      - "env side details: {{ pve_openstack_obs_local.stdout_lines | default([]) | join(' | ') }}"
+      - "hub side data   : {{ pve_openstack_obs_data.stdout_lines | default([]) | join(' | ') }}"
 
 - name: Warn when the model uuid is unknown
   ansible.builtin.debug:
     msg: >-
-      models.yaml has no admin/{{ pve_yoga_model_name }} entry for {{ pve_yoga_controller_name }},
+      models.yaml has no admin/{{ pve_openstack_model_name }} entry for {{ pve_openstack_controller_name }},
       all that is left is the weak test "does the hub have openstack_* series". Run
-      `juju status -m {{ pve_yoga_obs_model }}` to refresh the store, then re-run this role to get the strong check back.
-  when: pve_yoga_obs_model_uuid | default('', true) == ''
+      `juju status -m {{ pve_openstack_obs_model }}` to refresh the store, then re-run this role to get the strong check back.
+  when: pve_openstack_obs_model_uuid | default('', true) == ''
 
 - name: Require the environment side to be wired
   ansible.builtin.assert:
     that:
-      - pve_yoga_obs_local.rc | default(1) == 0
+      - pve_openstack_obs_local.rc | default(1) == 0
     fail_msg: >-
       not all COS clients on the env side are active:
-      {{ pve_yoga_obs_local.stdout_lines | default([]) | join(' | ') }}
+      {{ pve_openstack_obs_local.stdout_lines | default([]) | join(' | ') }}

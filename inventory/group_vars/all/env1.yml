@@ -1,30 +1,26 @@
 ---
-pve_host: pve-host
-pve_ssh_port: 2222
-pve_storage: pve-thin-pool
-pve_maas_vmid: 1000
-pve_maas_ip: 192.168.11.3
-pve_maas_data_mount: pve-thin-pool:vm-1000-disk-1
-pve_maas_script: "{{ playbook_dir }}/pve/scripts/setup-maas-ct.sh"
-pve_maas_admin_password: "{{ vault_pve_maas_admin_password | default('') }}"
-pve_maas_root_password: "{{ vault_pve_maas_root_password | default('') }}"
-pve_maas_ssh_pubkey: "{{ lookup('file', lookup('env', 'HOME') + '/.ssh/id_ed25519.pub', errors='ignore') | default('', true) }}"
-pve_maas_http_proxy: "http://192.168.11.1:12345"
-pve_maas_https_proxy: "http://192.168.11.1:12345"
-pve_maas_no_proxy: "127.0.0.1,localhost,192.168.11.0/24"
-pve_juju_controller_vmid: 1001
-pve_juju_controller_name: pve-ctrl
-pve_juju_controller_ip: 192.168.11.11
-pve_juju_client_vmid: 1000
-pve_juju_client_user: ubuntu
-pve_juju_bin: /snap/bin/juju
-pve_juju_db_channel: 4.4.30/stable
-pve_juju_controller_known_failed_units:
+pve_env1_maas_vmid: 1000
+pve_env1_maas_ip: 192.168.11.3
+pve_env1_maas_data_mount: pve-thin-pool:vm-1000-disk-1
+pve_env1_maas_script: "{{ repo_root }}/pve/scripts/setup-maas-ct.sh"
+pve_env1_maas_admin_password: "{{ vault_pve_maas_admin_password | default('') }}"
+pve_env1_maas_root_password: "{{ vault_pve_maas_root_password | default('') }}"
+pve_env1_maas_ssh_pubkey: "{{ lookup('file', lookup('env', 'HOME') + '/.ssh/id_ed25519.pub', errors='ignore') | default('', true) }}"
+pve_env1_maas_http_proxy: "http://192.168.11.1:12345"
+pve_env1_maas_https_proxy: "http://192.168.11.1:12345"
+pve_env1_juju_controller_vmid: 1001
+pve_env1_juju_controller_name: pve-ctrl
+pve_env1_juju_controller_ip: 192.168.11.11
+pve_env1_juju_client_vmid: 1000
+pve_env1_juju_client_user: ubuntu
+pve_env1_juju_bin: /snap/bin/juju
+pve_env1_juju_db_channel: 4.4.30/stable
+pve_env1_juju_controller_known_failed_units:
   - apparmor.service
   - systemd-remount-fs.service
-pve_juju_public_cidr: "192.168.11.0/24"
-pve_juju_public_native_space: "alpha"
-pve_juju_network_spaces:
+pve_env1_juju_public_cidr: "192.168.11.0/24"
+pve_env1_juju_public_native_space: "alpha"
+pve_env1_juju_network_spaces:
   - name: alpha
     bridge: pub11
     cidr: "192.168.11.0/24"
@@ -42,15 +38,15 @@ pve_juju_network_spaces:
     bridge: int14
     cidr: "192.168.14.0/24"
     net_index: 3
-pve_juju_default_space: internal
-pve_compute_uplink_bridge: pub11
-pve_compute_uplink_pve_net_index: 4
-pve_compute_uplink_guest_interface: ens22
-pve_compute_uplink_ovn_mapping: "br-ex:{{ pve_compute_uplink_guest_interface }}"
-pve_compute_uplink_ovn_bridge_mapping: "physnet1:br-ex"
-pve_start_existing_compute_after_uplink: false
+pve_env1_juju_default_space: internal
+pve_env1_compute_uplink_bridge: pub11
+pve_env1_compute_uplink_pve_net_index: 4
+pve_env1_compute_uplink_guest_interface: ens22
+pve_env1_compute_uplink_ovn_mapping: "br-ex:{{ pve_env1_compute_uplink_guest_interface }}"
+pve_env1_compute_uplink_ovn_bridge_mapping: "physnet1:br-ex"
+pve_env1_start_existing_compute_after_uplink: false
 
-pve_ussuri_topology:
+pve_env1_topology:
   - {vmid: 1101, kind: ct,  hostname: os0, writer: keystone,             uplink: false,
      units: [mysql-innodb-cluster/0, ceph-osd/0]}
   - {vmid: 1102, kind: ct,  hostname: os1, writer: nova-cloud-controller, uplink: false,
@@ -72,25 +68,25 @@ pve_ussuri_topology:
   - {vmid: 1122, kind: kvm, hostname: nova-compute-kvm, writer: null,    uplink: true,
      units: [nova-compute-kvm/0]}
 
-pve_ussuri_ip_offset: 1000
-pve_ussuri_gateway: "{{ pve_juju_network_spaces[0].cidr | regex_replace('\\.0/24$', '.1') }}"
-pve_ussuri_public_prefix: "{{ pve_juju_network_spaces[0].cidr | regex_replace('\\.0/24$', '') }}"
-pve_ussuri_client_stage_dir: "/home/{{ pve_juju_client_user }}/ussuri-staging"
-pve_ussuri_kvm_image: ubuntu-20.04-server-cloudimg-amd64.img
-pve_ussuri_kvm_image_url: "https://cloud-images.ubuntu.com/releases/focal/release/{{ pve_ussuri_kvm_image }}"
-pve_ussuri_kvm_cores: 4
-pve_ussuri_kvm_memory: 8192
-pve_ussuri_kvm_disk: 32
-pve_ussuri_slug: pve-openstack
-pve_ussuri_openrc_file: "{{ playbook_dir }}/credentials/admin-openrc-{{ pve_ussuri_slug }}.sh"
-pve_ussuri_vault_ca_file: "{{ playbook_dir }}/credentials/vault-ca-{{ pve_ussuri_slug }}.crt"
+pve_env1_ip_offset: 1000
+pve_env1_gateway: "{{ pve_env1_juju_network_spaces[0].cidr | regex_replace('\\.0/24$', '.1') }}"
+pve_env1_public_prefix: "{{ pve_env1_juju_network_spaces[0].cidr | regex_replace('\\.0/24$', '') }}"
+pve_env1_client_stage_dir: "/home/{{ pve_env1_juju_client_user }}/ussuri-staging"
+pve_env1_kvm_image: ubuntu-20.04-server-cloudimg-amd64.img
+pve_env1_kvm_image_url: "https://cloud-images.ubuntu.com/releases/focal/release/{{ pve_env1_kvm_image }}"
+pve_env1_kvm_cores: 4
+pve_env1_kvm_memory: 8192
+pve_env1_kvm_disk: 32
+pve_env1_slug: pve-openstack
+pve_env1_openrc_file: "{{ repo_root }}/credentials/admin-openrc-{{ pve_env1_slug }}.sh"
+pve_env1_vault_ca_file: "{{ repo_root }}/credentials/vault-ca-{{ pve_env1_slug }}.crt"
 
-pve_ussuri_workload_vmids: "{{ pve_ussuri_topology | map(attribute='vmid') | list }}"
-pve_ussuri_workload_cts: "{{ pve_ussuri_topology | selectattr('kind', 'equalto', 'ct') | list }}"
-pve_ussuri_workload_kvms: "{{ pve_ussuri_topology | selectattr('kind', 'equalto', 'kvm') | list }}"
-pve_ussuri_machine_of_unit: >-
+pve_env1_workload_vmids: "{{ pve_env1_topology | map(attribute='vmid') | list }}"
+pve_env1_workload_cts: "{{ pve_env1_topology | selectattr('kind', 'equalto', 'ct') | list }}"
+pve_env1_workload_kvms: "{{ pve_env1_topology | selectattr('kind', 'equalto', 'kvm') | list }}"
+pve_env1_machine_of_unit: >-
   {%- set ns = namespace(m={}) -%}
-  {%- for e in pve_ussuri_topology -%}
+  {%- for e in pve_env1_topology -%}
   {%-   set midx = loop.index0 | string -%}
   {%-   if e.writer -%}
   {%-     set ns.m = ns.m | combine({e.writer: midx}) -%}
@@ -100,9 +96,9 @@ pve_ussuri_machine_of_unit: >-
   {%-   endfor -%}
   {%- endfor -%}
   {{ ns.m }}
-pve_ussuri_unit_machines: >-
+pve_env1_unit_machines: >-
   {%- set ns = namespace(m={}) -%}
-  {%- for e in pve_ussuri_topology -%}
+  {%- for e in pve_env1_topology -%}
   {%-   set midx = loop.index0 -%}
   {%-   if e.writer -%}
   {%-     set cur = ns.m.get(e.writer, {}) -%}
@@ -117,34 +113,34 @@ pve_ussuri_unit_machines: >-
   {%-   endfor -%}
   {%- endfor -%}
   {{ ns.m }}
-pve_compute_uplink_vmids: >-
-  {{ pve_ussuri_topology | selectattr('uplink', 'equalto', true) | map(attribute='vmid') | list }}
-pve_ussuri_compute_ct_vmids: >-
-  {{ pve_ussuri_workload_cts | selectattr('uplink', 'equalto', true) | map(attribute='vmid') | list }}
-pve_ussuri_vault_vmid: >-
-  {{ (pve_ussuri_topology | selectattr('writer', 'equalto', 'vault') | list | first).vmid }}
-pve_ussuri_vault_address: >-
-  {{ pve_juju_network_spaces[0].cidr
-     | regex_replace('\.0/24$', '.' ~ ((pve_ussuri_vault_vmid | int) - (pve_ussuri_ip_offset | int))) }}
-pve_ussuri_secondary_network_ips: >-
+pve_env1_compute_uplink_vmids: >-
+  {{ pve_env1_topology | selectattr('uplink', 'equalto', true) | map(attribute='vmid') | list }}
+pve_env1_compute_ct_vmids: >-
+  {{ pve_env1_workload_cts | selectattr('uplink', 'equalto', true) | map(attribute='vmid') | list }}
+pve_env1_vault_vmid: >-
+  {{ (pve_env1_topology | selectattr('writer', 'equalto', 'vault') | list | first).vmid }}
+pve_env1_vault_address: >-
+  {{ pve_env1_juju_network_spaces[0].cidr
+     | regex_replace('\.0/24$', '.' ~ ((pve_env1_vault_vmid | int) - (pve_env1_ip_offset | int))) }}
+pve_env1_secondary_network_ips: >-
   {%- set ns = namespace(m={}) -%}
-  {%- for v in pve_ussuri_workload_vmids -%}
-  {%-   set last = (v | int) - (pve_ussuri_ip_offset | int) -%}
+  {%- for v in pve_env1_workload_vmids -%}
+  {%-   set last = (v | int) - (pve_env1_ip_offset | int) -%}
   {%-   set ns.m = ns.m | combine({v | string: {
-           'oam':      pve_juju_network_spaces[1].cidr | regex_replace('\\.0/24$', '.' ~ last),
-           'internal': pve_juju_network_spaces[2].cidr | regex_replace('\\.0/24$', '.' ~ last),
-           'storage':  pve_juju_network_spaces[3].cidr | regex_replace('\\.0/24$', '.' ~ last)}}) -%}
+           'oam':      pve_env1_juju_network_spaces[1].cidr | regex_replace('\\.0/24$', '.' ~ last),
+           'internal': pve_env1_juju_network_spaces[2].cidr | regex_replace('\\.0/24$', '.' ~ last),
+           'storage':  pve_env1_juju_network_spaces[3].cidr | regex_replace('\\.0/24$', '.' ~ last)}}) -%}
   {%- endfor -%}
   {{ ns.m }}
 
-pve_ussuri_osd_lv_prefix: ussuri-osd
-pve_ussuri_osd_size_mb: 30720
-pve_ussuri_osd_thinpool_vg: pve-thin-pool
-pve_ussuri_osd_thinpool: "{{ pve_ussuri_osd_thinpool_vg }}/{{ pve_ussuri_osd_thinpool_vg }}"
-pve_ussuri_osd_thinpool_max_data_percent: 75
-pve_ussuri_osd_by_index: >-
+pve_env1_osd_lv_prefix: ussuri-osd
+pve_env1_osd_size_mb: 30720
+pve_env1_osd_thinpool_vg: pve-thin-pool
+pve_env1_osd_thinpool: "{{ pve_env1_osd_thinpool_vg }}/{{ pve_env1_osd_thinpool_vg }}"
+pve_env1_osd_thinpool_max_data_percent: 75
+pve_env1_osd_by_index: >-
   {%- set ns = namespace(m={}) -%}
-  {%- for e in pve_ussuri_topology -%}
+  {%- for e in pve_env1_topology -%}
   {%-   for u in e.units -%}
   {%-     if u.startswith('ceph-osd/') -%}
   {%-       set ns.m = ns.m | combine({u.split('/')[1]: e.vmid}) -%}
@@ -152,33 +148,33 @@ pve_ussuri_osd_by_index: >-
   {%-   endfor -%}
   {%- endfor -%}
   {{ ns.m }}
-pve_ussuri_osd_spec: >-
+pve_env1_osd_spec: >-
   {%- set ns = namespace(out=[]) -%}
-  {%- for i in pve_ussuri_osd_by_index | dictsort -%}
+  {%- for i in pve_env1_osd_by_index | dictsort -%}
   {%-   set ns.out = ns.out + [i[1] ~ ':' ~ i[0]] -%}
   {%- endfor -%}
   {{ ns.out | join(' ') }}
 
-pve_focal_template: local:vztmpl/ubuntu-focal-cloudimg-rootfs_20.04-6_amd64.tar.xz
-pve_focal_rootfs_sha256: "{{ vault_pve_focal_rootfs_sha256 | default('') }}"
-pve_run_host_baseline: false
-pve_run_template_repack: false
+pve_env1_focal_template: local:vztmpl/ubuntu-focal-cloudimg-rootfs_20.04-6_amd64.tar.xz
+pve_env1_focal_rootfs_sha256: "{{ vault_pve_focal_rootfs_sha256 | default('') }}"
+pve_env1_run_host_baseline: false
+pve_env1_run_template_repack: false
 
-pve_ussuri_credentials_dir: "{{ playbook_dir }}/credentials"
-pve_ussuri_keystone_admin_password_file: >-
-  {{ pve_ussuri_credentials_dir }}/{{ pve_ussuri_slug }}-keystone-admin-password.txt
-pve_ussuri_vault_init_file: "{{ pve_ussuri_credentials_dir }}/{{ pve_ussuri_slug }}-vault-init.json"
-pve_ussuri_vault_shares: 5
-pve_ussuri_vault_threshold: 3
-pve_keystone_admin_password: >-
+pve_env1_credentials_dir: "{{ repo_root }}/credentials"
+pve_env1_keystone_admin_password_file: >-
+  {{ pve_env1_credentials_dir }}/{{ pve_env1_slug }}-keystone-admin-password.txt
+pve_env1_vault_init_file: "{{ pve_env1_credentials_dir }}/{{ pve_env1_slug }}-vault-init.json"
+pve_env1_vault_shares: 5
+pve_env1_vault_threshold: 3
+pve_env1_keystone_admin_password: >-
   {{ vault_pve_keystone_admin_password
-     | default(lookup('ansible.builtin.file', pve_ussuri_keystone_admin_password_file, errors='ignore')
+     | default(lookup('ansible.builtin.file', pve_env1_keystone_admin_password_file, errors='ignore')
                | default('', true) | trim, true) }}
-pve_vault_root_token: "{{ vault_pve_vault_root_token | default('') }}"
-pve_deploy_control_template: deploy-control-plane.sh.j2
-pve_ussuri_model_name: openstack
+pve_env1_vault_root_token: "{{ vault_pve_vault_root_token | default('') }}"
+pve_env1_deploy_control_template: deploy-control-plane.sh.j2
+pve_env1_model_name: openstack
 
-pve_ussuri_core_applications:
+pve_env1_core_applications:
   - mysql-innodb-cluster
   - rabbitmq-server
   - vault
@@ -193,7 +189,7 @@ pve_ussuri_core_applications:
   - openstack-dashboard
   - ovn-central
 
-pve_ussuri_settled_applications:
+pve_env1_settled_applications:
   - mysql-innodb-cluster
   - rabbitmq-server
   - vault
@@ -205,7 +201,7 @@ pve_ussuri_settled_applications:
   - cinder
   - openstack-dashboard
   - ovn-central
-pve_ussuri_recover_deferred_apps:
+pve_env1_recover_deferred_apps:
   - ceph-mon
   - ceph-osd
   - ceph-fs
@@ -213,13 +209,13 @@ pve_ussuri_recover_deferred_apps:
   - nova-compute
   - nova-compute-kvm
   - ovn-chassis
-pve_ussuri_wait_retries: 60
-pve_ussuri_wait_delay: 30
+pve_env1_wait_retries: 60
+pve_env1_wait_delay: 30
 
-pve_ussuri_control_plane_rel_attempts: 5
-pve_ussuri_control_plane_rel_delay: 20
-pve_ussuri_control_plane_settle_seconds: 30
-pve_ussuri_control_plane_apps:
+pve_env1_control_plane_rel_attempts: 5
+pve_env1_control_plane_rel_delay: 20
+pve_env1_control_plane_settle_seconds: 30
+pve_env1_control_plane_apps:
   - app: mysql-innodb-cluster
     charm: mysql-innodb-cluster
     channel: 8.0/stable
@@ -249,8 +245,8 @@ pve_ussuri_control_plane_apps:
     channel: ussuri/stable
     revision: 691
     config:
-      admin-password: "{{ pve_keystone_admin_password }}"
-    bind: "internal public={{ pve_juju_public_native_space }} admin=internal"
+      admin-password: "{{ pve_env1_keystone_admin_password }}"
+    bind: "internal public={{ pve_env1_juju_public_native_space }} admin=internal"
   - app: keystone-mysql-router
     charm: mysql-router
     channel: 8.0/stable
@@ -264,7 +260,7 @@ pve_ussuri_control_plane_apps:
     revision: 589
     config:
       ceph-osd-replication-count: 2
-    bind: "internal public={{ pve_juju_public_native_space }} admin=internal"
+    bind: "internal public={{ pve_env1_juju_public_native_space }} admin=internal"
   - app: glance-mysql-router
     charm: mysql-router
     channel: 8.0/stable
@@ -278,7 +274,7 @@ pve_ussuri_control_plane_apps:
     revision: 748
     config:
       network-manager: Neutron
-    bind: "internal public={{ pve_juju_public_native_space }} admin=internal"
+    bind: "internal public={{ pve_env1_juju_public_native_space }} admin=internal"
   - app: nova-mysql-router
     charm: mysql-router
     channel: 8.0/stable
@@ -307,7 +303,7 @@ pve_ussuri_control_plane_apps:
       enable-ml2-port-security: "true"
       flat-network-providers: physnet1
       neutron-security-groups: "true"
-    bind: "internal public={{ pve_juju_public_native_space }} admin=internal"
+    bind: "internal public={{ pve_env1_juju_public_native_space }} admin=internal"
   - app: neutron-api-plugin-ovn
     charm: neutron-api-plugin-ovn
     channel: ussuri/stable
@@ -330,7 +326,7 @@ pve_ussuri_control_plane_apps:
       block-device: None
       glance-api-version: 2
       ceph-osd-replication-count: 2
-    bind: "internal public={{ pve_juju_public_native_space }} admin=internal"
+    bind: "internal public={{ pve_env1_juju_public_native_space }} admin=internal"
   - app: cinder-ceph
     charm: cinder-ceph
     channel: ussuri/stable
@@ -347,7 +343,7 @@ pve_ussuri_control_plane_apps:
     charm: openstack-dashboard
     channel: ussuri/stable
     revision: 723
-    bind: "internal public={{ pve_juju_public_native_space }}"
+    bind: "internal public={{ pve_env1_juju_public_native_space }}"
   - app: dashboard-mysql-router
     charm: mysql-router
     channel: 8.0/stable
@@ -363,7 +359,7 @@ pve_ussuri_control_plane_apps:
     config:
       source: distro
 
-pve_ussuri_control_plane_relations:
+pve_env1_control_plane_relations:
   - ["keystone:shared-db", "keystone-mysql-router:shared-db"]
   - ["glance:shared-db", "glance-mysql-router:shared-db"]
   - ["nova-cloud-controller:shared-db", "nova-mysql-router:shared-db"]
@@ -409,10 +405,10 @@ pve_ussuri_control_plane_relations:
   - ["vault:certificates", "mysql-innodb-cluster:certificates"]
   - ["vault:certificates", "openstack-dashboard:certificates"]
 
-pve_ussuri_compute_ceph_settle_seconds: 60
-pve_ussuri_compute_ceph_rel_attempts: 8
-pve_ussuri_compute_ceph_rel_delay: 20
-pve_ussuri_compute_ceph_apps:
+pve_env1_compute_ceph_settle_seconds: 60
+pve_env1_compute_ceph_rel_attempts: 8
+pve_env1_compute_ceph_rel_delay: 20
+pve_env1_compute_ceph_apps:
   - app: ceph-mon
     charm: ceph-mon
     channel: octopus/stable
@@ -453,7 +449,7 @@ pve_ussuri_compute_ceph_apps:
     movable: true
     config:
       ceph-osd-replication-count: 2
-    bind: "internal public={{ pve_juju_public_native_space }} admin=internal"
+    bind: "internal public={{ pve_env1_juju_public_native_space }} admin=internal"
 
   - app: nova-compute
     charm: nova-compute
@@ -491,7 +487,7 @@ pve_ussuri_compute_ceph_apps:
     revision: 52
     subordinate: true
 
-pve_ussuri_compute_ceph_relations:
+pve_env1_compute_ceph_relations:
   - ["ceph-osd:mon", "ceph-mon:osd"]
   - ["ceph-mon:client", "glance:ceph"]
   - ["ceph-mon:client", "cinder-ceph:ceph"]
@@ -518,7 +514,7 @@ pve_ussuri_compute_ceph_relations:
   - ["vault:certificates", "ceph-radosgw:certificates"]
   - ["vault:certificates", "ovn-chassis:certificates"]
 
-pve_ussuri_ceph_compute_applications:
+pve_env1_ceph_compute_applications:
   - ceph-mon
   - ceph-osd
   - ceph-fs
@@ -527,112 +523,112 @@ pve_ussuri_ceph_compute_applications:
   - nova-compute-kvm
   - ovn-chassis
 
-pve_ussuri_resources_physical_network: "{{ pve_compute_uplink_ovn_bridge_mapping.split(':')[0] }}"
-pve_ussuri_resources_user: admin
-pve_ussuri_resources_project: admin
-pve_ussuri_resources_project_domain: admin_domain
-pve_ussuri_resources_region: RegionOne
-pve_ussuri_resources_flavors:
+pve_env1_resources_physical_network: "{{ pve_env1_compute_uplink_ovn_bridge_mapping.split(':')[0] }}"
+pve_env1_resources_user: admin
+pve_env1_resources_project: admin
+pve_env1_resources_project_domain: admin_domain
+pve_env1_resources_region: RegionOne
+pve_env1_resources_flavors:
   - {name: m1.tiny,  id: 1,   vcpus: 1, ram: 512,  disk: 1}
   - {name: m1.small, id: 2,   vcpus: 2, ram: 2048, disk: 20}
   - {name: cirros,   id: 100, vcpus: 1, ram: 512,  disk: 1}
-pve_ussuri_image_cache_dir: /home/ubuntu/pve-ussuri-images
-pve_ussuri_image_download_proxy: ""
-pve_ussuri_resources_images:
+pve_env1_image_cache_dir: /home/ubuntu/pve-ussuri-images
+pve_env1_image_download_proxy: ""
+pve_env1_resources_images:
   - name: cirros-0.6.3
-    file: "{{ pve_ussuri_image_cache_dir }}/cirros-0.6.3-x86_64-disk.img"
+    file: "{{ pve_env1_image_cache_dir }}/cirros-0.6.3-x86_64-disk.img"
     url: "https://download.cirros-cloud.net/0.6.3/cirros-0.6.3-x86_64-disk.img"
     checksum: "md5:87617e24a5e30cb3b87fda8c0764838f"
     disk_format: qcow2
-pve_ussuri_resources_ext_net: ext-net
-pve_ussuri_resources_ext_subnet: ext-subnet
-pve_ussuri_resources_floating_pool_start: "{{ pve_juju_public_cidr | regex_replace('\\.0/24$', '.220') }}"
-pve_ussuri_resources_floating_pool_end: "{{ pve_juju_public_cidr | regex_replace('\\.0/24$', '.229') }}"
-pve_ussuri_resources_tenant_net: tenant-net
-pve_ussuri_resources_tenant_subnet: tenant-subnet
-pve_ussuri_resources_tenant_cidr: "10.0.0.0/24"
-pve_ussuri_resources_tenant_gateway: "10.0.0.1"
-pve_ussuri_resources_tenant_dns: 8.8.8.8
-pve_ussuri_resources_router: router1
-pve_ussuri_resources_secgroup: default
-pve_ussuri_resources_secgroup_rules:
+pve_env1_resources_ext_net: ext-net
+pve_env1_resources_ext_subnet: ext-subnet
+pve_env1_resources_floating_pool_start: "{{ pve_env1_juju_public_cidr | regex_replace('\\.0/24$', '.220') }}"
+pve_env1_resources_floating_pool_end: "{{ pve_env1_juju_public_cidr | regex_replace('\\.0/24$', '.229') }}"
+pve_env1_resources_tenant_net: tenant-net
+pve_env1_resources_tenant_subnet: tenant-subnet
+pve_env1_resources_tenant_cidr: "10.0.0.0/24"
+pve_env1_resources_tenant_gateway: "10.0.0.1"
+pve_env1_resources_tenant_dns: 8.8.8.8
+pve_env1_resources_router: router1
+pve_env1_resources_secgroup: default
+pve_env1_resources_secgroup_rules:
   - {proto: icmp, port_range: ""}
   - {proto: tcp, dst_port: 22, port_range: "22:22"}
-pve_ussuri_resources_keypair: pve-openstack-test-key
-pve_ussuri_keypair_private_key_file: "{{ pve_ussuri_credentials_dir }}/{{ pve_ussuri_slug }}-test-key.pem"
+pve_env1_resources_keypair: pve-openstack-test-key
+pve_env1_keypair_private_key_file: "{{ pve_env1_credentials_dir }}/{{ pve_env1_slug }}-test-key.pem"
 
-pve_ussuri_savepoint_env_short: focal-ussuri-env1
+pve_env1_savepoint_env_short: focal-ussuri-env1
 
-pve_ussuri_savepoint_take: false
-pve_ussuri_savepoint_restore: false
-pve_ussuri_savepoint_name: ""
+pve_env1_savepoint_take: false
+pve_env1_savepoint_restore: false
+pve_env1_savepoint_name: ""
 
-pve_ussuri_savepoint_client_vmid: 1000
-pve_ussuri_savepoint_controller_vmid: 1001
-pve_ussuri_savepoint_kvms: "{{ pve_ussuri_workload_kvms | map(attribute='vmid') | list }}"
-pve_ussuri_savepoint_compute_guests: >-
+pve_env1_savepoint_client_vmid: 1000
+pve_env1_savepoint_controller_vmid: 1001
+pve_env1_savepoint_kvms: "{{ pve_env1_workload_kvms | map(attribute='vmid') | list }}"
+pve_env1_savepoint_compute_guests: >-
   {%- set ns = namespace(out=[]) -%}
-  {%- for e in pve_ussuri_topology if e.uplink -%}
+  {%- for e in pve_env1_topology if e.uplink -%}
   {%-   set ns.out = ns.out + [{'vmid': e.vmid, 'kind': e.kind}] -%}
   {%- endfor -%}
   {{ ns.out }}
-pve_ussuri_savepoint_cts_always: >-
-  {{ [pve_ussuri_savepoint_client_vmid, pve_ussuri_savepoint_controller_vmid]
-     + (pve_ussuri_workload_cts | map(attribute='vmid') | list) }}
-pve_ussuri_savepoint_include_empty_cts: false
-pve_ussuri_savepoint_empty_cts: []
-pve_ussuri_savepoint_cts: >-
-  {{ pve_ussuri_savepoint_cts_always
-     + (pve_ussuri_savepoint_empty_cts if pve_ussuri_savepoint_include_empty_cts | bool else []) }}
+pve_env1_savepoint_cts_always: >-
+  {{ [pve_env1_savepoint_client_vmid, pve_env1_savepoint_controller_vmid]
+     + (pve_env1_workload_cts | map(attribute='vmid') | list) }}
+pve_env1_savepoint_include_empty_cts: false
+pve_env1_savepoint_empty_cts: []
+pve_env1_savepoint_cts: >-
+  {{ pve_env1_savepoint_cts_always
+     + (pve_env1_savepoint_empty_cts if pve_env1_savepoint_include_empty_cts | bool else []) }}
 
-pve_ussuri_savepoint_include_maas_mp: false
-pve_ussuri_savepoint_include_cloudinit: false
-pve_ussuri_savepoint_include_extra_lvs: true
-pve_ussuri_savepoint_extra_lvs: >-
-  {{ pve_ussuri_osd_by_index | dictsort | map('first')
-     | map('regex_replace', '^', pve_ussuri_osd_lv_prefix ~ '-') | list }}
-pve_ussuri_savepoint_exclude_volumes: []
+pve_env1_savepoint_include_maas_mp: false
+pve_env1_savepoint_include_cloudinit: false
+pve_env1_savepoint_include_extra_lvs: true
+pve_env1_savepoint_extra_lvs: >-
+  {{ pve_env1_osd_by_index | dictsort | map('first')
+     | map('regex_replace', '^', pve_env1_osd_lv_prefix ~ '-') | list }}
+pve_env1_savepoint_exclude_volumes: []
 
-pve_ussuri_savepoint_pool_max_data_percent: 75
+pve_env1_savepoint_pool_max_data_percent: 75
 
-pve_ussuri_savepoint_restore_conf: false
-pve_ussuri_savepoint_restore_parallel: 6
-pve_ussuri_savepoint_converge: true
+pve_env1_savepoint_restore_conf: false
+pve_env1_savepoint_restore_parallel: 6
+pve_env1_savepoint_converge: true
 
-pve_ussuri_savepoint_public_prefix: "192.168.11"
-pve_ussuri_savepoint_ip_offset: 1000
-pve_ussuri_savepoint_ceph_mon_vmid: >-
-  {{ pve_ussuri_topology | selectattr('units', 'contains', 'ceph-mon/0')
+pve_env1_savepoint_public_prefix: "192.168.11"
+pve_env1_savepoint_ip_offset: 1000
+pve_env1_savepoint_ceph_mon_vmid: >-
+  {{ pve_env1_topology | selectattr('units', 'contains', 'ceph-mon/0')
      | map(attribute='vmid') | first }}
 
-pve_ussuri_savepoint_juju_controller: pve-ctrl
-pve_ussuri_savepoint_juju_model: openstack
-pve_ussuri_savepoint_juju_client_vmid: 1000
-pve_ussuri_savepoint_juju_client_user: ubuntu
+pve_env1_savepoint_juju_controller: pve-ctrl
+pve_env1_savepoint_juju_model: openstack
+pve_env1_savepoint_juju_client_vmid: 1000
+pve_env1_savepoint_juju_client_user: ubuntu
 
-pve_ussuri_savepoint_mysql_app: mysql-innodb-cluster
-pve_ussuri_savepoint_mysql_unit_indexes: [0, 1, 2]
-pve_ussuri_savepoint_mysql_selfheal_polls: 5
-pve_ussuri_savepoint_mysql_poll_delay: 60
-pve_ussuri_savepoint_mysql_settle_polls: 20
+pve_env1_savepoint_mysql_app: mysql-innodb-cluster
+pve_env1_savepoint_mysql_unit_indexes: [0, 1, 2]
+pve_env1_savepoint_mysql_selfheal_polls: 5
+pve_env1_savepoint_mysql_poll_delay: 60
+pve_env1_savepoint_mysql_settle_polls: 20
 
-pve_ussuri_savepoint_vault_vmid: >-
-  {{ pve_ussuri_topology | selectattr('writer', 'equalto', 'vault')
+pve_env1_savepoint_vault_vmid: >-
+  {{ pve_env1_topology | selectattr('writer', 'equalto', 'vault')
      | map(attribute='vmid') | first }}
-pve_ussuri_savepoint_vault_addr: >-
-  http://{{ pve_ussuri_savepoint_public_prefix }}.{{ pve_ussuri_savepoint_vault_vmid - pve_ussuri_savepoint_ip_offset }}:8200
-pve_ussuri_savepoint_vault_init_keys_file: "{{ lookup('env', 'HOME') }}/setup-test-env/pass/vault-init-keys.txt"
+pve_env1_savepoint_vault_addr: >-
+  http://{{ pve_env1_savepoint_public_prefix }}.{{ pve_env1_savepoint_vault_vmid - pve_env1_savepoint_ip_offset }}:8200
+pve_env1_savepoint_vault_init_keys_file: "{{ lookup('env', 'HOME') }}/setup-test-env/pass/vault-init-keys.txt"
 
-pve_ussuri_run_teardown: false
-pve_ussuri_teardown_models: [openstack, lma]
-pve_ussuri_teardown_destroy_models: true
+pve_env1_run_teardown: false
+pve_env1_teardown_models: [openstack, lma]
+pve_env1_teardown_destroy_models: true
 
-pve_ussuri_teardown_ct_vmids: >-
-  {{ range(1101, 1128) | reject('in', pve_ussuri_workload_kvms | map(attribute='vmid') | list) | list }}
-pve_ussuri_teardown_kvm_vmids: "{{ pve_ussuri_workload_kvms | map(attribute='vmid') | list }}"
-pve_ussuri_teardown_extra_ct_vmids: []
-pve_ussuri_teardown_extra_kvm_vmids: []
+pve_env1_teardown_ct_vmids: >-
+  {{ range(1101, 1128) | reject('in', pve_env1_workload_kvms | map(attribute='vmid') | list) | list }}
+pve_env1_teardown_kvm_vmids: "{{ pve_env1_workload_kvms | map(attribute='vmid') | list }}"
+pve_env1_teardown_extra_ct_vmids: []
+pve_env1_teardown_extra_kvm_vmids: []
 
-pve_ussuri_teardown_discard_lvs: true
-pve_ussuri_teardown_backup_dir: "/var/lib/ansible-pve/teardown-backup-{{ ansible_date_time.date | default('manual') }}"
-pve_ussuri_teardown_known_hosts_octets: "{{ range(101, 128) | list }}"
+pve_env1_teardown_discard_lvs: true
+pve_env1_teardown_backup_dir: "/var/lib/ansible-pve/teardown-backup-{{ ansible_date_time.date | default('manual') }}"
+pve_env1_teardown_known_hosts_octets: "{{ range(101, 128) | list }}"

@@ -2,31 +2,31 @@
 
 - name: Load the Keystone admin password
   ansible.builtin.slurp:
-    src: "{{ pve_ussuri_k8s_admin_password_file }}"
-  register: pve_ussuri_k8s_admin_password_raw
+    src: "{{ pve_env1_k8s_admin_password_file }}"
+  register: pve_env1_k8s_admin_password_raw
   no_log: true
   delegate_to: localhost
 
 - name: Require the Vault CA file
   ansible.builtin.assert:
     that:
-      - lookup('file', pve_ussuri_k8s_vault_ca_file) is search('BEGIN CERTIFICATE')
-    fail_msg: "{{ pve_ussuri_k8s_vault_ca_file }} is missing or is not a PEM certificate."
+      - lookup('file', pve_env1_k8s_vault_ca_file) is search('BEGIN CERTIFICATE')
+    fail_msg: "{{ pve_env1_k8s_vault_ca_file }} is missing or is not a PEM certificate."
   delegate_to: localhost
 
 - name: Set the Keystone admin password
   ansible.builtin.set_fact:
-    pve_ussuri_k8s_admin_password: "{{ pve_ussuri_k8s_admin_password_raw.content | b64decode | trim }}"
+    pve_env1_k8s_admin_password: "{{ pve_env1_k8s_admin_password_raw.content | b64decode | trim }}"
   no_log: true
 
 - name: Read the cloud definition known to the Juju 3.6 client
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "{{ pve_ussuri_k8s_juju36_bin }} show-cloud {{ pve_ussuri_k8s_cloud_name }} --client --format json 2>&1 | cat"
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "{{ pve_env1_k8s_juju36_bin }} show-cloud {{ pve_env1_k8s_cloud_name }} --client --format json 2>&1 | cat"
   args:
     executable: /bin/bash
-  register: pve_ussuri_k8s_cloud_show
+  register: pve_env1_k8s_cloud_show
   changed_when: false
   failed_when: false
 
@@ -37,7 +37,7 @@
     owner: root
     group: root
     mode: "0600"
-  register: pve_ussuri_k8s_cloud_file
+  register: pve_env1_k8s_cloud_file
   changed_when: false
 
 - name: Render the credential
@@ -47,15 +47,15 @@
     owner: root
     group: root
     mode: "0600"
-  register: pve_ussuri_k8s_creds_file
+  register: pve_env1_k8s_creds_file
   changed_when: false
   no_log: true
 
 - name: Push the cloud and credential files into the Juju client container
   ansible.builtin.shell: |
     set -euo pipefail
-    vmid={{ pve_ussuri_k8s_juju_client_vmid }}
-    user={{ pve_ussuri_k8s_juju_client_user }}
+    vmid={{ pve_env1_k8s_juju_client_vmid }}
+    user={{ pve_env1_k8s_juju_client_user }}
     pct push "$vmid" /root/pve-ussuri-k8s-openstack-cloud.yaml /home/$user/.ussuri-k8s-cloud.yaml --perms 0600
     pct push "$vmid" /root/pve-ussuri-k8s-openstack-creds.yaml /home/$user/.ussuri-k8s-creds.yaml --perms 0600
   args:
@@ -65,24 +65,24 @@
 - name: Register or refresh the cloud for juju_yoga
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "{{ pve_ussuri_k8s_juju36_bin }} add-cloud {{ pve_ussuri_k8s_cloud_name }} --client -f ~/.ussuri-k8s-cloud.yaml --replace 2>&1 | cat"
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "{{ pve_env1_k8s_juju36_bin }} add-cloud {{ pve_env1_k8s_cloud_name }} --client -f ~/.ussuri-k8s-cloud.yaml --replace 2>&1 | cat"
   args:
     executable: /bin/bash
   when: >-
-    pve_ussuri_k8s_cloud_show.rc != 0
-    or ((pve_ussuri_k8s_cloud_show.stdout | from_json).clouds[pve_ussuri_k8s_cloud_name].endpoint
-        | default('')) != pve_ussuri_k8s_keystone_url
+    pve_env1_k8s_cloud_show.rc != 0
+    or ((pve_env1_k8s_cloud_show.stdout | from_json).clouds[pve_env1_k8s_cloud_name].endpoint
+        | default('')) != pve_env1_k8s_keystone_url
   changed_when: true
 
 - name: Check the credential known to the Juju 3.6 client
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "{{ pve_ussuri_k8s_juju36_bin }} show-credential {{ pve_ussuri_k8s_cloud_name }} {{ pve_ussuri_k8s_credential_name }} --client --format json 2>&1 | cat"
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "{{ pve_env1_k8s_juju36_bin }} show-credential {{ pve_env1_k8s_cloud_name }} {{ pve_env1_k8s_credential_name }} --client --format json 2>&1 | cat"
   args:
     executable: /bin/bash
-  register: pve_ussuri_k8s_cred_show
+  register: pve_env1_k8s_cred_show
   changed_when: false
   failed_when: false
   no_log: true
@@ -90,40 +90,40 @@
 - name: Register the credential for juju_yoga
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "{{ pve_ussuri_k8s_juju36_bin }} add-credential {{ pve_ussuri_k8s_cloud_name }} --client -f ~/.ussuri-k8s-creds.yaml {% if pve_ussuri_k8s_cred_show.rc == 0 %}--replace{% endif %} 2>&1 | cat"
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "{{ pve_env1_k8s_juju36_bin }} add-credential {{ pve_env1_k8s_cloud_name }} --client -f ~/.ussuri-k8s-creds.yaml {% if pve_env1_k8s_cred_show.rc == 0 %}--replace{% endif %} 2>&1 | cat"
   args:
     executable: /bin/bash
-  when: pve_ussuri_k8s_cred_show.rc != 0 or (pve_ussuri_k8s_update_credential | bool)
+  when: pve_env1_k8s_cred_show.rc != 0 or (pve_env1_k8s_update_credential | bool)
   changed_when: true
   no_log: true
 
 - name: Confirm the cloud is usable by the Juju 3.6 client
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "{{ pve_ussuri_k8s_juju36_bin }} show-cloud {{ pve_ussuri_k8s_cloud_name }} --client --format json 2>&1 | cat"
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "{{ pve_env1_k8s_juju36_bin }} show-cloud {{ pve_env1_k8s_cloud_name }} --client --format json 2>&1 | cat"
   args:
     executable: /bin/bash
-  register: pve_ussuri_k8s_cloud_verify
+  register: pve_env1_k8s_cloud_verify
   changed_when: false
 
 - name: Require the cloud to be registered with the env1 endpoint and region
   ansible.builtin.assert:
     that:
-      - (pve_ussuri_k8s_cloud_verify.stdout | from_json).clouds[pve_ussuri_k8s_cloud_name].endpoint == pve_ussuri_k8s_keystone_url
-      - pve_ussuri_k8s_region in ((pve_ussuri_k8s_cloud_verify.stdout | from_json).clouds[pve_ussuri_k8s_cloud_name].regions | default({}))
+      - (pve_env1_k8s_cloud_verify.stdout | from_json).clouds[pve_env1_k8s_cloud_name].endpoint == pve_env1_k8s_keystone_url
+      - pve_env1_k8s_region in ((pve_env1_k8s_cloud_verify.stdout | from_json).clouds[pve_env1_k8s_cloud_name].regions | default({}))
     fail_msg: >-
-      cloud {{ pve_ussuri_k8s_cloud_name }} in the juju_yoga client does not point at
-      {{ pve_ussuri_k8s_keystone_url }} / {{ pve_ussuri_k8s_region }}:
-      {{ pve_ussuri_k8s_cloud_verify.stdout }}
+      cloud {{ pve_env1_k8s_cloud_name }} in the juju_yoga client does not point at
+      {{ pve_env1_k8s_keystone_url }} / {{ pve_env1_k8s_region }}:
+      {{ pve_env1_k8s_cloud_verify.stdout }}
 
 - name: Remove the credential files from the PVE host and the client container
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- rm -f \
-      /home/{{ pve_ussuri_k8s_juju_client_user }}/.ussuri-k8s-cloud.yaml \
-      /home/{{ pve_ussuri_k8s_juju_client_user }}/.ussuri-k8s-creds.yaml
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- rm -f \
+      /home/{{ pve_env1_k8s_juju_client_user }}/.ussuri-k8s-cloud.yaml \
+      /home/{{ pve_env1_k8s_juju_client_user }}/.ussuri-k8s-creds.yaml
     rm -f /root/pve-ussuri-k8s-openstack-cloud.yaml /root/pve-ussuri-k8s-openstack-creds.yaml
   args:
     executable: /bin/bash

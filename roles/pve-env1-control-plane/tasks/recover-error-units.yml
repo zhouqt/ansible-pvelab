@@ -5,79 +5,79 @@
     argv:
       - pct
       - exec
-      - "{{ pve_juju_client_vmid }}"
+      - "{{ pve_env1_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_juju_client_user }}"
+      - "{{ pve_env1_juju_client_user }}"
       - -c
-      - "{{ pve_juju_bin }} status -m {{ pve_ussuri_model }} --format json"
-  register: pve_ussuri_recover_status
+      - "{{ pve_env1_juju_bin }} status -m {{ pve_env1_model }} --format json"
+  register: pve_env1_recover_status
   changed_when: false
 
 - name: Require a valid OpenStack model status
   ansible.builtin.assert:
     that:
-      - pve_ussuri_recover_status.rc == 0
-      - "'applications' in (pve_ussuri_recover_status.stdout | from_json)"
+      - pve_env1_recover_status.rc == 0
+      - "'applications' in (pve_env1_recover_status.stdout | from_json)"
     fail_msg: "cannot read the OpenStack model status; refusing to recover while the state is unknown."
 
 - name: Collect the units in the error state
   ansible.builtin.include_tasks: collect-error-units.yml
   vars:
-    pve_ussuri_status_raw: "{{ pve_ussuri_recover_status.stdout }}"
+    pve_env1_status_raw: "{{ pve_env1_recover_status.stdout }}"
 
 - name: Snapshot the units found in the error state
   ansible.builtin.set_fact:
-    pve_ussuri_recover_initial: "{{ pve_ussuri_recover }}"
+    pve_env1_recover_initial: "{{ pve_env1_recover }}"
 
 - name: Report the units in the error state
   ansible.builtin.debug:
     msg: >-
-      {{ 'no units in error state' if pve_ussuri_recover_initial.units | length == 0
-         else ('found ' ~ (pve_ussuri_recover_initial.units | length) ~ ' error units:'
-               ~ (pve_ussuri_recover_initial.units | join(', '))) }}
+      {{ 'no units in error state' if pve_env1_recover_initial.units | length == 0
+         else ('found ' ~ (pve_env1_recover_initial.units | length) ~ ' error units:'
+               ~ (pve_env1_recover_initial.units | join(', '))) }}
 
 - name: Report the error units that a later stage owns
   ansible.builtin.debug:
     msg: >-
       {{ ('the error units below belong to later stages, this step leaves them alone:'
-          ~ (pve_ussuri_recover_initial.deferred | join(', ')))
-         if pve_ussuri_recover_initial.deferred | length > 0
+          ~ (pve_env1_recover_initial.deferred | join(', ')))
+         if pve_env1_recover_initial.deferred | length > 0
          else 'no deferred error units' }}
 
 - name: Recover the units the co-located MySQL leader left in error
-  when: pve_ussuri_recover_initial.units | length > 0
+  when: pve_env1_recover_initial.units | length > 0
   block:
     - name: Derive the applications that own the units to restart
       ansible.builtin.set_fact:
-        pve_ussuri_recover_apps: "{{ pve_ussuri_recover_initial.restart | map('regex_replace', '/.*', '') | unique | list }}"
+        pve_env1_recover_apps: "{{ pve_env1_recover_initial.restart | map('regex_replace', '/.*', '') | unique | list }}"
 
     - name: Read the actions the affected applications expose
       ansible.builtin.command:
         argv:
           - pct
           - exec
-          - "{{ pve_juju_client_vmid }}"
+          - "{{ pve_env1_juju_client_vmid }}"
           - --
           - su
           - "-"
-          - "{{ pve_juju_client_user }}"
+          - "{{ pve_env1_juju_client_user }}"
           - -c
-          - "{{ pve_juju_bin }} actions -m {{ pve_ussuri_model }} {{ item }} --format json"
-      loop: "{{ pve_ussuri_recover_apps }}"
+          - "{{ pve_env1_juju_bin }} actions -m {{ pve_env1_model }} {{ item }} --format json"
+      loop: "{{ pve_env1_recover_apps }}"
       loop_control:
         label: "{{ item }}"
-      register: pve_ussuri_recover_actions
+      register: pve_env1_recover_actions
       changed_when: false
 
     - name: Split the affected applications by whether they can be restarted
       ansible.builtin.set_fact:
-        pve_ussuri_recover_restartable: "{{ pve_ussuri_recover_split_doc | from_json }}"
+        pve_env1_recover_restartable: "{{ pve_env1_recover_split_doc | from_json }}"
       vars:
-        pve_ussuri_recover_split_doc: >-
+        pve_env1_recover_split_doc: >-
           {%- set ns = namespace(yes=[], no=[]) -%}
-          {%- for res in pve_ussuri_recover_actions.results -%}
+          {%- for res in pve_env1_recover_actions.results -%}
           {%- set acts = (res.stdout | from_json) if res.rc == 0 else {} -%}
           {%- if 'pause' in acts and 'resume' in acts -%}
           {%- set _ = ns.yes.append(res.item) -%}
@@ -91,61 +91,61 @@
       ansible.builtin.debug:
         msg: >-
           {{ ('the applications below offer no pause/resume, so this step only runs resolved without restarting them,'
-              ~ 'left for later stages to settle: ' ~ (pve_ussuri_recover_restartable.unrestartable | join(', ')))
-             if pve_ussuri_recover_restartable.unrestartable | length > 0
+              ~ 'left for later stages to settle: ' ~ (pve_env1_recover_restartable.unrestartable | join(', ')))
+             if pve_env1_recover_restartable.unrestartable | length > 0
              else 'every affected application supports pause/resume' }}
 
     - name: Remember the pattern that matches the units this stage is responsible for
       ansible.builtin.set_fact:
-        pve_ussuri_recover_restart_pattern: "^({{ pve_ussuri_recover_restartable.apps | join('|') }})/"
+        pve_env1_recover_restart_pattern: "^({{ pve_env1_recover_restartable.apps | join('|') }})/"
 
     - name: Keep only the units owned by the restartable applications
       ansible.builtin.set_fact:
-        pve_ussuri_recover_restart: "{{ pve_ussuri_recover_initial.restart | select('match', pve_ussuri_recover_restart_pattern) | list }}"
+        pve_env1_recover_restart: "{{ pve_env1_recover_initial.restart | select('match', pve_env1_recover_restart_pattern) | list }}"
 
     - name: Mark the failed hooks resolved so the charms retry them
       ansible.builtin.command:
         argv:
           - pct
           - exec
-          - "{{ pve_juju_client_vmid }}"
+          - "{{ pve_env1_juju_client_vmid }}"
           - --
           - su
           - "-"
-          - "{{ pve_juju_client_user }}"
+          - "{{ pve_env1_juju_client_user }}"
           - -c
-          - "{{ pve_juju_bin }} resolved -m {{ pve_ussuri_model }} {{ item }}"
-      loop: "{{ pve_ussuri_recover_initial.units }}"
+          - "{{ pve_env1_juju_bin }} resolved -m {{ pve_env1_model }} {{ item }}"
+      loop: "{{ pve_env1_recover_initial.units }}"
       loop_control:
         label: "{{ item }}"
-      register: pve_ussuri_recover_resolved
-      changed_when: "'not in an error state' not in (pve_ussuri_recover_resolved.stderr | default(''))"
+      register: pve_env1_recover_resolved
+      changed_when: "'not in an error state' not in (pve_env1_recover_resolved.stderr | default(''))"
       failed_when:
-        - pve_ussuri_recover_resolved.rc != 0
-        - "'not in an error state' not in (pve_ussuri_recover_resolved.stderr | default(''))"
+        - pve_env1_recover_resolved.rc != 0
+        - "'not in an error state' not in (pve_env1_recover_resolved.stderr | default(''))"
 
     - name: Wait for the recovered applications to settle
       ansible.builtin.command:
         argv:
           - pct
           - exec
-          - "{{ pve_juju_client_vmid }}"
+          - "{{ pve_env1_juju_client_vmid }}"
           - --
           - su
           - "-"
-          - "{{ pve_juju_client_user }}"
+          - "{{ pve_env1_juju_client_user }}"
           - -c
-          - "{{ pve_juju_bin }} status -m {{ pve_ussuri_model }} --format json"
-      register: pve_ussuri_recover_wait
+          - "{{ pve_env1_juju_bin }} status -m {{ pve_env1_model }} --format json"
+      register: pve_env1_recover_wait
       changed_when: false
       failed_when: false
       until: >-
-        (((pve_ussuri_recover_wait.stdout | default('{}', true) | from_json)
+        (((pve_env1_recover_wait.stdout | default('{}', true) | from_json)
            .applications | default({})).get(item, {})
            .get('application-status', {}).get('current', '') == 'active')
-      retries: "{{ pve_ussuri_wait_retries }}"
-      delay: "{{ pve_ussuri_wait_delay }}"
-      loop: "{{ pve_ussuri_recover_restartable.apps }}"
+      retries: "{{ pve_env1_wait_retries }}"
+      delay: "{{ pve_env1_wait_delay }}"
+      loop: "{{ pve_env1_recover_restartable.apps }}"
       loop_control:
         label: "{{ item }}"
 
@@ -154,14 +154,14 @@
         argv:
           - pct
           - exec
-          - "{{ pve_juju_client_vmid }}"
+          - "{{ pve_env1_juju_client_vmid }}"
           - --
           - su
           - "-"
-          - "{{ pve_juju_client_user }}"
+          - "{{ pve_env1_juju_client_user }}"
           - -c
-          - "{{ pve_juju_bin }} run-action {{ item }} pause --wait=10m -m {{ pve_ussuri_model }}"
-      loop: "{{ pve_ussuri_recover_restart }}"
+          - "{{ pve_env1_juju_bin }} run-action {{ item }} pause --wait=10m -m {{ pve_env1_model }}"
+      loop: "{{ pve_env1_recover_restart }}"
       loop_control:
         label: "{{ item }}"
 
@@ -170,14 +170,14 @@
         argv:
           - pct
           - exec
-          - "{{ pve_juju_client_vmid }}"
+          - "{{ pve_env1_juju_client_vmid }}"
           - --
           - su
           - "-"
-          - "{{ pve_juju_client_user }}"
+          - "{{ pve_env1_juju_client_user }}"
           - -c
-          - "{{ pve_juju_bin }} run-action {{ item }} resume --wait=10m -m {{ pve_ussuri_model }}"
-      loop: "{{ pve_ussuri_recover_restart }}"
+          - "{{ pve_env1_juju_bin }} run-action {{ item }} resume --wait=10m -m {{ pve_env1_model }}"
+      loop: "{{ pve_env1_recover_restart }}"
       loop_control:
         label: "{{ item }}"
 
@@ -186,23 +186,23 @@
         argv:
           - pct
           - exec
-          - "{{ pve_juju_client_vmid }}"
+          - "{{ pve_env1_juju_client_vmid }}"
           - --
           - su
           - "-"
-          - "{{ pve_juju_client_user }}"
+          - "{{ pve_env1_juju_client_user }}"
           - -c
-          - "{{ pve_juju_bin }} status -m {{ pve_ussuri_model }} --format json"
-      register: pve_ussuri_recover_wait_after
+          - "{{ pve_env1_juju_bin }} status -m {{ pve_env1_model }} --format json"
+      register: pve_env1_recover_wait_after
       changed_when: false
       failed_when: false
       until: >-
-        (((pve_ussuri_recover_wait_after.stdout | default('{}', true) | from_json)
+        (((pve_env1_recover_wait_after.stdout | default('{}', true) | from_json)
            .applications | default({})).get(item, {})
            .get('application-status', {}).get('current', '') == 'active')
-      retries: "{{ pve_ussuri_wait_retries }}"
-      delay: "{{ pve_ussuri_wait_delay }}"
-      loop: "{{ pve_ussuri_recover_restartable.apps }}"
+      retries: "{{ pve_env1_wait_retries }}"
+      delay: "{{ pve_env1_wait_delay }}"
+      loop: "{{ pve_env1_recover_restartable.apps }}"
       loop_control:
         label: "{{ item }}"
 
@@ -211,39 +211,39 @@
         argv:
           - pct
           - exec
-          - "{{ pve_juju_client_vmid }}"
+          - "{{ pve_env1_juju_client_vmid }}"
           - --
           - su
           - "-"
-          - "{{ pve_juju_client_user }}"
+          - "{{ pve_env1_juju_client_user }}"
           - -c
-          - "{{ pve_juju_bin }} status -m {{ pve_ussuri_model }} --format json"
-      register: pve_ussuri_recover_status_after
+          - "{{ pve_env1_juju_bin }} status -m {{ pve_env1_model }} --format json"
+      register: pve_env1_recover_status_after
       changed_when: false
 
     - name: Collect the units still in the error state
       ansible.builtin.include_tasks: collect-error-units.yml
       vars:
-        pve_ussuri_status_raw: "{{ pve_ussuri_recover_status_after.stdout }}"
+        pve_env1_status_raw: "{{ pve_env1_recover_status_after.stdout }}"
 
     - name: Snapshot the units still in the error state
       ansible.builtin.set_fact:
-        pve_ussuri_recover_after: "{{ pve_ussuri_recover }}"
+        pve_env1_recover_after: "{{ pve_env1_recover }}"
 
     - name: Report the units still in error that a later stage owns
       ansible.builtin.debug:
         msg: >-
           {{ ('units still in error after recovery (not this stage's job, left to later stages):'
-              ~ (pve_ussuri_recover_after.units | join(', ')))
-             if pve_ussuri_recover_after.units | length > 0
+              ~ (pve_env1_recover_after.units | join(', ')))
+             if pve_env1_recover_after.units | length > 0
              else 'no error units are left in the model after recovery' }}
 
     - name: Require every unit this stage is responsible for to have left the error state
-      when: pve_ussuri_recover_restart | length > 0
+      when: pve_env1_recover_restart | length > 0
       ansible.builtin.assert:
         that:
-          - pve_ussuri_recover_after.units | select('match', pve_ussuri_recover_restart_pattern) | list | length == 0
+          - pve_env1_recover_after.units | select('match', pve_env1_recover_restart_pattern) | list | length == 0
         fail_msg: >-
           units this stage owns are still in error after recovery: {{
-            pve_ussuri_recover_after.units | select('match', pve_ussuri_recover_restart_pattern) | join(', ')
+            pve_env1_recover_after.units | select('match', pve_env1_recover_restart_pattern) | join(', ')
           }}; look at /var/log/juju/unit-<name>.log of that unit.

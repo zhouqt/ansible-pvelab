@@ -3,54 +3,54 @@
 - name: Require an explicit opt-in before restoring a savepoint
   ansible.builtin.assert:
     that:
-      - pve_yoga_savepoint_restore | bool
-    fail_msg: "a restore from a savepoint is refused by default. Once you are sure, add -e pve_yoga_savepoint_restore=true"
+      - pve_openstack_savepoint_restore | bool
+    fail_msg: "a restore from a savepoint is refused by default. Once you are sure, add -e pve_openstack_savepoint_restore=true"
 
 - name: Require a savepoint name
   ansible.builtin.assert:
     that:
-      - pve_yoga_savepoint_name | length > 0
-      - pve_yoga_savepoint_name is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,30}$')
-    fail_msg: "pve_yoga_savepoint_name is required and may only contain letters, digits and . _ -"
+      - pve_openstack_savepoint_name | length > 0
+      - pve_openstack_savepoint_name is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,30}$')
+    fail_msg: "pve_openstack_savepoint_name is required and may only contain letters, digits and . _ -"
 
 - name: Define the restore member lists
   ansible.builtin.set_fact:
-    pve_yoga_savepoint_prefix: "sp-{{ pve_yoga_env_slug }}-{{ pve_yoga_savepoint_name }}"
-    pve_yoga_savepoint_workload: >-
+    pve_openstack_savepoint_prefix: "sp-{{ pve_openstack_env_slug }}-{{ pve_openstack_savepoint_name }}"
+    pve_openstack_savepoint_workload: >-
       {%- set out = [] -%}
-      {%- for vmid in pve_yoga_workload_vmids -%}
-        {%- set kind = 'kvm' if (vmid | int) == (pve_yoga_workload_kvm_vmid | int) else 'ct' -%}
+      {%- for vmid in pve_openstack_workload_vmids -%}
+        {%- set kind = 'kvm' if (vmid | int) == (pve_openstack_workload_kvm_vmid | int) else 'ct' -%}
         {%- set _ = out.append({'role': 'm%02d' | format(loop.index0 + 1),
                                 'vmid': vmid | int, 'kind': kind}) -%}
       {%- endfor -%}
       {{ out }}
-    pve_yoga_savepoint_osd_lvs: >-
+    pve_openstack_savepoint_osd_lvs: >-
       {%- set out = [] -%}
-      {%- for idx in range(pve_yoga_osd_vmids | length) -%}
-        {%- set _ = out.append(pve_yoga_env_slug ~ '-osd-' ~ (idx | string)) -%}
+      {%- for idx in range(pve_openstack_osd_vmids | length) -%}
+        {%- set _ = out.append(pve_openstack_env_slug ~ '-osd-' ~ (idx | string)) -%}
       {%- endfor -%}
       {{ out }}
-    pve_yoga_snat_cidrs: >-
-      {{ pve_yoga_network_spaces | selectattr('snat', 'defined') | selectattr('snat')
+    pve_openstack_snat_cidrs: >-
+      {{ pve_openstack_network_spaces | selectattr('snat', 'defined') | selectattr('snat')
          | map(attribute='cidr') | list }}
 
 - name: Assemble the full guest member list
   ansible.builtin.set_fact:
-    pve_yoga_savepoint_guests: >-
-      {{ [{'role': 'ctrl', 'vmid': pve_yoga_controller_vmid | int, 'kind': 'ct'}]
-         + pve_yoga_savepoint_workload }}
+    pve_openstack_savepoint_guests: >-
+      {{ [{'role': 'ctrl', 'vmid': pve_openstack_controller_vmid | int, 'kind': 'ct'}]
+         + pve_openstack_savepoint_workload }}
 
 - name: Require every savepoint base to exist before touching the live volumes
   ansible.builtin.shell: |
     set -euo pipefail
     missing=""
-    for role in {{ pve_yoga_savepoint_guests | map(attribute='role') | join(' ') }}; do
-      base="{{ pve_yoga_savepoint_prefix }}-$role"
+    for role in {{ pve_openstack_savepoint_guests | map(attribute='role') | join(' ') }}; do
+      base="{{ pve_openstack_savepoint_prefix }}-$role"
       lvs --noheadings -o lv_name pve-thin-pool/"$base" >/dev/null 2>&1 || missing="$missing $base"
     done
     i=0
-    for origin in {{ pve_yoga_savepoint_osd_lvs | join(' ') }}; do
-      base="{{ pve_yoga_savepoint_prefix }}-osd$i"
+    for origin in {{ pve_openstack_savepoint_osd_lvs | join(' ') }}; do
+      base="{{ pve_openstack_savepoint_prefix }}-osd$i"
       lvs --noheadings -o lv_name pve-thin-pool/"$base" >/dev/null 2>&1 || missing="$missing $base"
       i=$((i + 1))
     done
@@ -66,7 +66,7 @@
     snat_ip=$(ip -4 -o addr show vmbr0 | awk '{print $4}' | cut -d/ -f1 | head -1)
     [ -n "$snat_ip" ] || { echo "RESTORE-FAIL: vmbr0 has no IPv4 address" >&2; exit 1; }
     n=0
-    for cidr in {{ pve_yoga_snat_cidrs | join(' ') }}; do
+    for cidr in {{ pve_openstack_snat_cidrs | join(' ') }}; do
       if ! iptables -t nat -C POSTROUTING -s "$cidr" -o vmbr0 -j SNAT --to-source "$snat_ip" 2>/dev/null; then
         iptables -t nat -A POSTROUTING -s "$cidr" -o vmbr0 -j SNAT --to-source "$snat_ip"
         n=$((n + 1))
@@ -75,9 +75,9 @@
     echo "RESTORE-SNAT-DONE added=$n to=$snat_ip"
   args:
     executable: /bin/bash
-  register: pve_yoga_restore_snat
-  changed_when: "'added=0' not in pve_yoga_restore_snat.stdout"
-  when: pve_yoga_snat_cidrs | length > 0
+  register: pve_openstack_restore_snat
+  changed_when: "'added=0' not in pve_openstack_restore_snat.stdout"
+  when: pve_openstack_snat_cidrs | length > 0
 
 - name: Stop every guest before swapping its rootfs volume
   ansible.builtin.shell: |
@@ -93,7 +93,7 @@
     echo "RESTORE-STOPPED $vmid"
   args:
     executable: /bin/bash
-  loop: "{{ pve_yoga_savepoint_guests }}"
+  loop: "{{ pve_openstack_savepoint_guests }}"
   loop_control:
     label: "{{ item.role }} ({{ item.vmid }})"
   changed_when: true
@@ -102,7 +102,7 @@
   ansible.builtin.shell: |
     set -euo pipefail
     vmid={{ item.vmid }}
-    base="{{ pve_yoga_savepoint_prefix }}-{{ item.role }}"
+    base="{{ pve_openstack_savepoint_prefix }}-{{ item.role }}"
     {% if item.kind == 'kvm' %}
     origin=$(qm config "$vmid" | sed -n 's/^scsi0: *pve-thin-pool:\([^,]*\).*/\1/p')
     {% else %}
@@ -114,17 +114,17 @@
     echo "RESTORE-SWAPPED $origin from $base"
   args:
     executable: /bin/bash
-  loop: "{{ pve_yoga_savepoint_guests }}"
+  loop: "{{ pve_openstack_savepoint_guests }}"
   loop_control:
     label: "{{ item.role }} ({{ item.vmid }})"
-  register: pve_yoga_restore_swap
-  changed_when: "'RESTORE-SWAPPED' in pve_yoga_restore_swap.stdout"
+  register: pve_openstack_restore_swap
+  changed_when: "'RESTORE-SWAPPED' in pve_openstack_restore_swap.stdout"
 
 - name: Swap each OSD thin LV back to the savepoint and activate it
   ansible.builtin.shell: |
     set -euo pipefail
     origin="{{ item }}"
-    base="{{ pve_yoga_savepoint_prefix }}-osd{{ idx }}"
+    base="{{ pve_openstack_savepoint_prefix }}-osd{{ idx }}"
     dev=$(readlink -f "/dev/pve-thin-pool/$origin")
     for holder in /sys/block/"$(basename "$dev")"/holders/*; do
       [ -e "$holder" ] || continue
@@ -142,25 +142,25 @@
     echo "RESTORE-OSD-ACTIVE $origin from $base"
   args:
     executable: /bin/bash
-  loop: "{{ pve_yoga_savepoint_osd_lvs }}"
+  loop: "{{ pve_openstack_savepoint_osd_lvs }}"
   loop_control:
     label: "{{ item }}"
     index_var: idx
-  register: pve_yoga_restore_osd
-  changed_when: "'RESTORE-OSD-ACTIVE' in pve_yoga_restore_osd.stdout"
-  when: pve_yoga_savepoint_include_osd | bool
+  register: pve_openstack_restore_osd
+  changed_when: "'RESTORE-OSD-ACTIVE' in pve_openstack_restore_osd.stdout"
+  when: pve_openstack_savepoint_include_osd | bool
 
 - name: Give every restored yoga CT its own SMBIOS system UUID
   ansible.builtin.include_role:
     name: pve-common-ct-uuid
   vars:
-    pve_ct_system_uuid_items: >-
-      {{ pve_yoga_savepoint_guests | selectattr('kind', 'equalto', 'ct')
+    pve_common_ct_uuid_items: >-
+      {{ pve_openstack_savepoint_guests | selectattr('kind', 'equalto', 'ct')
          | map(attribute='vmid') | list }}
-    pve_ct_system_uuid_apply_live: true
+    pve_common_ct_uuid_apply_live: true
 
 - name: Start the controller first
-  ansible.builtin.command: "pct start {{ pve_yoga_controller_vmid }}"
+  ansible.builtin.command: "pct start {{ pve_openstack_controller_vmid }}"
   changed_when: true
 
 - name: Start the workload guests
@@ -174,28 +174,28 @@
     echo "RESTORE-STARTED {{ item.vmid }}"
   args:
     executable: /bin/bash
-  loop: "{{ pve_yoga_savepoint_guests | rejectattr('role', 'equalto', 'ctrl') | list }}"
+  loop: "{{ pve_openstack_savepoint_guests | rejectattr('role', 'equalto', 'ctrl') | list }}"
   loop_control:
     label: "{{ item.role }} ({{ item.vmid }})"
   changed_when: true
 
 - name: Wait for the controller to accept pct exec
-  ansible.builtin.command: "pct exec {{ pve_yoga_controller_vmid }} -- true"
-  register: pve_yoga_restore_ctrl_up
+  ansible.builtin.command: "pct exec {{ pve_openstack_controller_vmid }} -- true"
+  register: pve_openstack_restore_ctrl_up
   retries: 30
   delay: 5
-  until: pve_yoga_restore_ctrl_up.rc == 0
+  until: pve_openstack_restore_ctrl_up.rc == 0
   changed_when: false
 
 - name: Bring br-ex up on every compute node
   ansible.builtin.shell: |
     set -euo pipefail
     vmid={{ item }}
-    if [ "$vmid" = "{{ pve_yoga_workload_kvm_vmid }}" ]; then
-      last=$((vmid - {{ pve_yoga_ip_offset }}))
-      ip="{{ pve_yoga_public_prefix }}.$last"
-      pct exec {{ pve_yoga_juju_client_vmid }} -- su - {{ pve_yoga_juju_client_user }} -c \
-        "ssh -i {{ pve_yoga_juju_data }}/ssh/juju_id_rsa -o StrictHostKeyChecking=no ubuntu@$ip \
+    if [ "$vmid" = "{{ pve_openstack_workload_kvm_vmid }}" ]; then
+      last=$((vmid - {{ pve_openstack_ip_offset }}))
+      ip="{{ pve_openstack_public_prefix }}.$last"
+      pct exec {{ pve_openstack_juju_client_vmid }} -- su - {{ pve_openstack_juju_client_user }} -c \
+        "ssh -i {{ pve_openstack_juju_data }}/ssh/juju_id_rsa -o StrictHostKeyChecking=no ubuntu@$ip \
          sudo ip link set br-ex up"
     else
       pct exec "$vmid" -- ip link set br-ex up
@@ -203,14 +203,14 @@
     echo "RESTORE-BREX-UP $vmid"
   args:
     executable: /bin/bash
-  loop: "{{ pve_yoga_compute_uplink_vmids }}"
+  loop: "{{ pve_openstack_compute_uplink_vmids }}"
   loop_control:
     label: "compute {{ item }}"
-  register: pve_yoga_restore_brex
-  changed_when: "'RESTORE-BREX-UP' in pve_yoga_restore_brex.stdout"
+  register: pve_openstack_restore_brex
+  changed_when: "'RESTORE-BREX-UP' in pve_openstack_restore_brex.stdout"
   failed_when: false
 
 - name: Hand off to the recovery role for MySQL GR rebuild and Vault unseal
   ansible.builtin.include_role:
     name: pve-openstack-recovery
-  when: pve_yoga_savepoint_restore_run_recovery | bool
+  when: pve_openstack_savepoint_restore_run_recovery | bool

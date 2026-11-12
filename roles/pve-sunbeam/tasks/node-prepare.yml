@@ -5,27 +5,27 @@
 - name: Require explicit authorization for node preparation
   ansible.builtin.assert:
     that:
-      - sunbeam_confirm_external_changes | bool
-      - sunbeam_confirm_cluster_bootstrap | bool
+      - pve_sunbeam_confirm_external_changes | bool
+      - pve_sunbeam_confirm_cluster_bootstrap | bool
     fail_msg: >-
       This stage writes /etc/environment, apt proxy and sudoers inside the CTs, installs
       the openstack snap, and runs `sunbeam prepare-node-script --bootstrap` on the primary
       (which includes juju bootstrap localhost).
-      To confirm, pass -e sunbeam_confirm_external_changes=true -e sunbeam_confirm_cluster_bootstrap=true.
+      To confirm, pass -e pve_sunbeam_confirm_external_changes=true -e pve_sunbeam_confirm_cluster_bootstrap=true.
 
 - name: Require every Sunbeam CT to be running
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", status, "{{ item.vmid }}"]
-  loop: "{{ sunbeam_nodes }}"
+    argv: ["{{ pve_sunbeam_pct_bin }}", status, "{{ item.vmid }}"]
+  loop: "{{ pve_sunbeam_nodes }}"
   changed_when: false
   loop_control:
     label: "{{ item.fqdn }}"
 
 - name: Read the OS release inside every CT
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, cat, /etc/os-release]
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_osrelease
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, cat, /etc/os-release]
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_node_osrelease
   changed_when: false
   loop_control:
     label: "{{ item.fqdn }}"
@@ -33,18 +33,18 @@
 - name: Assert the expected Ubuntu release
   ansible.builtin.assert:
     that:
-      - "sunbeam_expected_ubuntu_release in item.stdout"
-      - "sunbeam_expected_ubuntu_codename in item.stdout"
-    fail_msg: "{{ item.item.fqdn }} is not Ubuntu {{ sunbeam_expected_ubuntu_release }} ({{ sunbeam_expected_ubuntu_codename }})."
-  loop: "{{ sunbeam_node_osrelease.results }}"
+      - "pve_sunbeam_expected_ubuntu_release in item.stdout"
+      - "pve_sunbeam_expected_ubuntu_codename in item.stdout"
+    fail_msg: "{{ item.item.fqdn }} is not Ubuntu {{ pve_sunbeam_expected_ubuntu_release }} ({{ pve_sunbeam_expected_ubuntu_codename }})."
+  loop: "{{ pve_sunbeam_node_osrelease.results }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Read the installed snapd deb version
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, dpkg-query, -W, -f, "${Version}", snapd]
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_snapd_version
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, dpkg-query, -W, -f, "${Version}", snapd]
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_node_snapd_version
   changed_when: false
   failed_when: false
   loop_control:
@@ -52,18 +52,18 @@
 
 - name: Install the pinned snapd deb on the nodes the template shipped without one
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.item.vmid }}", "--", bash, "-s"]
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.item.vmid }}", "--", bash, "-s"]
     stdin: "{{ lookup('template', 'install-snapd.sh.j2') }}"
-  loop: "{{ sunbeam_node_snapd_version.results }}"
+  loop: "{{ pve_sunbeam_node_snapd_version.results }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
   when: item.rc | int != 0 or (item.stdout | trim | length) == 0
 
 - name: Re-read the installed snapd deb version
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, dpkg-query, -W, -f, "${Version}", snapd]
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_snapd_version_after
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, dpkg-query, -W, -f, "${Version}", snapd]
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_node_snapd_version_after
   changed_when: false
   failed_when: false
   loop_control:
@@ -72,24 +72,24 @@
 - name: Assert snapd is the pinned version
   ansible.builtin.assert:
     that:
-      - sunbeam_snapd_deb_version in item.stdout
+      - pve_sunbeam_snapd_deb_version in item.stdout
     fail_msg: >-
       snapd on {{ item.item.fqdn }} is {{ item.stdout | trim | default('(not installed)', true) }},
-      expected {{ sunbeam_snapd_deb_version }}. The container template may not carry the
+      expected {{ pve_sunbeam_snapd_deb_version }}. The container template may not carry the
       pinned version and the Ubuntu archive only offers what it currently publishes, so
-      check `apt-cache policy snapd` inside the CT, then set sunbeam_snapd_deb_version to
+      check `apt-cache policy snapd` inside the CT, then set pve_sunbeam_snapd_deb_version to
       a version that both installs and passes `snap version` inside the container.
-  loop: "{{ sunbeam_node_snapd_version_after.results }}"
+  loop: "{{ pve_sunbeam_node_snapd_version_after.results }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Render the managed /etc/environment content
   ansible.builtin.set_fact:
-    sunbeam_etc_environment_content: "{{ lookup('template', 'etc-environment.j2') | trim }}"
+    pve_sunbeam_etc_environment_content: "{{ lookup('template', 'etc-environment.j2') | trim }}"
 
 - name: Render the managed apt proxy configuration
   ansible.builtin.set_fact:
-    sunbeam_apt_proxy_content: "{{ lookup('template', 'apt-proxy.j2') | trim }}"
+    pve_sunbeam_apt_proxy_content: "{{ lookup('template', 'apt-proxy.j2') | trim }}"
 
 - name: Probe the proxy endpoint before writing any proxy configuration
   ansible.builtin.include_tasks: _proxy_preflight.yml
@@ -99,64 +99,64 @@
 
 - name: Stage the managed /etc/environment on the PVE host
   ansible.builtin.copy:
-    content: "{{ sunbeam_etc_environment_content }}\n"
-    dest: "{{ sunbeam_staging_dir }}/{{ item.vmid }}-environment"
+    content: "{{ pve_sunbeam_etc_environment_content }}\n"
+    dest: "{{ pve_sunbeam_staging_dir }}/{{ item.vmid }}-environment"
     mode: "0644"
-  loop: "{{ sunbeam_nodes }}"
+  loop: "{{ pve_sunbeam_nodes }}"
   loop_control:
     label: "{{ item.fqdn }}"
 
 - name: Push /etc/environment into the CTs that are not yet managed
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - push
       - "{{ item.item.vmid }}"
-      - "{{ sunbeam_staging_dir }}/{{ item.item.vmid }}-environment"
-      - "{{ sunbeam_etc_environment }}"
+      - "{{ pve_sunbeam_staging_dir }}/{{ item.item.vmid }}-environment"
+      - "{{ pve_sunbeam_etc_environment }}"
       - --perms
       - "0644"
-  loop: "{{ sunbeam_node_environment.results }}"
+  loop: "{{ pve_sunbeam_node_environment.results }}"
   when: >-
-    (item.stdout | default('') | regex_findall('(?m)^HTTP_PROXY=(\S+)$') | first | default('')) != sunbeam_proxy_url
-    or (item.stdout | default('') | regex_findall('(?m)^HTTPS_PROXY=(\S+)$') | first | default('')) != sunbeam_proxy_url
-    or (item.stdout | default('') | regex_findall('(?m)^no_proxy=(\S+)$') | first | default('')) != sunbeam_proxy_no_proxy_effective
-    or (sunbeam_proxy_no_proxy | reject('in', item.stdout | default('')) | list | length > 0)
+    (item.stdout | default('') | regex_findall('(?m)^HTTP_PROXY=(\S+)$') | first | default('')) != pve_sunbeam_proxy_url
+    or (item.stdout | default('') | regex_findall('(?m)^HTTPS_PROXY=(\S+)$') | first | default('')) != pve_sunbeam_proxy_url
+    or (item.stdout | default('') | regex_findall('(?m)^no_proxy=(\S+)$') | first | default('')) != pve_sunbeam_proxy_no_proxy_effective
+    or (pve_sunbeam_proxy_no_proxy | reject('in', item.stdout | default('')) | list | length > 0)
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Stage the apt proxy configuration on the PVE host
   ansible.builtin.copy:
-    content: "{{ sunbeam_apt_proxy_content }}\n"
-    dest: "{{ sunbeam_staging_dir }}/{{ item.vmid }}-apt-proxy"
+    content: "{{ pve_sunbeam_apt_proxy_content }}\n"
+    dest: "{{ pve_sunbeam_staging_dir }}/{{ item.vmid }}-apt-proxy"
     mode: "0644"
-  loop: "{{ sunbeam_nodes }}"
+  loop: "{{ pve_sunbeam_nodes }}"
   loop_control:
     label: "{{ item.fqdn }}"
 
 - name: Push the apt proxy configuration into the CTs that differ
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - push
       - "{{ item.item.vmid }}"
-      - "{{ sunbeam_staging_dir }}/{{ item.item.vmid }}-apt-proxy"
-      - "{{ sunbeam_apt_proxy_file }}"
+      - "{{ pve_sunbeam_staging_dir }}/{{ item.item.vmid }}-apt-proxy"
+      - "{{ pve_sunbeam_apt_proxy_file }}"
       - --perms
       - "0644"
-  loop: "{{ sunbeam_node_apt_proxy.results }}"
+  loop: "{{ pve_sunbeam_node_apt_proxy.results }}"
   when:
-    - sunbeam_proxy_enabled | bool
-    - (item.stdout | default('') | trim) != sunbeam_apt_proxy_content
+    - pve_sunbeam_proxy_enabled | bool
+    - (item.stdout | default('') | trim) != pve_sunbeam_apt_proxy_content
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Remove the apt proxy drop-in where it exists and the proxy is disabled
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.item.vmid }}", --, rm, "-f", "{{ sunbeam_apt_proxy_file }}"]
-  loop: "{{ sunbeam_node_apt_proxy.results }}"
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.item.vmid }}", --, rm, "-f", "{{ pve_sunbeam_apt_proxy_file }}"]
+  loop: "{{ pve_sunbeam_node_apt_proxy.results }}"
   when:
-    - not (sunbeam_proxy_enabled | bool)
+    - not (pve_sunbeam_proxy_enabled | bool)
     - (item.stdout | default('') | trim | length > 0)
   loop_control:
     label: "{{ item.item.fqdn }}"
@@ -164,29 +164,29 @@
 - name: Configure the snap daemon proxy where it is missing
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.item.vmid }}"
       - --
       - snap
       - set
       - system
-      - "proxy.http={{ sunbeam_proxy_url }}"
-      - "proxy.https={{ sunbeam_proxy_url }}"
-  loop: "{{ sunbeam_node_snap_proxy.results }}"
+      - "proxy.http={{ pve_sunbeam_proxy_url }}"
+      - "proxy.https={{ pve_sunbeam_proxy_url }}"
+  loop: "{{ pve_sunbeam_node_snap_proxy.results }}"
   when:
-    - sunbeam_proxy_enabled | bool
-    - sunbeam_proxy_url not in (item.stdout | default(''))
+    - pve_sunbeam_proxy_enabled | bool
+    - pve_sunbeam_proxy_url not in (item.stdout | default(''))
     - item.item.reachable | bool
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Remove the snap daemon proxy where it is set and the proxy is disabled
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.item.vmid }}", --, snap, unset, system, proxy.http, proxy.https]
-  loop: "{{ sunbeam_node_snap_proxy.results }}"
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.item.vmid }}", --, snap, unset, system, proxy.http, proxy.https]
+  loop: "{{ pve_sunbeam_node_snap_proxy.results }}"
   when:
-    - not (sunbeam_proxy_enabled | bool)
+    - not (pve_sunbeam_proxy_enabled | bool)
     - (item.stdout | default('') | trim | length > 0)
   changed_when: false
   loop_control:
@@ -194,9 +194,9 @@
 
 - name: Read the installed OpenStack snap
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, snap, list, "{{ sunbeam_snap_name }}"]
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_snap
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, snap, list, "{{ pve_sunbeam_snap_name }}"]
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_node_snap
   changed_when: false
   failed_when: false
   loop_control:
@@ -206,14 +206,14 @@
   ansible.builtin.assert:
     that:
       - >-
-        item.stdout is search('(?m)^' ~ sunbeam_snap_name ~ '\s+\S+\s+'
-                              ~ sunbeam_snap_revision ~ '\s+'
-                              ~ sunbeam_snap_channel | regex_escape ~ '\s')
+        item.stdout is search('(?m)^' ~ pve_sunbeam_snap_name ~ '\s+\S+\s+'
+                              ~ pve_sunbeam_snap_revision ~ '\s+'
+                              ~ pve_sunbeam_snap_channel | regex_escape ~ '\s')
     fail_msg: >-
-      The openstack snap installed on {{ item.item.fqdn }} is not {{ sunbeam_snap_channel }}
-      rev {{ sunbeam_snap_revision }}. This playbook never refreshes/reverts an installed snap;
+      The openstack snap installed on {{ item.item.fqdn }} is not {{ pve_sunbeam_snap_channel }}
+      rev {{ pve_sunbeam_snap_revision }}. This playbook never refreshes/reverts an installed snap;
       verify with `snap list openstack` manually before continuing.
-  loop: "{{ sunbeam_node_snap.results }}"
+  loop: "{{ pve_sunbeam_node_snap.results }}"
   when: item.rc == 0
   loop_control:
     label: "{{ item.item.fqdn }}"
@@ -221,16 +221,16 @@
 - name: Install the pinned OpenStack snap where it is missing
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.item.vmid }}"
       - --
       - snap
       - install
-      - "{{ sunbeam_snap_name }}"
-      - "--channel={{ sunbeam_snap_channel }}"
-      - "--revision={{ sunbeam_snap_revision }}"
-  loop: "{{ sunbeam_node_snap.results }}"
+      - "{{ pve_sunbeam_snap_name }}"
+      - "--channel={{ pve_sunbeam_snap_channel }}"
+      - "--revision={{ pve_sunbeam_snap_revision }}"
+  loop: "{{ pve_sunbeam_node_snap.results }}"
   when: item.rc != 0
   loop_control:
     label: "{{ item.item.fqdn }}"
@@ -240,9 +240,9 @@
 
 - name: Check whether the sunbeam user exists
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, id, "{{ sunbeam_node_user }}"]
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_user_check
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, id, "{{ pve_sunbeam_node_user }}"]
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_node_user_check
   changed_when: false
   failed_when: false
   loop_control:
@@ -251,7 +251,7 @@
 - name: Create the sunbeam user
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.item.vmid }}"
       - --
@@ -261,27 +261,27 @@
       - /bin/bash
       - --groups
       - "sudo,snap_daemon"
-      - "{{ sunbeam_node_user }}"
-  loop: "{{ sunbeam_node_user_check.results }}"
+      - "{{ pve_sunbeam_node_user }}"
+  loop: "{{ pve_sunbeam_node_user_check.results }}"
   when: item.rc != 0
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Render the managed sudoers entry
   ansible.builtin.set_fact:
-    sunbeam_sudoers_content: "{{ lookup('template', 'sudoers-sunbeam.j2') | trim }}"
+    pve_sunbeam_sudoers_content: "{{ lookup('template', 'sudoers-sunbeam.j2') | trim }}"
 
 - name: Read the current sudoers entry inside every CT
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
       - cat
-      - "/etc/sudoers.d/90-{{ sunbeam_node_user }}"
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_sudoers
+      - "/etc/sudoers.d/90-{{ pve_sunbeam_node_user }}"
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_node_sudoers
   changed_when: false
   failed_when: false
   loop_control:
@@ -289,142 +289,142 @@
 
 - name: Stage the sudoers entry on the PVE host
   ansible.builtin.copy:
-    content: "{{ sunbeam_sudoers_content }}\n"
-    dest: "{{ sunbeam_staging_dir }}/{{ item.vmid }}-sudoers"
+    content: "{{ pve_sunbeam_sudoers_content }}\n"
+    dest: "{{ pve_sunbeam_staging_dir }}/{{ item.vmid }}-sudoers"
     mode: "0644"
-  loop: "{{ sunbeam_nodes }}"
+  loop: "{{ pve_sunbeam_nodes }}"
   loop_control:
     label: "{{ item.fqdn }}"
 
 - name: Push the sudoers entry into the CTs that differ
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - push
       - "{{ item.item.vmid }}"
-      - "{{ sunbeam_staging_dir }}/{{ item.item.vmid }}-sudoers"
-      - "/etc/sudoers.d/90-{{ sunbeam_node_user }}"
+      - "{{ pve_sunbeam_staging_dir }}/{{ item.item.vmid }}-sudoers"
+      - "/etc/sudoers.d/90-{{ pve_sunbeam_node_user }}"
       - --perms
       - "0440"
-  loop: "{{ sunbeam_node_sudoers.results }}"
-  when: (item.stdout | default('') | trim) != sunbeam_sudoers_content
+  loop: "{{ pve_sunbeam_node_sudoers.results }}"
+  when: (item.stdout | default('') | trim) != pve_sunbeam_sudoers_content
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Make sure the charmed kernel-modules package name resolves inside every CT
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", "--", bash, "-s"]
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", "--", bash, "-s"]
     stdin: "{{ lookup('template', 'ensure-kernel-modules-stub.sh.j2') }}"
-  loop: "{{ sunbeam_nodes }}"
-  when: sunbeam_kernel_modules_stub | bool
-  register: sunbeam_kernel_modules_stub_run
+  loop: "{{ pve_sunbeam_nodes }}"
+  when: pve_sunbeam_kernel_modules_stub | bool
+  register: pve_sunbeam_kernel_modules_stub_run
   changed_when: false
   loop_control:
     label: "{{ item.fqdn }}"
 
 - name: Check the node preparation state
   ansible.builtin.command:
-    argv: "{{ [sunbeam_pct_bin, 'exec', item.vmid | string, '--', 'bash', '-s']
+    argv: "{{ [pve_sunbeam_pct_bin, 'exec', item.vmid | string, '--', 'bash', '-s']
               + (['--', '--require-controller'] if item.primary else []) }}"
     stdin: "{{ lookup('template', 'check-node-prepared.sh.j2') }}"
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_prepared
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_node_prepared
   changed_when: false
   loop_control:
     label: "{{ item.fqdn }}"
 
 - name: Make sure the inner LXD default profile does not nest its own AppArmor profile
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ sunbeam_primary_node.vmid }}", "--", bash, "-s"]
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ pve_sunbeam_primary_node.vmid }}", "--", bash, "-s"]
     stdin: "{{ lookup('template', 'fix-inner-lxd-apparmor.sh.j2') }}"
-  register: sunbeam_inner_lxd_apparmor
-  changed_when: "'LXD_PROFILE=fixed' in (sunbeam_inner_lxd_apparmor.stdout | default(''))"
+  register: pve_sunbeam_inner_lxd_apparmor
+  changed_when: "'LXD_PROFILE=fixed' in (pve_sunbeam_inner_lxd_apparmor.stdout | default(''))"
   failed_when: false
 
 - name: Apply the Sunbeam node preparation script where it is missing
   ansible.builtin.command:
-    argv: "{{ [sunbeam_pct_bin, 'exec', item.item.vmid | string, '--', 'bash', '-s']
+    argv: "{{ [pve_sunbeam_pct_bin, 'exec', item.item.vmid | string, '--', 'bash', '-s']
               + (['--', '--bootstrap'] if item.item.primary else []) }}"
     stdin: "{{ lookup('template', 'run-prepare-node.sh.j2') }}"
-  loop: "{{ sunbeam_node_prepared.results }}"
-  when: "'prepared=no' in item.stdout or sunbeam_force_node_prepare | bool"
-  register: sunbeam_node_prepare_run
-  async: "{{ sunbeam_bootstrap_timeout }}"
-  poll: "{{ sunbeam_poll_interval }}"
+  loop: "{{ pve_sunbeam_node_prepared.results }}"
+  when: "'prepared=no' in item.stdout or pve_sunbeam_force_node_prepare | bool"
+  register: pve_sunbeam_node_prepare_run
+  async: "{{ pve_sunbeam_bootstrap_timeout }}"
+  poll: "{{ pve_sunbeam_poll_interval }}"
   failed_when: false
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Collect the nodes whose prepare run failed
   ansible.builtin.set_fact:
-    sunbeam_node_prepare_failed: >-
-      {{ (sunbeam_node_prepare_failed | default([]))
+    pve_sunbeam_node_prepare_failed: >-
+      {{ (pve_sunbeam_node_prepare_failed | default([]))
          + [ item.item.item.vmid | int ] }}
-  loop: "{{ sunbeam_node_prepare_run.results | default([]) }}"
+  loop: "{{ pve_sunbeam_node_prepare_run.results | default([]) }}"
   when: (item.rc | default(0)) | int != 0
   loop_control:
     label: "{{ item.item.item.fqdn }}"
 
 - name: Record the prepare run result per node
   ansible.builtin.set_fact:
-    sunbeam_node_prepare_rc: >-
-      {{ (sunbeam_node_prepare_rc | default({}))
+    pve_sunbeam_node_prepare_rc: >-
+      {{ (pve_sunbeam_node_prepare_rc | default({}))
          | combine({ (item.item.item.vmid | string): (item.rc | default(0) | int) }) }}
-  loop: "{{ sunbeam_node_prepare_run.results | default([]) }}"
+  loop: "{{ pve_sunbeam_node_prepare_run.results | default([]) }}"
   loop_control:
     label: "{{ item.item.item.fqdn }}"
 
 - name: Fix the inner LXD AppArmor profile after a failed prepare run
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ sunbeam_primary_node.vmid }}", "--", bash, "-s"]
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ pve_sunbeam_primary_node.vmid }}", "--", bash, "-s"]
     stdin: "{{ lookup('template', 'fix-inner-lxd-apparmor.sh.j2') }}"
-  register: sunbeam_inner_lxd_apparmor_retry
-  changed_when: "'LXD_PROFILE=fixed' in (sunbeam_inner_lxd_apparmor_retry.stdout | default(''))"
+  register: pve_sunbeam_inner_lxd_apparmor_retry
+  changed_when: "'LXD_PROFILE=fixed' in (pve_sunbeam_inner_lxd_apparmor_retry.stdout | default(''))"
   failed_when: false
-  when: sunbeam_primary_node.vmid | int in (sunbeam_node_prepare_failed | default([]))
+  when: pve_sunbeam_primary_node.vmid | int in (pve_sunbeam_node_prepare_failed | default([]))
 
 - name: Re-run the Sunbeam node preparation script on the primary
   ansible.builtin.command:
-    argv: "{{ [sunbeam_pct_bin, 'exec', sunbeam_primary_node.vmid | string, '--', 'bash', '-s',
+    argv: "{{ [pve_sunbeam_pct_bin, 'exec', pve_sunbeam_primary_node.vmid | string, '--', 'bash', '-s',
               '--', '--bootstrap'] }}"
     stdin: "{{ lookup('template', 'run-prepare-node.sh.j2') }}"
-  register: sunbeam_node_prepare_retry
-  async: "{{ sunbeam_bootstrap_timeout }}"
-  poll: "{{ sunbeam_poll_interval }}"
+  register: pve_sunbeam_node_prepare_retry
+  async: "{{ pve_sunbeam_bootstrap_timeout }}"
+  poll: "{{ pve_sunbeam_poll_interval }}"
   failed_when: false
   when:
-    - sunbeam_primary_node.vmid | int in (sunbeam_node_prepare_failed | default([]))
-    - "'LXD_PROFILE=fixed' in (sunbeam_inner_lxd_apparmor_retry.stdout | default(''))"
+    - pve_sunbeam_primary_node.vmid | int in (pve_sunbeam_node_prepare_failed | default([]))
+    - "'LXD_PROFILE=fixed' in (pve_sunbeam_inner_lxd_apparmor_retry.stdout | default(''))"
   loop_control:
-    label: "{{ sunbeam_primary_node.fqdn }}"
+    label: "{{ pve_sunbeam_primary_node.fqdn }}"
 
 - name: Record the retried prepare run result
   ansible.builtin.set_fact:
-    sunbeam_node_prepare_rc: >-
-      {{ sunbeam_node_prepare_rc
-         | combine({ (sunbeam_primary_node.vmid | string): (sunbeam_node_prepare_retry.rc | default(0) | int) }) }}
-  when: sunbeam_node_prepare_retry is not skipped
+    pve_sunbeam_node_prepare_rc: >-
+      {{ pve_sunbeam_node_prepare_rc
+         | combine({ (pve_sunbeam_primary_node.vmid | string): (pve_sunbeam_node_prepare_retry.rc | default(0) | int) }) }}
+  when: pve_sunbeam_node_prepare_retry is not skipped
 
 - name: Collect the nodes whose prepare run failed and was not fixed by the retry
   ansible.builtin.set_fact:
-    sunbeam_node_prepare_unfixed: >-
-      {{ (sunbeam_node_prepare_failed | default([]))
-         | difference([ sunbeam_primary_node.vmid | int ]
-                      if (sunbeam_node_prepare_retry is not skipped
-                          and (sunbeam_node_prepare_retry.rc | default(1) | int) == 0)
+    pve_sunbeam_node_prepare_unfixed: >-
+      {{ (pve_sunbeam_node_prepare_failed | default([]))
+         | difference([ pve_sunbeam_primary_node.vmid | int ]
+                      if (pve_sunbeam_node_prepare_retry is not skipped
+                          and (pve_sunbeam_node_prepare_retry.rc | default(1) | int) == 0)
                       else []) }}
 
 - name: Assert every node preparation run succeeded
   ansible.builtin.assert:
     that:
-      - item.vmid | int not in (sunbeam_node_prepare_unfixed | default([]))
+      - item.vmid | int not in (pve_sunbeam_node_prepare_unfixed | default([]))
     fail_msg: >-
       `sunbeam prepare-node-script` failed on {{ item.fqdn }}
-      (rc={{ sunbeam_node_prepare_rc[item.vmid | string] | default('?') }}).
-      The log of the last attempt is {{ sunbeam_node_log_dir }}/node-prepare.log inside the CT.
+      (rc={{ pve_sunbeam_node_prepare_rc[item.vmid | string] | default('?') }}).
+      The log of the last attempt is {{ pve_sunbeam_node_log_dir }}/node-prepare.log inside the CT.
       {{ 'The juju bootstrap on the primary needs the inner LXD default profile to carry '
-         ~ sunbeam_inner_lxd_raw_lxc ~ ' (see the retry above).' if item.primary else '' }}
-  loop: "{{ sunbeam_nodes }}"
+         ~ pve_sunbeam_inner_lxd_raw_lxc ~ ' (see the retry above).' if item.primary else '' }}
+  loop: "{{ pve_sunbeam_nodes }}"
   loop_control:
     label: "{{ item.fqdn }}"
 
@@ -439,9 +439,9 @@
 
 - name: Read the current MicroCeph OSD device setup script
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, cat, "{{ sunbeam_osd_setup_script }}"]
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_osd_script
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, cat, "{{ pve_sunbeam_osd_setup_script }}"]
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_node_osd_script
   changed_when: false
   failed_when: false
   loop_control:
@@ -450,32 +450,32 @@
 - name: Stage the MicroCeph OSD device setup script on the PVE host
   ansible.builtin.template:
     src: microceph-osd-device-setup.sh.j2
-    dest: "{{ sunbeam_staging_dir }}/{{ item.vmid }}-osd-setup"
+    dest: "{{ pve_sunbeam_staging_dir }}/{{ item.vmid }}-osd-setup"
     mode: "0755"
-  loop: "{{ sunbeam_nodes }}"
+  loop: "{{ pve_sunbeam_nodes }}"
   loop_control:
     label: "{{ item.fqdn }}"
 
 - name: Push the MicroCeph OSD device setup script into the CTs that differ
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - push
       - "{{ item.item.vmid }}"
-      - "{{ sunbeam_staging_dir }}/{{ item.item.vmid }}-osd-setup"
-      - "{{ sunbeam_osd_setup_script }}"
+      - "{{ pve_sunbeam_staging_dir }}/{{ item.item.vmid }}-osd-setup"
+      - "{{ pve_sunbeam_osd_setup_script }}"
       - --perms
       - "0755"
-  loop: "{{ sunbeam_node_osd_script.results }}"
+  loop: "{{ pve_sunbeam_node_osd_script.results }}"
   when: (item.stdout | default('') | trim) != (lookup('template', 'microceph-osd-device-setup.sh.j2') | trim)
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Read the current MicroCeph OSD systemd drop-in
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, cat, "{{ sunbeam_osd_service_dropin }}"]
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_osd_dropin
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, cat, "{{ pve_sunbeam_osd_service_dropin }}"]
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_node_osd_dropin
   changed_when: false
   failed_when: false
   loop_control:
@@ -484,25 +484,25 @@
 - name: Stage the MicroCeph OSD systemd drop-in on the PVE host
   ansible.builtin.template:
     src: microceph-osd-dropin.conf.j2
-    dest: "{{ sunbeam_staging_dir }}/{{ item.vmid }}-osd-dropin"
+    dest: "{{ pve_sunbeam_staging_dir }}/{{ item.vmid }}-osd-dropin"
     mode: "0644"
-  loop: "{{ sunbeam_nodes }}"
+  loop: "{{ pve_sunbeam_nodes }}"
   vars:
-    sunbeam_node_vmid: "{{ item.vmid }}"
+    pve_sunbeam_node_vmid: "{{ item.vmid }}"
   loop_control:
     label: "{{ item.fqdn }}"
 
 - name: Ensure the drop-in directory exists inside every CT
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
       - mkdir
       - -p
-      - "{{ sunbeam_osd_service_dropin | dirname }}"
-  loop: "{{ sunbeam_nodes }}"
+      - "{{ pve_sunbeam_osd_service_dropin | dirname }}"
+  loop: "{{ pve_sunbeam_nodes }}"
   changed_when: false
   loop_control:
     label: "{{ item.fqdn }}"
@@ -510,26 +510,26 @@
 - name: Push the MicroCeph OSD systemd drop-in into the CTs that differ
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - push
       - "{{ item.item.vmid }}"
-      - "{{ sunbeam_staging_dir }}/{{ item.item.vmid }}-osd-dropin"
-      - "{{ sunbeam_osd_service_dropin }}"
+      - "{{ pve_sunbeam_staging_dir }}/{{ item.item.vmid }}-osd-dropin"
+      - "{{ pve_sunbeam_osd_service_dropin }}"
       - --perms
       - "0644"
-  loop: "{{ sunbeam_node_osd_dropin.results }}"
+  loop: "{{ pve_sunbeam_node_osd_dropin.results }}"
   when: >-
     (item.stdout | default('') | trim)
     != (lookup('template', 'microceph-osd-dropin.conf.j2',
-               template_vars={'sunbeam_node_vmid': item.item.vmid}) | trim)
-  register: sunbeam_node_osd_dropin_push
+               template_vars={'pve_sunbeam_node_vmid': item.item.vmid}) | trim)
+  register: pve_sunbeam_node_osd_dropin_push
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Reload systemd inside the CTs whose drop-in changed
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.item.item.vmid }}", --, systemctl, daemon-reload]
-  loop: "{{ sunbeam_node_osd_dropin_push.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list }}"
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.item.item.vmid }}", --, systemctl, daemon-reload]
+  loop: "{{ pve_sunbeam_node_osd_dropin_push.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list }}"
   loop_control:
     label: "{{ item.item.item.fqdn }}"
 
@@ -539,7 +539,7 @@
 - name: Report node preparation result
   ansible.builtin.debug:
     msg:
-      - "Prepared nodes: {{ sunbeam_node_prepared.results | map(attribute='item.fqdn') | list | join(', ') }}"
-      - "prepare-node-script run this time: {{ sunbeam_node_prepare_run.results | default([]) | selectattr('rc', 'defined') | map(attribute='item.item.fqdn') | list | join(', ') or 'none (all already prepared)' }}"
-      - "kernel-modules stub: {{ (sunbeam_kernel_modules_stub_run.results | default([]) | map(attribute='stdout') | map('trim') | list | join('; ')) if (sunbeam_kernel_modules_stub | bool) else 'disabled' }}"
-      - "openstack snap: {{ sunbeam_snap_name }} {{ sunbeam_snap_channel }} rev {{ sunbeam_snap_revision }}"
+      - "Prepared nodes: {{ pve_sunbeam_node_prepared.results | map(attribute='item.fqdn') | list | join(', ') }}"
+      - "prepare-node-script run this time: {{ pve_sunbeam_node_prepare_run.results | default([]) | selectattr('rc', 'defined') | map(attribute='item.item.fqdn') | list | join(', ') or 'none (all already prepared)' }}"
+      - "kernel-modules stub: {{ (pve_sunbeam_kernel_modules_stub_run.results | default([]) | map(attribute='stdout') | map('trim') | list | join('; ')) if (pve_sunbeam_kernel_modules_stub | bool) else 'disabled' }}"
+      - "openstack snap: {{ pve_sunbeam_snap_name }} {{ pve_sunbeam_snap_channel }} rev {{ pve_sunbeam_snap_revision }}"

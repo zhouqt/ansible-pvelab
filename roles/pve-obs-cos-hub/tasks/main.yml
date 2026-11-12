@@ -2,29 +2,29 @@
 
 - name: Load the hub facts
   ansible.builtin.set_fact:
-    pve_obs_hub_active_cts: >-
-      {{ pve_obs_hub_cts | selectattr('group', 'in', pve_obs_hub_ct_groups) | list }}
-    pve_obs_hub_juju_cmd: "JUJU_DATA={{ pve_obs_hub_juju_data }} {{ pve_obs_hub_juju_bin }}"
-    pve_obs_hub_verify_models: >-
-      {{ [pve_obs_hub_cos_model]
-         + ([pve_obs_hub_infra_model] if pve_obs_hub_monitor_k8s_node | bool else [])
-         + (['controller'] if pve_obs_hub_monitor_controller | bool else []) }}
+    pve_obs_cos_hub_active_cts: >-
+      {{ pve_obs_cos_hub_cts | selectattr('group', 'in', pve_obs_cos_hub_ct_groups) | list }}
+    pve_obs_cos_hub_juju_cmd: "JUJU_DATA={{ pve_obs_cos_hub_juju_data }} {{ pve_obs_cos_hub_juju_bin }}"
+    pve_obs_cos_hub_verify_models: >-
+      {{ [pve_obs_cos_hub_cos_model]
+         + ([pve_obs_cos_hub_infra_model] if pve_obs_cos_hub_monitor_k8s_node | bool else [])
+         + (['controller'] if pve_obs_cos_hub_monitor_controller | bool else []) }}
 
 - name: Require a non-empty, self-consistent hub CT list
   ansible.builtin.assert:
     that:
-      - pve_obs_hub_active_cts | length > 0
-      - pve_obs_hub_cts | map(attribute='vmid') | map('int') | list
-        == pve_obs_hub_cts | map(attribute='vmid') | map('int') | unique | list
-      - pve_obs_hub_cts | map(attribute='ip') | unique | list | length == pve_obs_hub_cts | length
-      - pve_obs_hub_cts | map(attribute='vmid') | map('int')
+      - pve_obs_cos_hub_active_cts | length > 0
+      - pve_obs_cos_hub_cts | map(attribute='vmid') | map('int') | list
+        == pve_obs_cos_hub_cts | map(attribute='vmid') | map('int') | unique | list
+      - pve_obs_cos_hub_cts | map(attribute='ip') | unique | list | length == pve_obs_cos_hub_cts | length
+      - pve_obs_cos_hub_cts | map(attribute='vmid') | map('int')
         | select('lt', 1000) | list | length == 0
-      - pve_obs_hub_cts | map(attribute='vmid') | map('int')
+      - pve_obs_cos_hub_cts | map(attribute='vmid') | map('int')
         | select('ge', 1100) | list | length == 0
-      - pve_obs_hub_cts | map(attribute='series') | unique | list
-        | difference(pve_obs_hub_templates.keys() | list) | length == 0
+      - pve_obs_cos_hub_cts | map(attribute='series') | unique | list
+        | difference(pve_obs_cos_hub_templates.keys() | list) | length == 0
     fail_msg: >-
-      pve_obs_hub_cts and pve_obs_hub_templates disagree (vmid must be unique and within 1000-1099,
+      pve_obs_cos_hub_cts and pve_obs_cos_hub_templates disagree (vmid must be unique and within 1000-1099,
       the IP must be unique and the series must have a matching template).
 
 - name: Preflight the PVE host
@@ -32,24 +32,24 @@
 
 - name: Create and initialize the hub containers
   ansible.builtin.include_tasks: containers.yml
-  when: pve_obs_hub_create_cts | bool
+  when: pve_obs_cos_hub_create_cts | bool
 
 - name: Prepare the Canonical Kubernetes node
   ansible.builtin.include_tasks: k8s-node.yml
-  when: "'cos' in pve_obs_hub_ct_groups"
+  when: "'cos' in pve_obs_cos_hub_ct_groups"
 
 - name: Bootstrap the COS Juju controller
   ansible.builtin.include_tasks: cos-controller.yml
-  when: "'cos' in pve_obs_hub_ct_groups"
+  when: "'cos' in pve_obs_cos_hub_ct_groups"
 
 - name: Deploy COS Lite and publish the offers
   ansible.builtin.include_tasks: cos-lite.yml
-  when: "'cos' in pve_obs_hub_ct_groups"
+  when: "'cos' in pve_obs_cos_hub_ct_groups"
 
 - name: Monitor the hub nodes themselves
   ansible.builtin.include_tasks: hub-infra.yml
-  when: "'cos' in pve_obs_hub_ct_groups"
+  when: "'cos' in pve_obs_cos_hub_ct_groups"
 
 - name: Verify the hub
   ansible.builtin.include_tasks: verify.yml
-  when: "'cos' in pve_obs_hub_ct_groups"
+  when: "'cos' in pve_obs_cos_hub_ct_groups"

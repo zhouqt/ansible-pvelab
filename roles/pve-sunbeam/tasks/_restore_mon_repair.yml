@@ -1,8 +1,8 @@
 ---
 - name: Find a healthy mon to take the cluster monmap from
   ansible.builtin.set_fact:
-    sunbeam_restore_mon_peer: >-
-      {{ sunbeam_restore_mon_state.results
+    pve_sunbeam_restore_mon_peer: >-
+      {{ pve_sunbeam_restore_mon_state.results
          | selectattr('stdout', 'search', 'MON-STATE=in-quorum')
          | map(attribute='item')
          | rejectattr('vmid', 'equalto', item.vmid)
@@ -11,7 +11,7 @@
 - name: Refuse to rebuild a mon without a healthy peer
   ansible.builtin.assert:
     that:
-      - sunbeam_restore_mon_peer['vmid'] is defined
+      - pve_sunbeam_restore_mon_peer['vmid'] is defined
     fail_msg: >-
       {{ item.hostname }} ({{ item.vmid }}) did not start its MicroCeph mon and
       no other node has a healthy mon to copy the cluster monmap from. Recover
@@ -20,9 +20,9 @@
 - name: Export the cluster monmap from a healthy peer
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_restore_mon_peer.vmid }}"
+      - "{{ pve_sunbeam_restore_mon_peer.vmid }}"
       - --
       - /snap/bin/microceph.ceph
       - mon
@@ -34,27 +34,27 @@
 - name: Copy the monmap to the host
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - pull
-      - "{{ sunbeam_restore_mon_peer.vmid }}"
+      - "{{ pve_sunbeam_restore_mon_peer.vmid }}"
       - /var/snap/microceph/common/restore-monmap
-      - "{{ sunbeam_staging_dir }}/restore-monmap-{{ item.vmid }}"
+      - "{{ pve_sunbeam_staging_dir }}/restore-monmap-{{ item.vmid }}"
   changed_when: false
 
 - name: Push the monmap into the broken guest
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - push
       - "{{ item.vmid }}"
-      - "{{ sunbeam_staging_dir }}/restore-monmap-{{ item.vmid }}"
+      - "{{ pve_sunbeam_staging_dir }}/restore-monmap-{{ item.vmid }}"
       - /var/snap/microceph/common/restore-monmap
   changed_when: false
 
 - name: Rebuild the broken mon store from the monmap
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
@@ -85,14 +85,14 @@
       done
       echo "MON-REBUILT {{ item.hostname }} state=$st old-store=$dir.broken-$ts"
       [ "$st" = "active" ]
-  register: sunbeam_restore_mon_rebuild
-  changed_when: "'MON-REBUILT' in sunbeam_restore_mon_rebuild.stdout"
+  register: pve_sunbeam_restore_mon_rebuild
+  changed_when: "'MON-REBUILT' in pve_sunbeam_restore_mon_rebuild.stdout"
 
 - name: Assert the rebuilt mon is running
   ansible.builtin.assert:
     that:
-      - "'MON-REBUILT' in sunbeam_restore_mon_rebuild.stdout"
+      - "'MON-REBUILT' in pve_sunbeam_restore_mon_rebuild.stdout"
     fail_msg: >-
       Rebuilding the MicroCeph mon on {{ item.hostname }} ({{ item.vmid }})
-      failed: {{ sunbeam_restore_mon_rebuild.stdout }}
-      {{ sunbeam_restore_mon_rebuild.stderr | default('') }}
+      failed: {{ pve_sunbeam_restore_mon_rebuild.stdout }}
+      {{ pve_sunbeam_restore_mon_rebuild.stderr | default('') }}

@@ -3,58 +3,58 @@
 - name: Require an explicit opt-in before taking a savepoint
   ansible.builtin.assert:
     that:
-      - pve_yoga_savepoint_take | bool
-    fail_msg: "taking a savepoint is refused by default. Once the target env is healthy, add -e pve_yoga_savepoint_take=true"
+      - pve_openstack_savepoint_take | bool
+    fail_msg: "taking a savepoint is refused by default. Once the target env is healthy, add -e pve_openstack_savepoint_take=true"
 
 - name: Require a savepoint name
   ansible.builtin.assert:
     that:
-      - pve_yoga_savepoint_name | length > 0
-      - pve_yoga_savepoint_name is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,30}$')
-    fail_msg: "pve_yoga_savepoint_name is required and may only contain letters, digits and . _ - (e.g. sp1, 20261017-1)."
+      - pve_openstack_savepoint_name | length > 0
+      - pve_openstack_savepoint_name is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,30}$')
+    fail_msg: "pve_openstack_savepoint_name is required and may only contain letters, digits and . _ - (e.g. sp1, 20261017-1)."
 
 - name: Refuse to snapshot when the thin pool is too full
   ansible.builtin.shell: |
     set -euo pipefail
     pct=$(lvs --noheadings -o data_percent pve-thin-pool/pve-thin-pool | tr -d ' ')
     echo "POOL_DATA_PERCENT=$pct"
-    awk -v p="$pct" -v max="{{ pve_yoga_osd_thinpool_max_data_percent }}" \
+    awk -v p="$pct" -v max="{{ pve_openstack_osd_thinpool_max_data_percent }}" \
       'BEGIN { exit !(p+0 < max+0) }'
   args:
     executable: /bin/bash
-  register: pve_yoga_savepoint_pool
+  register: pve_openstack_savepoint_pool
   changed_when: false
-  failed_when: pve_yoga_savepoint_pool.rc != 0
+  failed_when: pve_openstack_savepoint_pool.rc != 0
 
 - name: Define the savepoint naming and member lists
   ansible.builtin.set_fact:
-    pve_yoga_savepoint_prefix: "sp-{{ pve_yoga_env_slug }}-{{ pve_yoga_savepoint_name }}"
-    pve_yoga_savepoint_workload: >-
+    pve_openstack_savepoint_prefix: "sp-{{ pve_openstack_env_slug }}-{{ pve_openstack_savepoint_name }}"
+    pve_openstack_savepoint_workload: >-
       {%- set out = [] -%}
-      {%- for vmid in pve_yoga_workload_vmids -%}
-        {%- set kind = 'kvm' if (vmid | int) == (pve_yoga_workload_kvm_vmid | int) else 'ct' -%}
+      {%- for vmid in pve_openstack_workload_vmids -%}
+        {%- set kind = 'kvm' if (vmid | int) == (pve_openstack_workload_kvm_vmid | int) else 'ct' -%}
         {%- set _ = out.append({'role': 'm%02d' | format(loop.index0 + 1),
                                 'vmid': vmid | int, 'kind': kind}) -%}
       {%- endfor -%}
       {{ out }}
-    pve_yoga_savepoint_osd_lvs: >-
+    pve_openstack_savepoint_osd_lvs: >-
       {%- set out = [] -%}
-      {%- for idx in range(pve_yoga_osd_vmids | length) -%}
-        {%- set _ = out.append(pve_yoga_env_slug ~ '-osd-' ~ (idx | string)) -%}
+      {%- for idx in range(pve_openstack_osd_vmids | length) -%}
+        {%- set _ = out.append(pve_openstack_env_slug ~ '-osd-' ~ (idx | string)) -%}
       {%- endfor -%}
       {{ out }}
 
 - name: Assemble the full guest member list
   ansible.builtin.set_fact:
-    pve_yoga_savepoint_guests: >-
-      {{ [{'role': 'ctrl', 'vmid': pve_yoga_controller_vmid | int, 'kind': 'ct'}]
-         + pve_yoga_savepoint_workload }}
+    pve_openstack_savepoint_guests: >-
+      {{ [{'role': 'ctrl', 'vmid': pve_openstack_controller_vmid | int, 'kind': 'ct'}]
+         + pve_openstack_savepoint_workload }}
 
 - name: Snapshot each guest rootfs volume
   ansible.builtin.shell: |
     set -euo pipefail
     vmid={{ item.vmid }}
-    base="{{ pve_yoga_savepoint_prefix }}-{{ item.role }}"
+    base="{{ pve_openstack_savepoint_prefix }}-{{ item.role }}"
     if lvs --noheadings -o lv_name pve-thin-pool/"$base" >/dev/null 2>&1; then
       echo "SAVEPOINT-SKIP $base already exists"
       exit 0
@@ -69,17 +69,17 @@
     echo "SAVEPOINT-TAKEN $base from $origin"
   args:
     executable: /bin/bash
-  loop: "{{ pve_yoga_savepoint_guests }}"
+  loop: "{{ pve_openstack_savepoint_guests }}"
   loop_control:
     label: "{{ item.role }} ({{ item.vmid }})"
-  register: pve_yoga_savepoint_guest_result
-  changed_when: "'SAVEPOINT-TAKEN' in pve_yoga_savepoint_guest_result.stdout"
+  register: pve_openstack_savepoint_guest_result
+  changed_when: "'SAVEPOINT-TAKEN' in pve_openstack_savepoint_guest_result.stdout"
 
 - name: Snapshot each OSD thin LV
   ansible.builtin.shell: |
     set -euo pipefail
     origin="{{ item }}"
-    base="{{ pve_yoga_savepoint_prefix }}-osd{{ idx }}"
+    base="{{ pve_openstack_savepoint_prefix }}-osd{{ idx }}"
     if lvs --noheadings -o lv_name pve-thin-pool/"$base" >/dev/null 2>&1; then
       echo "SAVEPOINT-SKIP $base already exists"
       exit 0
@@ -90,36 +90,36 @@
     echo "SAVEPOINT-TAKEN $base from $origin"
   args:
     executable: /bin/bash
-  loop: "{{ pve_yoga_savepoint_osd_lvs }}"
+  loop: "{{ pve_openstack_savepoint_osd_lvs }}"
   loop_control:
     label: "{{ item }}"
     index_var: idx
-  register: pve_yoga_savepoint_osd_result
-  changed_when: "'SAVEPOINT-TAKEN' in pve_yoga_savepoint_osd_result.stdout"
-  when: pve_yoga_savepoint_include_osd | bool
+  register: pve_openstack_savepoint_osd_result
+  changed_when: "'SAVEPOINT-TAKEN' in pve_openstack_savepoint_osd_result.stdout"
+  when: pve_openstack_savepoint_include_osd | bool
 
 - name: Record the savepoint metadata on the PVE host
   ansible.builtin.copy:
-    dest: "/root/yoga-savepoint-{{ pve_yoga_env_slug }}-{{ pve_yoga_savepoint_name }}.txt"
+    dest: "/root/yoga-savepoint-{{ pve_openstack_env_slug }}-{{ pve_openstack_savepoint_name }}.txt"
     owner: root
     group: root
     mode: "0600"
     content: |
-      env_slug={{ pve_yoga_env_slug }}
-      name={{ pve_yoga_savepoint_name }}
-      prefix={{ pve_yoga_savepoint_prefix }}
-      {% for g in pve_yoga_savepoint_guests %}
-      guest {{ g.role }} vmid={{ g.vmid }} kind={{ g.kind }} base={{ pve_yoga_savepoint_prefix }}-{{ g.role }}
+      env_slug={{ pve_openstack_env_slug }}
+      name={{ pve_openstack_savepoint_name }}
+      prefix={{ pve_openstack_savepoint_prefix }}
+      {% for g in pve_openstack_savepoint_guests %}
+      guest {{ g.role }} vmid={{ g.vmid }} kind={{ g.kind }} base={{ pve_openstack_savepoint_prefix }}-{{ g.role }}
       {% endfor %}
-      {% for lv in pve_yoga_savepoint_osd_lvs %}
-      osd origin={{ lv }} base={{ pve_yoga_savepoint_prefix }}-osd{{ loop.index0 }}
+      {% for lv in pve_openstack_savepoint_osd_lvs %}
+      osd origin={{ lv }} base={{ pve_openstack_savepoint_prefix }}-osd{{ loop.index0 }}
       {% endfor %}
 
 - name: Report the savepoint result
   ansible.builtin.debug:
     msg: >-
-      savepoint taken: {{ pve_yoga_savepoint_prefix }}-*
-      ({{ pve_yoga_savepoint_guests | length }} guest volumes
-      {% if pve_yoga_savepoint_include_osd | bool %}+ {{ pve_yoga_savepoint_osd_lvs | length }} OSD volumes{% endif %}).
-      restore: --tags openstack-pve-savepoint-restore -e pve_yoga_savepoint_restore=true
-      -e pve_yoga_savepoint_name={{ pve_yoga_savepoint_name }}
+      savepoint taken: {{ pve_openstack_savepoint_prefix }}-*
+      ({{ pve_openstack_savepoint_guests | length }} guest volumes
+      {% if pve_openstack_savepoint_include_osd | bool %}+ {{ pve_openstack_savepoint_osd_lvs | length }} OSD volumes{% endif %}).
+      restore: --tags openstack-pve-savepoint-restore -e pve_openstack_savepoint_restore=true
+      -e pve_openstack_savepoint_name={{ pve_openstack_savepoint_name }}

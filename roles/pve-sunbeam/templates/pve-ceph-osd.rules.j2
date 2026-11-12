@@ -1,4 +1,4 @@
-{% for node in sunbeam_nodes %}
+{% for node in pve_sunbeam_nodes %}
 {% set lv_parts = node.osd_pve_lv.split('/') %}
 KERNEL=="dm-*", ENV{DM_NAME}=="{{ lv_parts[-2] | replace('-', '--') }}-{{ lv_parts[-1] | replace('-', '--') }}", SYMLINK+="disk/by-id/{{ node.osd_by_id | basename }}"
 {% endfor %}

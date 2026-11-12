@@ -5,214 +5,214 @@
 - name: Require explicit authorization for cluster bootstrap
   ansible.builtin.assert:
     that:
-      - sunbeam_confirm_cluster_bootstrap | bool
-      - sunbeam_confirm_external_changes | bool
+      - pve_sunbeam_confirm_cluster_bootstrap | bool
+      - pve_sunbeam_confirm_external_changes | bool
     fail_msg: >-
       This stage initializes a new Sunbeam/Juju/K8s control plane on the primary
-      ({{ sunbeam_primary_node.fqdn }}).
-      To confirm, pass -e sunbeam_confirm_cluster_bootstrap=true -e sunbeam_confirm_external_changes=true.
+      ({{ pve_sunbeam_primary_node.fqdn }}).
+      To confirm, pass -e pve_sunbeam_confirm_cluster_bootstrap=true -e pve_sunbeam_confirm_external_changes=true.
 
 - name: Check whether the control plane is already bootstrapped
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'check-cluster-state.sh.j2') }}"
-  register: sunbeam_cluster_state
+  register: pve_sunbeam_cluster_state
   changed_when: false
   failed_when: false
 
 - name: Derive the bootstrap decision from the cluster state probe
   ansible.builtin.set_fact:
-    sunbeam_cluster_is_bootstrapped: >-
-      {{ sunbeam_cluster_state.stdout | default('') is search('bootstrapped=yes') }}
-    sunbeam_bootstrap_needed: >-
-      {{ (not (sunbeam_cluster_state.stdout | default('') is search('bootstrapped=yes')))
-         or (sunbeam_bootstrap_repair_incomplete | bool
-             and sunbeam_cluster_state.stdout | default('') is search('bootstrap_complete=no')) }}
+    pve_sunbeam_cluster_is_bootstrapped: >-
+      {{ pve_sunbeam_cluster_state.stdout | default('') is search('bootstrapped=yes') }}
+    pve_sunbeam_bootstrap_needed: >-
+      {{ (not (pve_sunbeam_cluster_state.stdout | default('') is search('bootstrapped=yes')))
+         or (pve_sunbeam_bootstrap_repair_incomplete | bool
+             and pve_sunbeam_cluster_state.stdout | default('') is search('bootstrap_complete=no')) }}
 
 - name: Refuse to continue when the cluster state could not be determined
   ansible.builtin.assert:
     that:
-      - sunbeam_cluster_state.rc == 0
-      - sunbeam_cluster_state.stdout | default('') is search('(?m)^bootstrapped=(yes|no)( |$)')
+      - pve_sunbeam_cluster_state.rc == 0
+      - pve_sunbeam_cluster_state.stdout | default('') is search('(?m)^bootstrapped=(yes|no)( |$)')
     fail_msg: >-
-      `sunbeam cluster list` on {{ sunbeam_primary_node.fqdn }} did not return a usable
+      `sunbeam cluster list` on {{ pve_sunbeam_primary_node.fqdn }} did not return a usable
       answer, so this run cannot tell an un-bootstrapped control plane from an
       unreachable one:
-      {{ sunbeam_cluster_state.stdout | default('') | trim }}
-      Re-run once the node answers `su - {{ sunbeam_node_user }} -c 'sunbeam cluster list'`
+      {{ pve_sunbeam_cluster_state.stdout | default('') | trim }}
+      Re-run once the node answers `su - {{ pve_sunbeam_node_user }} -c 'sunbeam cluster list'`
       by hand. If you are certain this is a cold cluster whose error message is not on
-      the probe's whitelist, pass -e sunbeam_allow_unreadable_cluster_state=true.
-  ignore_errors: "{{ sunbeam_allow_unreadable_cluster_state | bool }}"
+      the probe's whitelist, pass -e pve_sunbeam_allow_unreadable_cluster_state=true.
+  ignore_errors: "{{ pve_sunbeam_allow_unreadable_cluster_state | bool }}"
 
 - name: Note that bootstrap will be skipped
   ansible.builtin.debug:
     msg: >-
       The control plane already exists and its bootstrap run finished
-      ({{ sunbeam_cluster_state.stdout | trim }}); this run only validates the
+      ({{ pve_sunbeam_cluster_state.stdout | trim }}); this run only validates the
       manifest and juju controller and will not bootstrap again.
-  when: not (sunbeam_bootstrap_needed | bool)
+  when: not (pve_sunbeam_bootstrap_needed | bool)
 
 - name: Warn that the existing control plane never finished bootstrapping
   ansible.builtin.debug:
     msg: >-
-      The cluster exists ({{ sunbeam_cluster_state.stdout | trim }}) but the
+      The cluster exists ({{ pve_sunbeam_cluster_state.stdout | trim }}) but the
       local-provider bootstrap never reached its last plan step
       (`sunbeam_bootstrapped` is unset), so the deployment is
       incomplete. Re-running `sunbeam cluster bootstrap`: completed plans are
       no-ops and the CLI resumes at the first unfinished step.
   when:
-    - sunbeam_cluster_is_bootstrapped | bool
-    - sunbeam_bootstrap_needed | bool
+    - pve_sunbeam_cluster_is_bootstrapped | bool
+    - pve_sunbeam_bootstrap_needed | bool
 
 - name: Resolve the Sunbeam node identities
   ansible.builtin.include_tasks: _node_identity.yml
-  when: sunbeam_bootstrap_needed | bool
+  when: pve_sunbeam_bootstrap_needed | bool
 
 - name: Render the Sunbeam deployment manifest
   ansible.builtin.template:
     src: manifest.yaml.j2
-    dest: "{{ sunbeam_staging_dir }}/manifest.yaml"
+    dest: "{{ pve_sunbeam_staging_dir }}/manifest.yaml"
     mode: "0600"
-  when: sunbeam_bootstrap_needed | bool
+  when: pve_sunbeam_bootstrap_needed | bool
 
 - name: Require the rendered manifest to be keyed by the probed node identities
   ansible.builtin.include_tasks: _manifest_identity_guard.yml
-  when: sunbeam_bootstrap_needed | bool
+  when: pve_sunbeam_bootstrap_needed | bool
 
 - name: Read the manifest currently stored in the primary CT
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - cat
-      - "{{ sunbeam_manifest_path }}"
-  register: sunbeam_manifest_current
+      - "{{ pve_sunbeam_manifest_path }}"
+  register: pve_sunbeam_manifest_current
   changed_when: false
   failed_when: false
 
 - name: Push the manifest into the primary CT when it differs
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - push
-      - "{{ sunbeam_primary_node.vmid }}"
-      - "{{ sunbeam_staging_dir }}/manifest.yaml"
-      - "{{ sunbeam_manifest_path }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_staging_dir }}/manifest.yaml"
+      - "{{ pve_sunbeam_manifest_path }}"
       - --user
-      - "{{ sunbeam_node_user }}"
+      - "{{ pve_sunbeam_node_user }}"
       - --group
-      - "{{ sunbeam_node_user }}"
+      - "{{ pve_sunbeam_node_user }}"
       - --perms
       - "0600"
   when:
-    - sunbeam_bootstrap_needed | bool
+    - pve_sunbeam_bootstrap_needed | bool
     - >-
-      (sunbeam_manifest_current.stdout | default('') | trim)
+      (pve_sunbeam_manifest_current.stdout | default('') | trim)
       != (lookup('template', 'manifest.yaml.j2') | trim)
 
 - name: Ensure the inner LXD masquerades the traffic of its own containers
   ansible.builtin.include_tasks: _inner_lxd_nat.yml
-  when: sunbeam_bootstrap_needed | bool
+  when: pve_sunbeam_bootstrap_needed | bool
 
 - name: Ensure the next free loop device exists inside the primary CT
   ansible.builtin.include_tasks: _loop_devices.yml
-  when: sunbeam_bootstrap_needed | bool
+  when: pve_sunbeam_bootstrap_needed | bool
 
 - name: Bootstrap the Sunbeam control plane
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'run-cluster-bootstrap.sh.j2') }}"
-  when: sunbeam_bootstrap_needed | bool
-  register: sunbeam_cluster_bootstrap_run
-  async: "{{ sunbeam_bootstrap_timeout }}"
-  poll: "{{ sunbeam_poll_interval }}"
+  when: pve_sunbeam_bootstrap_needed | bool
+  register: pve_sunbeam_cluster_bootstrap_run
+  async: "{{ pve_sunbeam_bootstrap_timeout }}"
+  poll: "{{ pve_sunbeam_poll_interval }}"
   failed_when: false
 
 - name: Re-check the control plane state
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'check-cluster-state.sh.j2') }}"
-  register: sunbeam_cluster_state_after
+  register: pve_sunbeam_cluster_state_after
   changed_when: false
   failed_when: false
 
 - name: Assert the control plane is bootstrapped
   ansible.builtin.assert:
     that:
-      - sunbeam_cluster_state_after.rc == 0
-      - "'bootstrapped=yes' in sunbeam_cluster_state_after.stdout"
-      - not (sunbeam_bootstrap_needed | bool)
-        or 'bootstrap_complete=yes' in sunbeam_cluster_state_after.stdout
+      - pve_sunbeam_cluster_state_after.rc == 0
+      - "'bootstrapped=yes' in pve_sunbeam_cluster_state_after.stdout"
+      - not (pve_sunbeam_bootstrap_needed | bool)
+        or 'bootstrap_complete=yes' in pve_sunbeam_cluster_state_after.stdout
     fail_msg: >-
       The control plane was not initialized successfully (probe said
-      '{{ sunbeam_cluster_state_after.stdout | default('') | trim }}'). Check
-      {{ sunbeam_node_log_dir }}/cluster-bootstrap.log inside {{ sunbeam_primary_node.fqdn }}.
+      '{{ pve_sunbeam_cluster_state_after.stdout | default('') | trim }}'). Check
+      {{ pve_sunbeam_node_log_dir }}/cluster-bootstrap.log inside {{ pve_sunbeam_primary_node.fqdn }}.
 
 - name: Read the Juju controllers known to the primary CT
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - su
       - "-"
-      - "{{ sunbeam_node_user }}"
+      - "{{ pve_sunbeam_node_user }}"
       - -c
       - "juju controllers --format json"
-  register: sunbeam_juju_controllers
+  register: pve_sunbeam_juju_controllers
   changed_when: false
 
 - name: Assert the expected Juju controller is present
   ansible.builtin.assert:
     that:
-      - sunbeam_controller_name in sunbeam_juju_controllers.stdout
+      - pve_sunbeam_controller_name in pve_sunbeam_juju_controllers.stdout
     fail_msg: >-
-      Juju controller {{ sunbeam_controller_name }} was not found inside the primary CT.
+      Juju controller {{ pve_sunbeam_controller_name }} was not found inside the primary CT.
 
 - name: Read the current Sunbeam cluster members
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - su
       - "-"
-      - "{{ sunbeam_node_user }}"
+      - "{{ pve_sunbeam_node_user }}"
       - -c
       - "sunbeam cluster list --format yaml"
-  register: sunbeam_cluster_list
+  register: pve_sunbeam_cluster_list
   changed_when: false
   failed_when: false
 
 - name: Report bootstrap result
   ansible.builtin.debug:
     msg:
-      - "control plane: {{ sunbeam_controller_name }} @ {{ sunbeam_primary_node.fqdn }}"
-      - "manifest: {{ sunbeam_manifest_path }}"
-      - "bootstrap executed this run: {{ 'yes' if (sunbeam_bootstrap_needed | bool) else 'no (already exists and complete)' }}"
-      - "bootstrap CLI rc: {{ sunbeam_cluster_bootstrap_run.rc | default('n/a (skipped)') }}"
-      - "after state: {{ sunbeam_cluster_state_after.stdout | default('') | trim }}"
+      - "control plane: {{ pve_sunbeam_controller_name }} @ {{ pve_sunbeam_primary_node.fqdn }}"
+      - "manifest: {{ pve_sunbeam_manifest_path }}"
+      - "bootstrap executed this run: {{ 'yes' if (pve_sunbeam_bootstrap_needed | bool) else 'no (already exists and complete)' }}"
+      - "bootstrap CLI rc: {{ pve_sunbeam_cluster_bootstrap_run.rc | default('n/a (skipped)') }}"
+      - "after state: {{ pve_sunbeam_cluster_state_after.stdout | default('') | trim }}"
       - "cluster list:"
-      - "{{ sunbeam_cluster_list.stdout_lines }}"
+      - "{{ pve_sunbeam_cluster_list.stdout_lines }}"

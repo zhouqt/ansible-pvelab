@@ -5,14 +5,14 @@
     argv:
       - pct
       - exec
-      - "{{ pve_yoga_juju_client_vmid }}"
+      - "{{ pve_openstack_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_yoga_juju_client_user }}"
+      - "{{ pve_openstack_juju_client_user }}"
       - -c
-      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
-  register: pve_yoga_mysql_recovery_status
+      - "{{ pve_openstack_juju_cmd }} status -m {{ pve_openstack_model }} --format json"
+  register: pve_openstack_mysql_recovery_status
   changed_when: false
 
 - name: Assess the MySQL InnoDB cluster for a complete-outage rebuild
@@ -34,12 +34,12 @@
         complete = bool(units) and len(total) == len(units) and any(
             'not active' in m or 'complete outage' in m or 'inaccessible' in m for m in msgs)
         print(json.dumps({'bad': bad, 'order': order, 'complete_outage': complete}))
-    stdin: "{{ pve_yoga_mysql_recovery_status.stdout }}"
-  register: pve_yoga_mysql_recovery_assess
+    stdin: "{{ pve_openstack_mysql_recovery_status.stdout }}"
+  register: pve_openstack_mysql_recovery_assess
   changed_when: false
 
 - name: Derive the rebuild unit order and the unhealthy unit list
   ansible.builtin.set_fact:
-    pve_yoga_mysql_rebuild_bad: "{{ (pve_yoga_mysql_recovery_assess.stdout | from_json).bad }}"
-    pve_yoga_mysql_rebuild_units: "{{ (pve_yoga_mysql_recovery_assess.stdout | from_json).order }}"
-    pve_yoga_mysql_complete_outage: "{{ (pve_yoga_mysql_recovery_assess.stdout | from_json).complete_outage }}"
+    pve_openstack_mysql_rebuild_bad: "{{ (pve_openstack_mysql_recovery_assess.stdout | from_json).bad }}"
+    pve_openstack_mysql_rebuild_units: "{{ (pve_openstack_mysql_recovery_assess.stdout | from_json).order }}"
+    pve_openstack_mysql_complete_outage: "{{ (pve_openstack_mysql_recovery_assess.stdout | from_json).complete_outage }}"

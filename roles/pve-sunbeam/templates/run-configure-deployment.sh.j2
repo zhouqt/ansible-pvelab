@@ -1,17 +1,17 @@
 #!/bin/bash
 set -uo pipefail
 
-log={{ sunbeam_node_log_dir }}/configure-deployment.log
-mkdir -p {{ sunbeam_node_log_dir }}
+log={{ pve_sunbeam_node_log_dir }}/configure-deployment.log
+mkdir -p {{ pve_sunbeam_node_log_dir }}
 
-su - {{ sunbeam_node_user }} -c 'sunbeam configure deployment \
+su - {{ pve_sunbeam_node_user }} -c 'sunbeam configure deployment \
     --accept-defaults \
-    --manifest {{ sunbeam_manifest_path }} \
-    --openrc {{ sunbeam_admin_openrc_path }}' >"$log" 2>&1
+    --manifest {{ pve_sunbeam_manifest_path }} \
+    --openrc {{ pve_sunbeam_admin_openrc_path }}' >"$log" 2>&1
 rc=$?
 
-chown {{ sunbeam_node_user }}:{{ sunbeam_node_user }} {{ sunbeam_admin_openrc_path }} 2>/dev/null || true
-chmod 0600 {{ sunbeam_admin_openrc_path }} 2>/dev/null || true
+chown {{ pve_sunbeam_node_user }}:{{ pve_sunbeam_node_user }} {{ pve_sunbeam_admin_openrc_path }} 2>/dev/null || true
+chmod 0600 {{ pve_sunbeam_admin_openrc_path }} 2>/dev/null || true
 
 echo "configure deployment rc=$rc (log: $log)"
 tail -n 40 "$log"

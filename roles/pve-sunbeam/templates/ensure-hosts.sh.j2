@@ -7,13 +7,13 @@ work=$(mktemp)
 trap 'rm -f "$desired" "$work" "$work.next" "$work.final"' EXIT
 
 cat > "$desired" <<'EOF'
-{% for node in sunbeam_nodes %}
+{% for node in pve_sunbeam_nodes %}
 {{ node.pub_ip }} {{ node.fqdn }} {{ node.hostname }}
 {% endfor %}
 EOF
 
 cp "$hosts" "$work"
-{% for node in sunbeam_nodes %}
+{% for node in pve_sunbeam_nodes %}
 grep -v -w '{{ node.fqdn }}' "$work" > "$work.next" || true
 mv "$work.next" "$work"
 {% endfor %}

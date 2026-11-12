@@ -5,22 +5,22 @@
     argv:
       - pct
       - exec
-      - "{{ pve_ussuri_k8s_vmid }}"
+      - "{{ pve_env1_k8s_vmid }}"
       - --
       - test
       - -f
       - /usr/lib/python3/dist-packages/neutron/agent/ovn/metadata/agent.py
-  register: pve_ussuri_k8s_metadata_agent_file
+  register: pve_env1_k8s_metadata_agent_file
   changed_when: false
   failed_when: false
 
 - name: Require the metadata agent to be installed by the compute unit
   ansible.builtin.assert:
     that:
-      - pve_ussuri_k8s_metadata_agent_file.rc == 0
+      - pve_env1_k8s_metadata_agent_file.rc == 0
     fail_msg: >-
       /usr/lib/python3/dist-packages/neutron/agent/ovn/metadata/agent.py does not
-      exist in CT {{ pve_ussuri_k8s_vmid }}. The patch targets the package of the
+      exist in CT {{ pve_env1_k8s_vmid }}. The patch targets the package of the
       nova-compute-kvm unit, so run --tags pve-ussuri-k8s-compute first.
 
 - name: Install the patch script on the PVE host
@@ -34,7 +34,7 @@
 - name: Apply the metadata agent patch inside the container
   ansible.builtin.shell: |
     set -euo pipefail
-    vmid={{ pve_ussuri_k8s_vmid }}
+    vmid={{ pve_env1_k8s_vmid }}
     pct push "$vmid" /root/ussuri-patch-ovn-metadata-agent.py /root/patch-ovn-metadata-agent.py --perms 0700
     rc=0
     pct exec "$vmid" -- python3 /root/patch-ovn-metadata-agent.py --restart || rc=$?
@@ -42,25 +42,25 @@
     exit "$rc"
   args:
     executable: /bin/bash
-  register: pve_ussuri_k8s_metadata_patch
-  changed_when: "'PATCHED' in pve_ussuri_k8s_metadata_patch.stdout and 'ALREADY-PATCHED' not in pve_ussuri_k8s_metadata_patch.stdout"
+  register: pve_env1_k8s_metadata_patch
+  changed_when: "'PATCHED' in pve_env1_k8s_metadata_patch.stdout and 'ALREADY-PATCHED' not in pve_env1_k8s_metadata_patch.stdout"
   failed_when: >-
-    pve_ussuri_k8s_metadata_patch.rc != 0
-    or 'PATTERN-NOT-FOUND' in pve_ussuri_k8s_metadata_patch.stdout
+    pve_env1_k8s_metadata_patch.rc != 0
+    or 'PATTERN-NOT-FOUND' in pve_env1_k8s_metadata_patch.stdout
 
 - name: Require the patch to be confirmed
   ansible.builtin.assert:
     that:
-      - "'PATCHED' in pve_ussuri_k8s_metadata_patch.stdout"
+      - "'PATCHED' in pve_env1_k8s_metadata_patch.stdout"
     fail_msg: >-
       The patch script did not report PATCHED or ALREADY-PATCHED:
-      {{ pve_ussuri_k8s_metadata_patch.stdout | default('') }}
-      {{ pve_ussuri_k8s_metadata_patch.stderr | default('') }}
+      {{ pve_env1_k8s_metadata_patch.stdout | default('') }}
+      {{ pve_env1_k8s_metadata_patch.stderr | default('') }}
 
 - name: Check that the OVN metadata namespaces got their metadata address
   ansible.builtin.shell: |
     set -euo pipefail
-    vmid={{ pve_ussuri_k8s_vmid }}
+    vmid={{ pve_env1_k8s_vmid }}
     for attempt in $(seq 1 60); do
       ns_list="$(pct exec "$vmid" -- ip -o netns list 2>/dev/null | awk '{print $1}' || true)"
       if [ -n "$ns_list" ]; then
@@ -81,6 +81,6 @@
     exit 1
   args:
     executable: /bin/bash
-  register: pve_ussuri_k8s_metadata_netns
+  register: pve_env1_k8s_metadata_netns
   changed_when: false
-  failed_when: "'NETNS-OK' not in pve_ussuri_k8s_metadata_netns.stdout"
+  failed_when: "'NETNS-OK' not in pve_env1_k8s_metadata_netns.stdout"

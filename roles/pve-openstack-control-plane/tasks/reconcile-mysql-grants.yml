@@ -2,23 +2,23 @@
 
 - name: Define the isolated Juju 3.x command prefix
   ansible.builtin.set_fact:
-    pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
-    pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
+    pve_openstack_juju_cmd: "JUJU_DATA={{ pve_openstack_juju_data }} {{ pve_openstack_juju_bin }}"
+    pve_openstack_model: "{{ pve_openstack_controller_name }}:{{ pve_openstack_model_name }}"
 
 - name: Wait for the MySQL InnoDB cluster to form before reconciling grants
   ansible.builtin.command:
     argv:
       - pct
       - exec
-      - "{{ pve_yoga_juju_client_vmid }}"
+      - "{{ pve_openstack_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_yoga_juju_client_user }}"
+      - "{{ pve_openstack_juju_client_user }}"
       - -c
-      - "{{ pve_yoga_juju_cmd }} wait-for application mysql-innodb-cluster --timeout 45m -m {{ pve_yoga_model }}"
+      - "{{ pve_openstack_juju_cmd }} wait-for application mysql-innodb-cluster --timeout 45m -m {{ pve_openstack_model }}"
   changed_when: false
-  when: not (pve_yoga_mysql_reconcile_skip_cluster_wait | default(false) | bool)
+  when: not (pve_openstack_mysql_reconcile_skip_cluster_wait | default(false) | bool)
 
 - name: Copy the MySQL grant reconcile helper to the PVE host
   ansible.builtin.copy:
@@ -34,18 +34,18 @@
       - python3
       - /root/yoga-reconcile-mysql-grants.py
       - --client-ct
-      - "{{ pve_yoga_juju_client_vmid }}"
+      - "{{ pve_openstack_juju_client_vmid }}"
       - --client-user
-      - "{{ pve_yoga_juju_client_user }}"
+      - "{{ pve_openstack_juju_client_user }}"
       - --juju-bin
-      - "{{ pve_yoga_juju_bin }}"
+      - "{{ pve_openstack_juju_bin }}"
       - --juju-data
-      - "{{ pve_yoga_juju_data }}"
+      - "{{ pve_openstack_juju_data }}"
       - --model
-      - "{{ pve_yoga_model }}"
+      - "{{ pve_openstack_model }}"
       - --machine-vmids
-      - "{{ pve_yoga_workload_vmids | join(',') }}"
+      - "{{ pve_openstack_workload_vmids | join(',') }}"
       - --wait
-      - "{{ pve_yoga_mysql_reconcile_wait | default(300) }}"
-  register: pve_yoga_control_mysql_reconcile
-  changed_when: "'RECONCILE-CREATED' in pve_yoga_control_mysql_reconcile.stdout"
+      - "{{ pve_openstack_mysql_reconcile_wait | default(300) }}"
+  register: pve_openstack_control_mysql_reconcile
+  changed_when: "'RECONCILE-CREATED' in pve_openstack_control_mysql_reconcile.stdout"

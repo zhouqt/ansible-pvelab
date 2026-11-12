@@ -18,7 +18,7 @@
       - /usr/local/bin/ussuri-patch-ovn-metadata-agent.py
       - --perms
       - "0755"
-  loop: "{{ pve_ussuri_compute_ct_vmids }}"
+  loop: "{{ pve_env1_compute_ct_vmids }}"
   loop_control:
     label: "CT {{ item }}"
   changed_when: true
@@ -33,10 +33,10 @@
       - python3
       - /usr/local/bin/ussuri-patch-ovn-metadata-agent.py
       - --restart
-  loop: "{{ pve_ussuri_compute_ct_vmids }}"
+  loop: "{{ pve_env1_compute_ct_vmids }}"
   loop_control:
     label: "CT {{ item }}"
-  register: pve_ussuri_metadata_agent_patch
+  register: pve_env1_metadata_agent_patch
   changed_when: "'PATCHED:' in item.stdout or 'RESTARTED:' in item.stdout"
 
 - name: Read the patched metadata agent source back from the compute containers
@@ -50,10 +50,10 @@
       - -c
       - get_ip_version
       - /usr/lib/python3/dist-packages/neutron/agent/ovn/metadata/agent.py
-  loop: "{{ pve_ussuri_compute_ct_vmids }}"
+  loop: "{{ pve_env1_compute_ct_vmids }}"
   loop_control:
     label: "CT {{ item }}"
-  register: pve_ussuri_metadata_agent_patched
+  register: pve_env1_metadata_agent_patched
   changed_when: false
 
 - name: Require the OVN metadata agent patch to be in place on every compute container
@@ -64,7 +64,7 @@
       the neutron OVN metadata agent on CT {{ item.item }} has not been patched for LXC
       (get_ip_version is missing from agent.py). Run by hand inside that CT
       `python3 /usr/local/bin/ussuri-patch-ovn-metadata-agent.py --restart`.
-  loop: "{{ pve_ussuri_metadata_agent_patched.results }}"
+  loop: "{{ pve_env1_metadata_agent_patched.results }}"
   loop_control:
     label: "CT {{ item.item }}"
 
@@ -78,9 +78,9 @@
       - systemctl
       - is-active
       - neutron-ovn-metadata-agent.service
-  loop: "{{ pve_ussuri_compute_ct_vmids }}"
+  loop: "{{ pve_env1_compute_ct_vmids }}"
   loop_control:
     label: "CT {{ item }}"
-  register: pve_ussuri_metadata_agent_service
+  register: pve_env1_metadata_agent_service
   changed_when: false
-  failed_when: pve_ussuri_metadata_agent_service.stdout | trim != 'active'
+  failed_when: pve_env1_metadata_agent_service.stdout | trim != 'active'

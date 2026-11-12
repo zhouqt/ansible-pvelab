@@ -1,6 +1,6 @@
-pve_yoga_openstack_series: jammy
-pve_yoga_openstack_version: "yoga"
-pve_yoga_env_number: 3
+pve_openstack_series: jammy
+pve_openstack_version: "yoga"
+pve_openstack_env_number: 3
 
-pve_yoga_http_proxy: ""
-pve_yoga_https_proxy: ""
+pve_openstack_http_proxy: ""
+pve_openstack_https_proxy: ""

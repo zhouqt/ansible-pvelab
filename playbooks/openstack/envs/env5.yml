@@ -1,7 +1,7 @@
-pve_yoga_openstack_series: noble
-pve_yoga_openstack_version: "2024.1"
-pve_yoga_env_number: 5
+pve_openstack_series: noble
+pve_openstack_version: "2024.1"
+pve_openstack_env_number: 5
 
-pve_yoga_http_proxy: ""
-pve_yoga_https_proxy: ""
+pve_openstack_http_proxy: ""
+pve_openstack_https_proxy: ""
 

@@ -1,15 +1,15 @@
 #!/bin/bash
-{%- set apps = pve_ussuri_deploy_apps | default(pve_ussuri_control_plane_apps) %}
-{%- set rels = pve_ussuri_deploy_relations | default(pve_ussuri_control_plane_relations) %}
-{%- set settle = pve_ussuri_deploy_settle_seconds | default(pve_ussuri_control_plane_settle_seconds) %}
+{%- set apps = pve_env1_deploy_apps | default(pve_env1_control_plane_apps) %}
+{%- set rels = pve_env1_deploy_relations | default(pve_env1_control_plane_relations) %}
+{%- set settle = pve_env1_deploy_settle_seconds | default(pve_env1_control_plane_settle_seconds) %}
 
 set -euo pipefail
 export HOME=/home/ubuntu PATH=/snap/bin:/usr/bin:/bin
 
-{%- set rel_attempts = pve_ussuri_deploy_rel_attempts | default(pve_ussuri_control_plane_rel_attempts) %}
-{%- set rel_delay = pve_ussuri_deploy_rel_delay | default(pve_ussuri_control_plane_rel_delay) %}
+{%- set rel_attempts = pve_env1_deploy_rel_attempts | default(pve_env1_control_plane_rel_attempts) %}
+{%- set rel_delay = pve_env1_deploy_rel_delay | default(pve_env1_control_plane_rel_delay) %}
 
-MODEL='{{ pve_juju_controller_name }}:{{ pve_ussuri_model_name }}'
+MODEL='{{ pve_env1_juju_controller_name }}:{{ pve_env1_model_name }}'
 JUJU=/snap/bin/juju
 REL_ATTEMPTS={{ rel_attempts }}
 REL_DELAY={{ rel_delay }}
@@ -59,7 +59,7 @@ else:
 }
 
 {% for a in apps %}
-{%- set to = (pve_ussuri_unit_machines[a.app] | default({}) | dictsort | map('last') | join(',')) %}
+{%- set to = (pve_env1_unit_machines[a.app] | default({}) | dictsort | map('last') | join(',')) %}
 {%- if to %}
 if app_exists {{ a.app }}; then
   st=$(placement_state {{ a.app }} '{{ to }}')
@@ -88,7 +88,7 @@ fi
 {% endfor %}
 
 {% for a in apps %}
-{%- set to = (pve_ussuri_unit_machines[a.app] | default({}) | dictsort | map('last') | join(',')) %}
+{%- set to = (pve_env1_unit_machines[a.app] | default({}) | dictsort | map('last') | join(',')) %}
 {%- set units = a.num_units | default(0) | int %}
 {%- set cfg = a.config | default({}) %}
 if app_exists {{ a.app }}; then

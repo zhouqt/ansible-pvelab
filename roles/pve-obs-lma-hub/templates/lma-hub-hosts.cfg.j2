@@ -79,8 +79,8 @@ define service {
 define host {
     use             pve-lma-host
     host_name       pve-lma-nagios
-    alias           Nagios hub machine (obs-lma-nagios, CT {{ pve_lma_nagios_vmid }})
-    address         {{ pve_lma_nagios_ip }}
+    alias           Nagios hub machine (obs-lma-nagios, CT {{ pve_obs_lma_hub_nagios_vmid }})
+    address         {{ pve_obs_lma_hub_nagios_ip }}
 }
 
 define service {
@@ -100,8 +100,8 @@ define service {
 define host {
     use             pve-lma-host
     host_name       pve-lma-ctrl
-    alias           Juju 2.9 controller machine (obs-lma-ctrl, CT {{ pve_lma_controller_vmid }})
-    address         {{ pve_lma_controller_ip }}
+    alias           Juju 2.9 controller machine (obs-lma-ctrl, CT {{ pve_obs_lma_hub_controller_vmid }})
+    address         {{ pve_obs_lma_hub_controller_ip }}
 }
 
 define service {

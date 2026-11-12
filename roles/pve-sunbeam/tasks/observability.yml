@@ -5,199 +5,199 @@
 - name: Require explicit authorization for observability changes
   ansible.builtin.assert:
     that:
-      - sunbeam_confirm_observability | bool
-      - sunbeam_confirm_external_changes | bool
+      - pve_sunbeam_confirm_observability | bool
+      - pve_sunbeam_confirm_external_changes | bool
     fail_msg: >-
       This stage deploys the OpenTelemetry collectors into the live cloud and
       relates them to the external COS hub. To confirm, pass
-      -e sunbeam_confirm_observability=true
-      -e sunbeam_confirm_external_changes=true.
+      -e pve_sunbeam_confirm_observability=true
+      -e pve_sunbeam_confirm_external_changes=true.
 
 - name: Validate the observability input
   ansible.builtin.assert:
     that:
-      - sunbeam_obs_controller | length > 0
-      - sunbeam_obs_grafana_offer is match('^[^:]+/[^.]+\.[^.]+$')
-      - sunbeam_obs_prometheus_offer is match('^[^:]+/[^.]+\.[^.]+$')
-      - sunbeam_obs_loki_offer is match('^[^:]+/[^.]+\.[^.]+$')
-      - sunbeam_obs_hub_vip | length > 0
+      - pve_sunbeam_obs_controller | length > 0
+      - pve_sunbeam_obs_grafana_offer is match('^[^:]+/[^.]+\.[^.]+$')
+      - pve_sunbeam_obs_prometheus_offer is match('^[^:]+/[^.]+\.[^.]+$')
+      - pve_sunbeam_obs_loki_offer is match('^[^:]+/[^.]+\.[^.]+$')
+      - pve_sunbeam_obs_hub_vip | length > 0
     fail_msg: >-
       The hub offers must be given as `<user>/<model>.<offer>` without the
-      controller prefix (got grafana='{{ sunbeam_obs_grafana_offer }}',
-      prometheus='{{ sunbeam_obs_prometheus_offer }}',
-      loki='{{ sunbeam_obs_loki_offer }}'): sunbeam prepends
+      controller prefix (got grafana='{{ pve_sunbeam_obs_grafana_offer }}',
+      prometheus='{{ pve_sunbeam_obs_prometheus_offer }}',
+      loki='{{ pve_sunbeam_obs_loki_offer }}'): sunbeam prepends
       `<controller>:` itself.
 
 - name: Probe the observability state
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'check-observability-state.sh.j2') }}"
-  register: sunbeam_obs_state
+  register: pve_sunbeam_obs_state
   changed_when: false
   failed_when: false
 
 - name: Parse the observability state
   ansible.builtin.set_fact:
-    sunbeam_obs_facts: >-
-      {{ dict(sunbeam_obs_state.stdout_lines
+    pve_sunbeam_obs_facts: >-
+      {{ dict(pve_sunbeam_obs_state.stdout_lines
               | select('match', '^[A-Z_]+=')
               | map('split', '=')
               | list) }}
-    sunbeam_obs_needed: >-
-      {{ 'STACK=ready' not in sunbeam_obs_state.stdout
-         or sunbeam_force_observability | bool }}
+    pve_sunbeam_obs_needed: >-
+      {{ 'STACK=ready' not in pve_sunbeam_obs_state.stdout
+         or pve_sunbeam_force_observability | bool }}
 
 - name: Make sure the snap user can reach the hub controller
   ansible.builtin.include_tasks: obs-account.yml
 
 - name: Require enough rawfile-CSI headroom for the collector volumes
-  when: sunbeam_obs_needed | bool
+  when: pve_sunbeam_obs_needed | bool
   ansible.builtin.assert:
     that:
-      - sunbeam_obs_facts.RAWFILE | default('none') == 'ok'
-      - (sunbeam_obs_facts.RAWFILE_HEADROOM_GIB | default('0') | float)
-        >= (sunbeam_obs_min_rawfile_headroom_gib | float)
+      - pve_sunbeam_obs_facts.RAWFILE | default('none') == 'ok'
+      - (pve_sunbeam_obs_facts.RAWFILE_HEADROOM_GIB | default('0') | float)
+        >= (pve_sunbeam_obs_min_rawfile_headroom_gib | float)
     fail_msg: >-
       The k8s rawfile CSI driver would refuse the collector PVCs: it charges
       every declared-but-unwritten byte of the existing volumes against free
       space, so the usable headroom is
-      {{ sunbeam_obs_facts.RAWFILE_HEADROOM_GIB | default('?') }} GiB
-      ({{ sunbeam_obs_facts.RAWFILE_AVAIL_GIB | default('?') }} GiB free minus
-      {{ sunbeam_obs_facts.RAWFILE_HOLES_GIB | default('?') }} GiB of sparse
-      holes) against a minimum of {{ sunbeam_obs_min_rawfile_headroom_gib }} GiB.
+      {{ pve_sunbeam_obs_facts.RAWFILE_HEADROOM_GIB | default('?') }} GiB
+      ({{ pve_sunbeam_obs_facts.RAWFILE_AVAIL_GIB | default('?') }} GiB free minus
+      {{ pve_sunbeam_obs_facts.RAWFILE_HOLES_GIB | default('?') }} GiB of sparse
+      holes) against a minimum of {{ pve_sunbeam_obs_min_rawfile_headroom_gib }} GiB.
       Grow the primary container first:
-        pct resize {{ sunbeam_primary_node.vmid }} rootfs +40G
+        pct resize {{ pve_sunbeam_primary_node.vmid }} rootfs +40G
       (thin LV, resize2fs runs online). Then re-run this stage.
 
 - name: Enable the external observability stack
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'run-enable-observability.sh.j2') }}"
-  when: sunbeam_obs_needed | bool
-  register: sunbeam_obs_enable
+  when: pve_sunbeam_obs_needed | bool
+  register: pve_sunbeam_obs_enable
   failed_when: false
-  async: "{{ sunbeam_obs_enable_timeout }}"
-  poll: "{{ sunbeam_poll_interval }}"
+  async: "{{ pve_sunbeam_obs_enable_timeout }}"
+  poll: "{{ pve_sunbeam_poll_interval }}"
 
 - name: Classify the enable result
-  when: sunbeam_obs_needed | bool
+  when: pve_sunbeam_obs_needed | bool
   ansible.builtin.set_fact:
-    sunbeam_obs_enable_known_defect: >-
-      {{ "'integrate', '-m', 'openstack-machines'" in (sunbeam_obs_enable.stdout | default(''))
-         or "sunbeam-01.sunbeam.test/openstack-machines not found" in (sunbeam_obs_enable.stdout | default('')) }}
+    pve_sunbeam_obs_enable_known_defect: >-
+      {{ "'integrate', '-m', 'openstack-machines'" in (pve_sunbeam_obs_enable.stdout | default(''))
+         or "sunbeam-01.sunbeam.test/openstack-machines not found" in (pve_sunbeam_obs_enable.stdout | default('')) }}
 
 - name: Require the enable plan to have applied everything but the known defect
-  when: sunbeam_obs_needed | bool
+  when: pve_sunbeam_obs_needed | bool
   ansible.builtin.assert:
     that:
-      - (sunbeam_obs_enable.rc | default(1) | int) == 0
-        or (sunbeam_obs_enable_known_defect | bool)
+      - (pve_sunbeam_obs_enable.rc | default(1) | int) == 0
+        or (pve_sunbeam_obs_enable_known_defect | bool)
     fail_msg: >-
       `sunbeam enable observability external` failed for an unexpected reason
-      (rc={{ sunbeam_obs_enable.rc | default('?') }}). See
-      {{ sunbeam_node_log_dir }}/observability-enable.log inside
-      {{ sunbeam_primary_node.fqdn }}. Tail:
-      {{ (sunbeam_obs_enable.stdout_lines | default([]))[-5:] | join(' | ') }}
+      (rc={{ pve_sunbeam_obs_enable.rc | default('?') }}). See
+      {{ pve_sunbeam_node_log_dir }}/observability-enable.log inside
+      {{ pve_sunbeam_primary_node.fqdn }}. Tail:
+      {{ (pve_sunbeam_obs_enable.stdout_lines | default([]))[-5:] | join(' | ') }}
 
 - name: Wire the collector relations the sunbeam plan leaves out
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - su
       - "-"
-      - "{{ sunbeam_node_user }}"
+      - "{{ pve_sunbeam_node_user }}"
       - "-c"
-      - "juju integrate -m {{ item.model }} {{ item.app }}:{{ item.endpoint }} {{ sunbeam_obs_controller }}:{{ item.offer }}"
-  loop: "{{ sunbeam_obs_extra_integrations }}"
+      - "juju integrate -m {{ item.model }} {{ item.app }}:{{ item.endpoint }} {{ pve_sunbeam_obs_controller }}:{{ item.offer }}"
+  loop: "{{ pve_sunbeam_obs_extra_integrations }}"
   loop_control:
     label: "{{ item.model }} {{ item.app }}:{{ item.endpoint }}"
-  register: sunbeam_obs_integrations
-  changed_when: "'already exists' not in (sunbeam_obs_integrations.stderr | default(''))"
+  register: pve_sunbeam_obs_integrations
+  changed_when: "'already exists' not in (pve_sunbeam_obs_integrations.stderr | default(''))"
   failed_when:
-    - sunbeam_obs_integrations.rc | int != 0
-    - "'already exists' not in (sunbeam_obs_integrations.stderr | default(''))"
+    - pve_sunbeam_obs_integrations.rc | int != 0
+    - "'already exists' not in (pve_sunbeam_obs_integrations.stderr | default(''))"
 
 - name: Wait for the collectors and their hub relations to converge
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'check-observability-state.sh.j2') }}"
-  register: sunbeam_obs_state_after
-  until: "'STACK=ready' in sunbeam_obs_state_after.stdout"
-  retries: "{{ (sunbeam_obs_settle_timeout / sunbeam_obs_settle_interval) | int }}"
-  delay: "{{ sunbeam_obs_settle_interval }}"
+  register: pve_sunbeam_obs_state_after
+  until: "'STACK=ready' in pve_sunbeam_obs_state_after.stdout"
+  retries: "{{ (pve_sunbeam_obs_settle_timeout / pve_sunbeam_obs_settle_interval) | int }}"
+  delay: "{{ pve_sunbeam_obs_settle_interval }}"
   changed_when: false
 
 - name: Re-parse the converged observability state
   ansible.builtin.set_fact:
-    sunbeam_obs_facts: >-
-      {{ dict(sunbeam_obs_state_after.stdout_lines
+    pve_sunbeam_obs_facts: >-
+      {{ dict(pve_sunbeam_obs_state_after.stdout_lines
               | select('match', '^[A-Z_]+=')
               | map('split', '=')
               | list) }}
 
 - name: Fix the workload logging of the mysql-router pods
   ansible.builtin.include_tasks: logging-scope.yml
-  when: sunbeam_obs_logging_tune | bool
+  when: pve_sunbeam_obs_logging_tune | bool
 
 - name: Verify the hub Prometheus receives this environment's OpenStack metrics
   ansible.builtin.shell: |
     set -uo pipefail
     curl -sf --get --data-urlencode 'query=count({__name__=~"openstack_.*"})' \
-      'http://{{ sunbeam_obs_hub_vip }}/cos-lite-prometheus-0/api/v1/query' \
+      'http://{{ pve_sunbeam_obs_hub_vip }}/cos-lite-prometheus-0/api/v1/query' \
       | python3 -c 'import json,sys; r=json.load(sys.stdin)["data"]["result"]; print(int(r[0]["value"][1]) if r else 0)'
   args:
     executable: /bin/bash
-  register: sunbeam_obs_prom
-  until: (sunbeam_obs_prom.stdout | default('0') | trim | int) > 0
-  retries: "{{ (sunbeam_obs_settle_timeout / sunbeam_obs_settle_interval) | int }}"
-  delay: "{{ sunbeam_obs_settle_interval }}"
+  register: pve_sunbeam_obs_prom
+  until: (pve_sunbeam_obs_prom.stdout | default('0') | trim | int) > 0
+  retries: "{{ (pve_sunbeam_obs_settle_timeout / pve_sunbeam_obs_settle_interval) | int }}"
+  delay: "{{ pve_sunbeam_obs_settle_interval }}"
   failed_when: false
   changed_when: false
 
 - name: Verify the hub Loki receives this environment's logs
   ansible.builtin.shell: |
     set -uo pipefail
-    curl -sf 'http://{{ sunbeam_obs_hub_vip }}/cos-lite-loki-0/loki/api/v1/label/juju_model/values' \
+    curl -sf 'http://{{ pve_sunbeam_obs_hub_vip }}/cos-lite-loki-0/loki/api/v1/label/juju_model/values' \
       | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)["data"]))'
   args:
     executable: /bin/bash
-  register: sunbeam_obs_loki
-  until: "'openstack' in (sunbeam_obs_loki.stdout | default(''))"
-  retries: "{{ (sunbeam_obs_settle_timeout / sunbeam_obs_settle_interval) | int }}"
-  delay: "{{ sunbeam_obs_settle_interval }}"
+  register: pve_sunbeam_obs_loki
+  until: "'openstack' in (pve_sunbeam_obs_loki.stdout | default(''))"
+  retries: "{{ (pve_sunbeam_obs_settle_timeout / pve_sunbeam_obs_settle_interval) | int }}"
+  delay: "{{ pve_sunbeam_obs_settle_interval }}"
   failed_when: false
   changed_when: false
 
 - name: Report the observability result
   ansible.builtin.debug:
     msg:
-      - "hub controller : {{ sunbeam_obs_controller }} ({{ sunbeam_obs_hub_vip }})"
-      - "hub registration : file={{ sunbeam_obs_facts.ACCOUNT_FILE | default('?') }} offers={{ sunbeam_obs_facts.HUB_OFFERS | default('?') }}/3 login={{ sunbeam_obs_facts.ACCOUNT_LOGIN | default('?') }}"
-      - "enable executed: {{ 'yes' if sunbeam_obs_needed | bool else 'no (already wired)' }}"
-      - "known sunbeam defect hit: {{ 'yes' if sunbeam_obs_enable_known_defect | default(false) | bool else 'no' }}"
-      - "sunbeam feature flag : {{ sunbeam_obs_facts.FEATURE | default('?') }} (informational: stays 'no' because the plan aborts)"
-      - "openstack model   : otel={{ sunbeam_obs_facts.CAAS_OTEL | default('?') }} infra={{ sunbeam_obs_facts.CAAS_OTEL_INFRA | default('?') }} wired={{ sunbeam_obs_facts.CAAS_OTEL_WIRED | default('?') }}/3+{{ sunbeam_obs_facts.CAAS_INFRA_WIRED | default('?') }}/3"
-      - "machines model    : otel={{ sunbeam_obs_facts.MACHINES_OTEL | default('?') }} hardware-observer={{ sunbeam_obs_facts.MACHINES_HW | default('?') }} wired={{ sunbeam_obs_facts.MACHINES_WIRED | default('?') }}/3"
-      - "hub prometheus    : {{ sunbeam_obs_prom.stdout | default('0') | trim }} openstack_* series"
-      - "hub loki models   : {{ sunbeam_obs_loki.stdout | default('') | trim }}"
+      - "hub controller : {{ pve_sunbeam_obs_controller }} ({{ pve_sunbeam_obs_hub_vip }})"
+      - "hub registration : file={{ pve_sunbeam_obs_facts.ACCOUNT_FILE | default('?') }} offers={{ pve_sunbeam_obs_facts.HUB_OFFERS | default('?') }}/3 login={{ pve_sunbeam_obs_facts.ACCOUNT_LOGIN | default('?') }}"
+      - "enable executed: {{ 'yes' if pve_sunbeam_obs_needed | bool else 'no (already wired)' }}"
+      - "known sunbeam defect hit: {{ 'yes' if pve_sunbeam_obs_enable_known_defect | default(false) | bool else 'no' }}"
+      - "sunbeam feature flag : {{ pve_sunbeam_obs_facts.FEATURE | default('?') }} (informational: stays 'no' because the plan aborts)"
+      - "openstack model   : otel={{ pve_sunbeam_obs_facts.CAAS_OTEL | default('?') }} infra={{ pve_sunbeam_obs_facts.CAAS_OTEL_INFRA | default('?') }} wired={{ pve_sunbeam_obs_facts.CAAS_OTEL_WIRED | default('?') }}/3+{{ pve_sunbeam_obs_facts.CAAS_INFRA_WIRED | default('?') }}/3"
+      - "machines model    : otel={{ pve_sunbeam_obs_facts.MACHINES_OTEL | default('?') }} hardware-observer={{ pve_sunbeam_obs_facts.MACHINES_HW | default('?') }} wired={{ pve_sunbeam_obs_facts.MACHINES_WIRED | default('?') }}/3"
+      - "hub prometheus    : {{ pve_sunbeam_obs_prom.stdout | default('0') | trim }} openstack_* series"
+      - "hub loki models   : {{ pve_sunbeam_obs_loki.stdout | default('') | trim }}"

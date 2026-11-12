@@ -2,82 +2,82 @@
 
 - name: Check which flavors already exist
   ansible.builtin.command:
-    argv: "{{ pve_yoga_openstack_argv + ['flavor', 'show', item.id | string, '-f', 'json'] }}"
-  environment: "{{ pve_yoga_openstack_env }}"
-  loop: "{{ pve_yoga_resources_flavors }}"
+    argv: "{{ pve_openstack_argv + ['flavor', 'show', item.id | string, '-f', 'json'] }}"
+  environment: "{{ pve_openstack_env }}"
+  loop: "{{ pve_openstack_resources_flavors }}"
   loop_control:
     label: "{{ item.name }} (id {{ item.id }})"
-  register: pve_yoga_resources_flavor_probe
+  register: pve_openstack_resources_flavor_probe
   changed_when: false
   failed_when: false
 
 - name: Select the flavors that are missing
   ansible.builtin.set_fact:
-    pve_yoga_resources_flavors_missing: >-
-      {{ pve_yoga_resources_flavor_probe.results | selectattr('rc', 'ne', 0)
+    pve_openstack_resources_flavors_missing: >-
+      {{ pve_openstack_resources_flavor_probe.results | selectattr('rc', 'ne', 0)
          | map(attribute='item') | list }}
 
 - name: Create the missing flavors
   ansible.builtin.command:
     argv: >-
-      {{ pve_yoga_openstack_argv + ['flavor', 'create',
+      {{ pve_openstack_argv + ['flavor', 'create',
          '--id', item.id | string, '--vcpus', item.vcpus | string,
          '--ram', item.ram | string, '--disk', item.disk | string,
          '--public', item.name] }}
-  environment: "{{ pve_yoga_openstack_env }}"
-  loop: "{{ pve_yoga_resources_flavors_missing }}"
+  environment: "{{ pve_openstack_env }}"
+  loop: "{{ pve_openstack_resources_flavors_missing }}"
   loop_control:
     label: "{{ item.name }} (id {{ item.id }})"
 
 - name: Check which images already exist
   ansible.builtin.command:
-    argv: "{{ pve_yoga_openstack_argv + ['image', 'show', item.name, '-f', 'json'] }}"
-  environment: "{{ pve_yoga_openstack_env }}"
-  loop: "{{ pve_yoga_resources_images }}"
+    argv: "{{ pve_openstack_argv + ['image', 'show', item.name, '-f', 'json'] }}"
+  environment: "{{ pve_openstack_env }}"
+  loop: "{{ pve_openstack_resources_images }}"
   loop_control:
     label: "{{ item.name }}"
-  register: pve_yoga_resources_image_probe
+  register: pve_openstack_resources_image_probe
   changed_when: false
   failed_when: false
 
 - name: Select the images that are missing
   ansible.builtin.set_fact:
-    pve_yoga_resources_images_missing: >-
-      {{ pve_yoga_resources_image_probe.results | selectattr('rc', 'ne', 0)
+    pve_openstack_resources_images_missing: >-
+      {{ pve_openstack_resources_image_probe.results | selectattr('rc', 'ne', 0)
          | map(attribute='item') | list }}
 
 - name: Create the local image cache directory
   ansible.builtin.file:
-    path: "{{ pve_yoga_image_cache_dir }}"
+    path: "{{ pve_openstack_image_cache_dir }}"
     state: directory
     mode: "0755"
-  when: pve_yoga_resources_images_missing | length > 0
+  when: pve_openstack_resources_images_missing | length > 0
 
 - name: Look for the cached image files
   ansible.builtin.stat:
     path: "{{ item.file }}"
-  loop: "{{ pve_yoga_resources_images_missing }}"
+  loop: "{{ pve_openstack_resources_images_missing }}"
   loop_control:
     label: "{{ item.name }}"
-  register: pve_yoga_resources_image_cache
+  register: pve_openstack_resources_image_cache
   changed_when: false
 
 - name: Select the cached image files that are not there yet
   ansible.builtin.set_fact:
-    pve_yoga_resources_image_downloads: >-
-      {{ pve_yoga_resources_image_cache.results | default([])
+    pve_openstack_resources_image_downloads: >-
+      {{ pve_openstack_resources_image_cache.results | default([])
          | selectattr('stat.exists', 'equalto', false) | map(attribute='item') | list }}
 
 - name: Download the images missing from the local cache
   ansible.builtin.command:
     argv: >-
       {{ ['curl', '-fL', '--retry', '3', '--connect-timeout', '15']
-         + (['-x', pve_yoga_image_download_proxy] if pve_yoga_image_download_proxy | length > 0 else [])
+         + (['-x', pve_openstack_image_download_proxy] if pve_openstack_image_download_proxy | length > 0 else [])
          + ['-o', item.file, item.url] }}
-  loop: "{{ pve_yoga_resources_image_downloads }}"
+  loop: "{{ pve_openstack_resources_image_downloads }}"
   loop_control:
     label: "{{ item.name }}"
-  register: pve_yoga_resources_image_fetch
+  register: pve_openstack_resources_image_fetch
   failed_when: false
 
 - name: Require every missing image to have been downloaded
@@ -86,9 +86,9 @@
     fail_msg: >-
       downloading {{ item.item.url }} failed ({{ item.item.name }}). download.cirros-cloud.net will
       302 to github.com, which most environments cannot reach directly -- use
-      re-run with -e pve_yoga_image_download_proxy=http://<proxy>, or copy the image by hand into
+      -e pve_openstack_image_download_proxy=http://<proxy> to re-run, or copy the image by hand into
       {{ item.item.file }} (checksum {{ item.item.checksum }}).
-  loop: "{{ pve_yoga_resources_image_fetch.results | default([]) }}"
+  loop: "{{ pve_openstack_resources_image_fetch.results | default([]) }}"
   loop_control:
     label: "{{ item.item.name }}"
 
@@ -97,10 +97,10 @@
     path: "{{ item.file }}"
     get_checksum: true
     checksum_algorithm: "{{ item.checksum.split(':')[0] }}"
-  loop: "{{ pve_yoga_resources_images_missing }}"
+  loop: "{{ pve_openstack_resources_images_missing }}"
   loop_control:
     label: "{{ item.name }}"
-  register: pve_yoga_resources_image_files
+  register: pve_openstack_resources_image_files
   changed_when: false
 
 - name: Require the cached image files to match their expected checksums
@@ -112,191 +112,191 @@
       image cache checksum mismatch: {{ item.item.file }} (expected {{ item.item.checksum }}, got
       {{ item.item.checksum.split(':')[0] }}:{{ item.stat.checksum | default('file missing') }}).
       delete that file and re-run this stage to download it again.
-  loop: "{{ pve_yoga_resources_image_files.results | default([]) }}"
+  loop: "{{ pve_openstack_resources_image_files.results | default([]) }}"
   loop_control:
     label: "{{ item.item.name }}"
 
 - name: Upload the missing images to Glance
   ansible.builtin.command:
     argv: >-
-      {{ pve_yoga_openstack_argv + ['image', 'create', '--file', item.file,
+      {{ pve_openstack_argv + ['image', 'create', '--file', item.file,
          '--disk-format', item.disk_format, '--container-format', 'bare',
          '--public', item.name] }}
-  environment: "{{ pve_yoga_openstack_env }}"
-  loop: "{{ pve_yoga_resources_images_missing }}"
+  environment: "{{ pve_openstack_env }}"
+  loop: "{{ pve_openstack_resources_images_missing }}"
   loop_control:
     label: "{{ item.name }}"
 
 - name: Check whether the external network already exists
   ansible.builtin.command:
-    argv: "{{ pve_yoga_openstack_argv + ['network', 'show', pve_yoga_resources_ext_net, '-f', 'json'] }}"
-  environment: "{{ pve_yoga_openstack_env }}"
-  register: pve_yoga_resources_ext_net_probe
+    argv: "{{ pve_openstack_argv + ['network', 'show', pve_openstack_resources_ext_net, '-f', 'json'] }}"
+  environment: "{{ pve_openstack_env }}"
+  register: pve_openstack_resources_ext_net_probe
   changed_when: false
   failed_when: false
 
 - name: Create the external network
   ansible.builtin.command:
     argv: >-
-      {{ pve_yoga_openstack_argv + ['network', 'create', '--external',
+      {{ pve_openstack_argv + ['network', 'create', '--external',
          '--provider-network-type', 'flat',
-         '--provider-physical-network', pve_yoga_resources_physical_network,
-         pve_yoga_resources_ext_net] }}
-  environment: "{{ pve_yoga_openstack_env }}"
-  when: pve_yoga_resources_ext_net_probe.rc != 0
+         '--provider-physical-network', pve_openstack_resources_physical_network,
+         pve_openstack_resources_ext_net] }}
+  environment: "{{ pve_openstack_env }}"
+  when: pve_openstack_resources_ext_net_probe.rc != 0
 
 - name: Check whether the external subnet already exists
   ansible.builtin.command:
-    argv: "{{ pve_yoga_openstack_argv + ['subnet', 'show', pve_yoga_resources_ext_subnet, '-f', 'json'] }}"
-  environment: "{{ pve_yoga_openstack_env }}"
-  register: pve_yoga_resources_ext_subnet_probe
+    argv: "{{ pve_openstack_argv + ['subnet', 'show', pve_openstack_resources_ext_subnet, '-f', 'json'] }}"
+  environment: "{{ pve_openstack_env }}"
+  register: pve_openstack_resources_ext_subnet_probe
   changed_when: false
   failed_when: false
 
 - name: Create the external subnet
   ansible.builtin.command:
     argv: >-
-      {{ pve_yoga_openstack_argv + ['subnet', 'create',
-         '--network', pve_yoga_resources_ext_net,
-         '--subnet-range', pve_yoga_public_cidr,
-         '--gateway', pve_yoga_public_gateway,
-         '--allocation-pool', 'start=' ~ pve_yoga_resources_floating_pool_start ~ ',end=' ~ pve_yoga_resources_floating_pool_end,
-         '--no-dhcp', pve_yoga_resources_ext_subnet] }}
-  environment: "{{ pve_yoga_openstack_env }}"
-  when: pve_yoga_resources_ext_subnet_probe.rc != 0
+      {{ pve_openstack_argv + ['subnet', 'create',
+         '--network', pve_openstack_resources_ext_net,
+         '--subnet-range', pve_openstack_public_cidr,
+         '--gateway', pve_openstack_public_gateway,
+         '--allocation-pool', 'start=' ~ pve_openstack_resources_floating_pool_start ~ ',end=' ~ pve_openstack_resources_floating_pool_end,
+         '--no-dhcp', pve_openstack_resources_ext_subnet] }}
+  environment: "{{ pve_openstack_env }}"
+  when: pve_openstack_resources_ext_subnet_probe.rc != 0
 
 - name: Check whether the tenant network already exists
   ansible.builtin.command:
-    argv: "{{ pve_yoga_openstack_argv + ['network', 'show', pve_yoga_resources_tenant_net, '-f', 'json'] }}"
-  environment: "{{ pve_yoga_openstack_env }}"
-  register: pve_yoga_resources_tenant_net_probe
+    argv: "{{ pve_openstack_argv + ['network', 'show', pve_openstack_resources_tenant_net, '-f', 'json'] }}"
+  environment: "{{ pve_openstack_env }}"
+  register: pve_openstack_resources_tenant_net_probe
   changed_when: false
   failed_when: false
 
 - name: Create the tenant network
   ansible.builtin.command:
-    argv: "{{ pve_yoga_openstack_argv + ['network', 'create', pve_yoga_resources_tenant_net] }}"
-  environment: "{{ pve_yoga_openstack_env }}"
-  when: pve_yoga_resources_tenant_net_probe.rc != 0
+    argv: "{{ pve_openstack_argv + ['network', 'create', pve_openstack_resources_tenant_net] }}"
+  environment: "{{ pve_openstack_env }}"
+  when: pve_openstack_resources_tenant_net_probe.rc != 0
 
 - name: Check whether the tenant subnet already exists
   ansible.builtin.command:
-    argv: "{{ pve_yoga_openstack_argv + ['subnet', 'show', pve_yoga_resources_tenant_subnet, '-f', 'json'] }}"
-  environment: "{{ pve_yoga_openstack_env }}"
-  register: pve_yoga_resources_tenant_subnet_probe
+    argv: "{{ pve_openstack_argv + ['subnet', 'show', pve_openstack_resources_tenant_subnet, '-f', 'json'] }}"
+  environment: "{{ pve_openstack_env }}"
+  register: pve_openstack_resources_tenant_subnet_probe
   changed_when: false
   failed_when: false
 
 - name: Create the tenant subnet
   ansible.builtin.command:
     argv: >-
-      {{ pve_yoga_openstack_argv + ['subnet', 'create',
-         '--network', pve_yoga_resources_tenant_net,
-         '--subnet-range', pve_yoga_resources_tenant_cidr,
-         '--gateway', pve_yoga_resources_tenant_gateway,
-         '--dns-nameserver', pve_yoga_resources_tenant_dns,
-         pve_yoga_resources_tenant_subnet] }}
-  environment: "{{ pve_yoga_openstack_env }}"
-  when: pve_yoga_resources_tenant_subnet_probe.rc != 0
+      {{ pve_openstack_argv + ['subnet', 'create',
+         '--network', pve_openstack_resources_tenant_net,
+         '--subnet-range', pve_openstack_resources_tenant_cidr,
+         '--gateway', pve_openstack_resources_tenant_gateway,
+         '--dns-nameserver', pve_openstack_resources_tenant_dns,
+         pve_openstack_resources_tenant_subnet] }}
+  environment: "{{ pve_openstack_env }}"
+  when: pve_openstack_resources_tenant_subnet_probe.rc != 0
 
 - name: Check whether the router already exists
   ansible.builtin.command:
-    argv: "{{ pve_yoga_openstack_argv + ['router', 'show', pve_yoga_resources_router, '-f', 'json'] }}"
-  environment: "{{ pve_yoga_openstack_env }}"
-  register: pve_yoga_resources_router_probe
+    argv: "{{ pve_openstack_argv + ['router', 'show', pve_openstack_resources_router, '-f', 'json'] }}"
+  environment: "{{ pve_openstack_env }}"
+  register: pve_openstack_resources_router_probe
   changed_when: false
   failed_when: false
 
 - name: Create the router
   ansible.builtin.command:
-    argv: "{{ pve_yoga_openstack_argv + ['router', 'create', pve_yoga_resources_router] }}"
-  environment: "{{ pve_yoga_openstack_env }}"
-  when: pve_yoga_resources_router_probe.rc != 0
+    argv: "{{ pve_openstack_argv + ['router', 'create', pve_openstack_resources_router] }}"
+  environment: "{{ pve_openstack_env }}"
+  when: pve_openstack_resources_router_probe.rc != 0
 
 - name: Read the external network id
   ansible.builtin.command:
-    argv: "{{ pve_yoga_openstack_argv + ['network', 'show', pve_yoga_resources_ext_net, '-f', 'json', '-c', 'id'] }}"
-  environment: "{{ pve_yoga_openstack_env }}"
-  register: pve_yoga_resources_ext_net_info
+    argv: "{{ pve_openstack_argv + ['network', 'show', pve_openstack_resources_ext_net, '-f', 'json', '-c', 'id'] }}"
+  environment: "{{ pve_openstack_env }}"
+  register: pve_openstack_resources_ext_net_info
   changed_when: false
 
 - name: Read the tenant subnet id
   ansible.builtin.command:
-    argv: "{{ pve_yoga_openstack_argv + ['subnet', 'show', pve_yoga_resources_tenant_subnet, '-f', 'json', '-c', 'id'] }}"
-  environment: "{{ pve_yoga_openstack_env }}"
-  register: pve_yoga_resources_tenant_subnet_info
+    argv: "{{ pve_openstack_argv + ['subnet', 'show', pve_openstack_resources_tenant_subnet, '-f', 'json', '-c', 'id'] }}"
+  environment: "{{ pve_openstack_env }}"
+  register: pve_openstack_resources_tenant_subnet_info
   changed_when: false
 
 - name: Read the current router state
   ansible.builtin.command:
-    argv: "{{ pve_yoga_openstack_argv + ['router', 'show', pve_yoga_resources_router, '-f', 'json'] }}"
-  environment: "{{ pve_yoga_openstack_env }}"
-  register: pve_yoga_resources_router_info
+    argv: "{{ pve_openstack_argv + ['router', 'show', pve_openstack_resources_router, '-f', 'json'] }}"
+  environment: "{{ pve_openstack_env }}"
+  register: pve_openstack_resources_router_info
   changed_when: false
 
 - name: Point the router at the external network
   ansible.builtin.command:
-    argv: "{{ pve_yoga_openstack_argv + ['router', 'set', pve_yoga_resources_router, '--external-gateway', pve_yoga_resources_ext_net] }}"
-  environment: "{{ pve_yoga_openstack_env }}"
+    argv: "{{ pve_openstack_argv + ['router', 'set', pve_openstack_resources_router, '--external-gateway', pve_openstack_resources_ext_net] }}"
+  environment: "{{ pve_openstack_env }}"
   when: >-
-    (((pve_yoga_resources_router_info.stdout | from_json).external_gateway_info | default({}, true)) or {}).get('network_id')
-    != (pve_yoga_resources_ext_net_info.stdout | from_json).id
+    (((pve_openstack_resources_router_info.stdout | from_json).external_gateway_info | default({}, true)) or {}).get('network_id')
+    != (pve_openstack_resources_ext_net_info.stdout | from_json).id
 
 - name: Attach the tenant subnet to the router
   ansible.builtin.command:
-    argv: "{{ pve_yoga_openstack_argv + ['router', 'add', 'subnet', pve_yoga_resources_router, pve_yoga_resources_tenant_subnet] }}"
-  environment: "{{ pve_yoga_openstack_env }}"
+    argv: "{{ pve_openstack_argv + ['router', 'add', 'subnet', pve_openstack_resources_router, pve_openstack_resources_tenant_subnet] }}"
+  environment: "{{ pve_openstack_env }}"
   when: >-
-    (pve_yoga_resources_tenant_subnet_info.stdout | from_json).id
-    not in ((pve_yoga_resources_router_info.stdout | from_json).interfaces_info | default([])
+    (pve_openstack_resources_tenant_subnet_info.stdout | from_json).id
+    not in ((pve_openstack_resources_router_info.stdout | from_json).interfaces_info | default([])
             | map(attribute='subnet_id') | list)
 
 - name: Resolve the project used by the client RC
   ansible.builtin.command:
     argv: >-
-      {{ pve_yoga_openstack_argv + ['project', 'show', pve_yoga_resources_project,
-         '--domain', pve_yoga_resources_project_domain, '-f', 'json', '-c', 'id'] }}
-  environment: "{{ pve_yoga_openstack_env }}"
-  register: pve_yoga_resources_project_info
+      {{ pve_openstack_argv + ['project', 'show', pve_openstack_resources_project,
+         '--domain', pve_openstack_resources_project_domain, '-f', 'json', '-c', 'id'] }}
+  environment: "{{ pve_openstack_env }}"
+  register: pve_openstack_resources_project_info
   changed_when: false
 
 - name: Resolve the default security group of that project
   ansible.builtin.command:
     argv: >-
-      {{ pve_yoga_openstack_argv + ['security', 'group', 'list',
-         '--project', (pve_yoga_resources_project_info.stdout | from_json).id, '-f', 'json'] }}
-  environment: "{{ pve_yoga_openstack_env }}"
-  register: pve_yoga_resources_secgroups
+      {{ pve_openstack_argv + ['security', 'group', 'list',
+         '--project', (pve_openstack_resources_project_info.stdout | from_json).id, '-f', 'json'] }}
+  environment: "{{ pve_openstack_env }}"
+  register: pve_openstack_resources_secgroups
   changed_when: false
 
 - name: Derive the default security group id
   ansible.builtin.set_fact:
-    pve_yoga_resources_secgroup_id: >-
-      {{ ((pve_yoga_resources_secgroups.stdout | from_json)
-          | selectattr('Name', 'equalto', pve_yoga_resources_secgroup) | list | first).ID }}
+    pve_openstack_resources_secgroup_id: >-
+      {{ ((pve_openstack_resources_secgroups.stdout | from_json)
+          | selectattr('Name', 'equalto', pve_openstack_resources_secgroup) | list | first).ID }}
 
 - name: Read the current rules of the default security group
   ansible.builtin.command:
     argv: >-
-      {{ pve_yoga_openstack_argv + ['security', 'group', 'rule', 'list',
-         pve_yoga_resources_secgroup_id, '-f', 'json'] }}
-  environment: "{{ pve_yoga_openstack_env }}"
-  register: pve_yoga_resources_secgroup_current
+      {{ pve_openstack_argv + ['security', 'group', 'rule', 'list',
+         pve_openstack_resources_secgroup_id, '-f', 'json'] }}
+  environment: "{{ pve_openstack_env }}"
+  register: pve_openstack_resources_secgroup_current
   changed_when: false
 
 - name: Create the missing ingress rules on the default security group
   ansible.builtin.command:
     argv: >-
-      {{ pve_yoga_openstack_argv + ['security', 'group', 'rule', 'create',
+      {{ pve_openstack_argv + ['security', 'group', 'rule', 'create',
          '--ingress', '--ethertype', 'IPv4', '--proto', item.proto]
          + (['--dst-port', item.dst_port | string] if item.dst_port is defined else [])
-         + [pve_yoga_resources_secgroup_id] }}
-  environment: "{{ pve_yoga_openstack_env }}"
-  loop: "{{ pve_yoga_resources_secgroup_rules }}"
+         + [pve_openstack_resources_secgroup_id] }}
+  environment: "{{ pve_openstack_env }}"
+  loop: "{{ pve_openstack_resources_secgroup_rules }}"
   loop_control:
     label: "{{ item.proto }}{{ ':' ~ item.dst_port if item.dst_port is defined else '' }}"
   when: >-
-    (pve_yoga_resources_secgroup_current.stdout | from_json)
+    (pve_openstack_resources_secgroup_current.stdout | from_json)
     | selectattr('Direction', 'equalto', 'ingress')
     | selectattr('Ethertype', 'equalto', 'IPv4')
     | selectattr('IP Protocol', 'equalto', item.proto)
@@ -305,39 +305,39 @@
 
 - name: Check whether the test keypair already exists
   ansible.builtin.command:
-    argv: "{{ pve_yoga_openstack_argv + ['keypair', 'show', pve_yoga_resources_keypair, '-f', 'json'] }}"
-  environment: "{{ pve_yoga_openstack_env }}"
-  register: pve_yoga_resources_keypair_probe
+    argv: "{{ pve_openstack_argv + ['keypair', 'show', pve_openstack_resources_keypair, '-f', 'json'] }}"
+  environment: "{{ pve_openstack_env }}"
+  register: pve_openstack_resources_keypair_probe
   changed_when: false
   failed_when: false
 
 - name: Create the test keypair
   ansible.builtin.command:
-    argv: "{{ pve_yoga_openstack_argv + ['keypair', 'create', pve_yoga_resources_keypair] }}"
-  environment: "{{ pve_yoga_openstack_env }}"
-  register: pve_yoga_resources_keypair_out
-  when: pve_yoga_resources_keypair_probe.rc != 0
+    argv: "{{ pve_openstack_argv + ['keypair', 'create', pve_openstack_resources_keypair] }}"
+  environment: "{{ pve_openstack_env }}"
+  register: pve_openstack_resources_keypair_out
+  when: pve_openstack_resources_keypair_probe.rc != 0
 
 - name: Save the keypair private key on the control node
   ansible.builtin.copy:
-    content: "{{ pve_yoga_resources_keypair_out.stdout }}\n"
-    dest: "{{ pve_yoga_keypair_private_key_file }}"
+    content: "{{ pve_openstack_resources_keypair_out.stdout }}\n"
+    dest: "{{ pve_openstack_keypair_private_key_file }}"
     mode: "0600"
-  when: pve_yoga_resources_keypair_probe.rc != 0
+  when: pve_openstack_resources_keypair_probe.rc != 0
 
 - name: Look for the keypair private key on the control node
   ansible.builtin.stat:
-    path: "{{ pve_yoga_keypair_private_key_file }}"
-  register: pve_yoga_resources_keypair_key
+    path: "{{ pve_openstack_keypair_private_key_file }}"
+  register: pve_openstack_resources_keypair_key
   changed_when: false
 
 - name: Warn when the keypair exists but its private key is not available here
   ansible.builtin.debug:
     msg: >-
-      keypair {{ pve_yoga_resources_keypair }} already exists in OpenStack, but this machine has no matching private key
-      {{ pve_yoga_keypair_private_key_file }} (an existing keypair can no longer export its private key).
+      keypair {{ pve_openstack_resources_keypair }} already exists in OpenStack, but this machine has no matching private key
+      {{ pve_openstack_keypair_private_key_file }} (an existing keypair can no longer export its private key).
       to get SSH access to the instances: delete the keypair and re-run this stage (it regenerates and saves the private key),
-      or change pve_yoga_resources_keypair to a different name.
+      or change pve_openstack_resources_keypair to a different name.
   when:
-    - pve_yoga_resources_keypair_probe.rc == 0
-    - not pve_yoga_resources_keypair_key.stat.exists
+    - pve_openstack_resources_keypair_probe.rc == 0
+    - not pve_openstack_resources_keypair_key.stat.exists

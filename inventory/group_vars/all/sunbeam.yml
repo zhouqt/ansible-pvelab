@@ -1,38 +1,38 @@
 ---
 
-sunbeam_host: pve host
-sunbeam_pve_storage: pve-thin-pool
-sunbeam_pve_thinpool_lv: pve-thin-pool
-sunbeam_template: local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst
-sunbeam_ct_ostype: ubuntu
-sunbeam_ct_cores: 8
-sunbeam_ct_memory_mb: 32768
-sunbeam_ct_swap_mb: 0
-sunbeam_ct_features: nesting=1,fuse=1,keyctl=1
-sunbeam_ct_nameserver: 8.8.8.8
-sunbeam_ct_onboot: 1
-sunbeam_ct_startup_order: 5
-sunbeam_ct_tags: sunbeam
-sunbeam_rootfs_size_gb: 80
-sunbeam_osd_size_gb: 50
+pve_sunbeam_host: pve-host
+pve_sunbeam_storage: pve-thin-pool
+pve_sunbeam_thinpool_lv: pve-thin-pool
+pve_sunbeam_template: local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst
+pve_sunbeam_ct_ostype: ubuntu
+pve_sunbeam_ct_cores: 8
+pve_sunbeam_ct_memory_mb: 32768
+pve_sunbeam_ct_swap_mb: 0
+pve_sunbeam_ct_features: nesting=1,fuse=1,keyctl=1
+pve_sunbeam_ct_nameserver: 8.8.8.8
+pve_sunbeam_ct_onboot: 1
+pve_sunbeam_ct_startup_order: 5
+pve_sunbeam_ct_tags: sunbeam
+pve_sunbeam_rootfs_size_gb: 80
+pve_sunbeam_osd_size_gb: 50
 
-sunbeam_domain: sunbeam.test
-sunbeam_osd_by_id_prefix: pve-ceph-osd-
-sunbeam_osd_microceph_device_prefix: pve-ceph-osd-device-
-sunbeam_osd_slots_default: { lv: 40, by_id: 41 }
-sunbeam_char_devices_default:
+pve_sunbeam_domain: sunbeam.test
+pve_sunbeam_osd_by_id_prefix: pve-ceph-osd-
+pve_sunbeam_osd_microceph_device_prefix: pve-ceph-osd-device-
+pve_sunbeam_osd_slots_default: { lv: 40, by_id: 41 }
+pve_sunbeam_char_devices_default:
   - { index: 0, path: "/dev/kmsg", mode: "0644", extra: "deny-write=1" }
   - { index: 1, path: "/dev/loop-control", mode: "0660" }
   - { index: 33, path: "/dev/kvm", mode: "0660" }
   - { index: 34, path: "/dev/net/tun", mode: "0666" }
-sunbeam_loop_device_first: 2
-sunbeam_loop_device_last: 31
-sunbeam_loop_device_low_slots:
+pve_sunbeam_loop_device_first: 2
+pve_sunbeam_loop_device_last: 31
+pve_sunbeam_loop_device_low_slots:
   - { slot: 36, loop: 0 }
   - { slot: 37, loop: 1 }
-sunbeam_loop_reap_stale_csi_devices: false
+pve_sunbeam_loop_reap_stale_csi_devices: false
 
-sunbeam_nodes_input:
+pve_sunbeam_nodes_input:
   - vmid: 1201
     hostname: sunbeam-01
     primary: true
@@ -61,15 +61,15 @@ sunbeam_nodes_input:
     mounts:
       - "/dev/loop-control dev/loop-control none bind,create=file 0 0"
 
-sunbeam_cluster_list_expected_nodes: 3
+pve_sunbeam_cluster_list_expected_nodes: 3
 
-sunbeam_interface_names: { generic: eth0, internal: eth1, external: eth2 }
-sunbeam_pve_bridges: { generic: pub21, internal: int23, external: pub22 }
+pve_sunbeam_interface_names: { generic: eth0, internal: eth1, external: eth2 }
+pve_sunbeam_bridges: { generic: pub21, internal: int23, external: pub22 }
 
-sunbeam_management_cidr: 192.168.21.0/24
-sunbeam_management_gateway: 192.168.21.1
-sunbeam_internal_cidr: 192.168.23.0/24
-sunbeam_external_network:
+pve_sunbeam_management_cidr: 192.168.21.0/24
+pve_sunbeam_management_gateway: 192.168.21.1
+pve_sunbeam_internal_cidr: 192.168.23.0/24
+pve_sunbeam_external_network:
   name: physnet1
   openstack_name: external-network
   cidr: 192.168.22.0/24
@@ -78,138 +78,138 @@ sunbeam_external_network:
   network_type: flat
   segmentation_id: 0
   allow_shared_l2: false
-sunbeam_external_reserved_ips:
+pve_sunbeam_external_reserved_ips:
   - 192.168.22.1
-sunbeam_external_reserved_ranges: []
-sunbeam_k8s_loadbalancer_range: 172.16.1.201-172.16.1.240
-sunbeam_k8s_loadbalancer_cidr: 172.16.1.0/24
-sunbeam_tenant_cidr: 192.168.0.0/24
-sunbeam_tenant_network_name: demo-network
-sunbeam_dns_nameservers: 8.8.8.8
+pve_sunbeam_external_reserved_ranges: []
+pve_sunbeam_k8s_loadbalancer_range: 172.16.1.201-172.16.1.240
+pve_sunbeam_k8s_loadbalancer_cidr: 172.16.1.0/24
+pve_sunbeam_tenant_cidr: 192.168.0.0/24
+pve_sunbeam_tenant_network_name: demo-network
+pve_sunbeam_dns_nameservers: 8.8.8.8
 
-sunbeam_proxy_enabled: false
-sunbeam_proxy_allow_unreachable: false
-sunbeam_proxy_url: http://192.168.11.2:12345
-sunbeam_snapd_store_proxy_url: http://192.168.11.1:12345
-sunbeam_containerd_registry_proxy_url: http://192.168.11.1:12345
-sunbeam_proxy_no_proxy_tail:
+pve_sunbeam_proxy_enabled: false
+pve_sunbeam_proxy_allow_unreachable: false
+pve_sunbeam_proxy_url: http://192.168.11.2:12345
+pve_sunbeam_snapd_store_proxy_url: http://192.168.11.1:12345
+pve_sunbeam_containerd_registry_proxy_url: http://192.168.11.1:12345
+pve_sunbeam_proxy_no_proxy_tail:
   - 10.1.0.0/16
   - 10.140.97.0/24
   - 10.140.97.1
   - 10.152.183.0/24
   - 172.16.1.0/24
 
-sunbeam_snap_name: openstack
-sunbeam_snap_channel: 2024.1/stable
-sunbeam_snap_revision: "1101"
-sunbeam_snap_version_marker: "2024.1"
-sunbeam_juju_channel: 3.6/stable
-sunbeam_juju_version: "3.6.29"
-sunbeam_microceph_channel: squid/stable
-sunbeam_microceph_revision: "1895"
-sunbeam_microceph_version: "19.2.3"
-sunbeam_snapd_deb_version: "2.77.1"
-sunbeam_kernel_modules_stub: true
-sunbeam_expected_ubuntu_release: "24.04"
-sunbeam_expected_ubuntu_codename: noble
+pve_sunbeam_snap_name: openstack
+pve_sunbeam_snap_channel: 2024.1/stable
+pve_sunbeam_snap_revision: "1101"
+pve_sunbeam_snap_version_marker: "2024.1"
+pve_sunbeam_juju_channel: 3.6/stable
+pve_sunbeam_juju_version: "3.6.29"
+pve_sunbeam_microceph_channel: squid/stable
+pve_sunbeam_microceph_revision: "1895"
+pve_sunbeam_microceph_version: "19.2.3"
+pve_sunbeam_snapd_deb_version: "2.77.1"
+pve_sunbeam_kernel_modules_stub: true
+pve_sunbeam_expected_ubuntu_release: "24.04"
+pve_sunbeam_expected_ubuntu_codename: noble
 
-sunbeam_controller_name: localhost-localhost
-sunbeam_cluster_model: openstack-machines
-sunbeam_region: RegionOne
-sunbeam_database_topology: single
+pve_sunbeam_controller_name: localhost-localhost
+pve_sunbeam_cluster_model: openstack-machines
+pve_sunbeam_region: RegionOne
+pve_sunbeam_database_topology: single
 
-sunbeam_demo_username: demo
-sunbeam_demo_password: "{{ vault_sunbeam_demo_password | default('') }}"
+pve_sunbeam_demo_username: demo
+pve_sunbeam_demo_password: "{{ vault_sunbeam_demo_password | default('') }}"
 
-sunbeam_node_user: sunbeam
-sunbeam_node_home: /home/sunbeam
-sunbeam_manifest_path: /home/sunbeam/sunbeam-deploy-manifest.yaml
-sunbeam_admin_openrc_path: /home/sunbeam/sunbeam-admin-openrc
-sunbeam_join_token_dir: /home/sunbeam
-sunbeam_join_token_path: "{{ sunbeam_join_token_dir }}/join-token.asc"
-sunbeam_join_token_primary_path: "{{ sunbeam_join_token_dir }}/join-token-{{ vmid }}.asc"
-sunbeam_join_wrapper_path: /usr/local/sbin/sunbeam-join-node.sh
-sunbeam_osd_setup_script: /usr/local/sbin/microceph-osd-device-setup
-sunbeam_osd_service_dropin: /etc/systemd/system/snap.microceph.osd.service.d/10-osd-device.conf
-sunbeam_node_log_dir: /var/log/sunbeam
-sunbeam_etc_environment: /etc/environment
-sunbeam_apt_proxy_file: /etc/apt/apt.conf.d/95proxy
-sunbeam_demo_openrc_path: /home/sunbeam/sunbeam-demo-openrc
-sunbeam_inner_lxd_raw_lxc: "lxc.apparmor.profile=unchanged"
+pve_sunbeam_node_user: sunbeam
+pve_sunbeam_node_home: /home/sunbeam
+pve_sunbeam_manifest_path: /home/sunbeam/sunbeam-deploy-manifest.yaml
+pve_sunbeam_admin_openrc_path: /home/sunbeam/sunbeam-admin-openrc
+pve_sunbeam_join_token_dir: /home/sunbeam
+pve_sunbeam_join_token_path: "{{ pve_sunbeam_join_token_dir }}/join-token.asc"
+pve_sunbeam_join_token_primary_path: "{{ pve_sunbeam_join_token_dir }}/join-token-{{ vmid }}.asc"
+pve_sunbeam_join_wrapper_path: /usr/local/sbin/sunbeam-join-node.sh
+pve_sunbeam_osd_setup_script: /usr/local/sbin/microceph-osd-device-setup
+pve_sunbeam_osd_service_dropin: /etc/systemd/system/snap.microceph.osd.service.d/10-osd-device.conf
+pve_sunbeam_node_log_dir: /var/log/sunbeam
+pve_sunbeam_etc_environment: /etc/environment
+pve_sunbeam_apt_proxy_file: /etc/apt/apt.conf.d/95proxy
+pve_sunbeam_demo_openrc_path: /home/sunbeam/sunbeam-demo-openrc
+pve_sunbeam_inner_lxd_raw_lxc: "lxc.apparmor.profile=unchanged"
 
-sunbeam_tls_provider: self-signed
-sunbeam_tls_endpoints:
+pve_sunbeam_tls_provider: self-signed
+pve_sunbeam_tls_endpoints:
   - public
 
-sunbeam_confirm_pve_create: false
-sunbeam_confirm_cluster_bootstrap: false
-sunbeam_confirm_cluster_join: false
-sunbeam_confirm_external_changes: false
-sunbeam_confirm_ceph_osd: false
-sunbeam_confirm_tls: false
-sunbeam_confirm_observability: false
+pve_sunbeam_confirm_pve_create: false
+pve_sunbeam_confirm_cluster_bootstrap: false
+pve_sunbeam_confirm_cluster_join: false
+pve_sunbeam_confirm_external_changes: false
+pve_sunbeam_confirm_ceph_osd: false
+pve_sunbeam_confirm_tls: false
+pve_sunbeam_confirm_observability: false
 
-sunbeam_allow_unreadable_cluster_state: false
-sunbeam_bootstrap_repair_incomplete: true
-sunbeam_repair_openrc: false
-sunbeam_ceph_remove_bootstrap_osd: false
-sunbeam_pve_preflight_only: false
+pve_sunbeam_allow_unreadable_cluster_state: false
+pve_sunbeam_bootstrap_repair_incomplete: true
+pve_sunbeam_repair_openrc: false
+pve_sunbeam_ceph_remove_bootstrap_osd: false
+pve_sunbeam_preflight_only: false
 
-sunbeam_env_id: env2
-sunbeam_savepoint_tag: noble-sunbeam-2024.1
-sunbeam_savepoint_name: ""
-sunbeam_savepoint_prefix: "sp-{{ sunbeam_savepoint_tag }}-{{ sunbeam_env_id }}{% if sunbeam_savepoint_name | length > 0 %}-{{ sunbeam_savepoint_name }}{% endif %}"
-sunbeam_savepoint_take: false
-sunbeam_savepoint_restore: false
-sunbeam_savepoint_include_osd: true
-sunbeam_savepoint_repair_network: true
-sunbeam_savepoint_verify_fip_ping: true
+pve_sunbeam_env_id: env2
+pve_sunbeam_savepoint_tag: noble-sunbeam-2024.1
+pve_sunbeam_savepoint_name: ""
+pve_sunbeam_savepoint_prefix: "sp-{{ pve_sunbeam_savepoint_tag }}-{{ pve_sunbeam_env_id }}{% if pve_sunbeam_savepoint_name | length > 0 %}-{{ pve_sunbeam_savepoint_name }}{% endif %}"
+pve_sunbeam_savepoint_take: false
+pve_sunbeam_savepoint_restore: false
+pve_sunbeam_savepoint_include_osd: true
+pve_sunbeam_savepoint_repair_network: true
+pve_sunbeam_savepoint_verify_fip_ping: true
 
-sunbeam_obs_controller: "{{ pve_obs_hub_cos_controller }}"
-sunbeam_obs_account_user: sunbeam-obs
-sunbeam_obs_switch_back_controller: sunbeam-controller
-sunbeam_obs_hub_juju_client_vmid: "{{ pve_obs_hub_juju_client_vmid }}"
-sunbeam_obs_hub_juju_client_user: "{{ pve_obs_hub_juju_client_user }}"
-sunbeam_obs_hub_juju_cmd: "JUJU_DATA={{ pve_obs_hub_juju_data }} {{ pve_obs_hub_juju_bin }}"
-sunbeam_obs_grafana_offer: "admin/{{ pve_obs_hub_cos_model }}.grafana"
-sunbeam_obs_prometheus_offer: "admin/{{ pve_obs_hub_cos_model }}.prometheus"
-sunbeam_obs_loki_offer: "admin/{{ pve_obs_hub_cos_model }}.loki"
-sunbeam_obs_hub_vip: "{{ pve_obs_hub_lb_pool_addresses[0] | regex_replace('/.*$', '') }}"
-sunbeam_obs_extra_integrations:
-  - {model: "{{ sunbeam_juju_openstack_model }}", app: opentelemetry-collector,      endpoint: send-remote-write,           offer: "{{ sunbeam_obs_prometheus_offer }}"}
-  - {model: "{{ sunbeam_juju_openstack_model }}", app: opentelemetry-collector,      endpoint: send-loki-logs,              offer: "{{ sunbeam_obs_loki_offer }}"}
-  - {model: "{{ sunbeam_juju_openstack_model }}", app: opentelemetry-collector,      endpoint: grafana-dashboards-provider, offer: "{{ sunbeam_obs_grafana_offer }}"}
-  - {model: "{{ sunbeam_juju_openstack_model }}", app: opentelemetry-collector-infra, endpoint: send-remote-write,          offer: "{{ sunbeam_obs_prometheus_offer }}"}
-  - {model: "{{ sunbeam_juju_openstack_model }}", app: opentelemetry-collector-infra, endpoint: send-loki-logs,             offer: "{{ sunbeam_obs_loki_offer }}"}
-  - {model: "{{ sunbeam_juju_openstack_model }}", app: opentelemetry-collector-infra, endpoint: grafana-dashboards-provider, offer: "{{ sunbeam_obs_grafana_offer }}"}
-  - {model: "{{ sunbeam_juju_machines_model }}", app: opentelemetry-collector,      endpoint: send-remote-write,           offer: "{{ sunbeam_obs_prometheus_offer }}"}
-  - {model: "{{ sunbeam_juju_machines_model }}", app: opentelemetry-collector,      endpoint: send-loki-logs,              offer: "{{ sunbeam_obs_loki_offer }}"}
-  - {model: "{{ sunbeam_juju_machines_model }}", app: opentelemetry-collector,      endpoint: grafana-dashboards-provider, offer: "{{ sunbeam_obs_grafana_offer }}"}
+pve_sunbeam_obs_controller: "{{ pve_obs_cos_hub_cos_controller }}"
+pve_sunbeam_obs_account_user: sunbeam-obs
+pve_sunbeam_obs_switch_back_controller: sunbeam-controller
+pve_sunbeam_obs_hub_juju_client_vmid: "{{ pve_obs_cos_hub_juju_client_vmid }}"
+pve_sunbeam_obs_hub_juju_client_user: "{{ pve_obs_cos_hub_juju_client_user }}"
+pve_sunbeam_obs_hub_juju_cmd: "JUJU_DATA={{ pve_obs_cos_hub_juju_data }} {{ pve_obs_cos_hub_juju_bin }}"
+pve_sunbeam_obs_grafana_offer: "admin/{{ pve_obs_cos_hub_cos_model }}.grafana"
+pve_sunbeam_obs_prometheus_offer: "admin/{{ pve_obs_cos_hub_cos_model }}.prometheus"
+pve_sunbeam_obs_loki_offer: "admin/{{ pve_obs_cos_hub_cos_model }}.loki"
+pve_sunbeam_obs_hub_vip: "{{ pve_obs_cos_hub_lb_pool_addresses[0] | regex_replace('/.*$', '') }}"
+pve_sunbeam_obs_extra_integrations:
+  - {model: "{{ pve_sunbeam_juju_openstack_model }}", app: opentelemetry-collector,      endpoint: send-remote-write,           offer: "{{ pve_sunbeam_obs_prometheus_offer }}"}
+  - {model: "{{ pve_sunbeam_juju_openstack_model }}", app: opentelemetry-collector,      endpoint: send-loki-logs,              offer: "{{ pve_sunbeam_obs_loki_offer }}"}
+  - {model: "{{ pve_sunbeam_juju_openstack_model }}", app: opentelemetry-collector,      endpoint: grafana-dashboards-provider, offer: "{{ pve_sunbeam_obs_grafana_offer }}"}
+  - {model: "{{ pve_sunbeam_juju_openstack_model }}", app: opentelemetry-collector-infra, endpoint: send-remote-write,          offer: "{{ pve_sunbeam_obs_prometheus_offer }}"}
+  - {model: "{{ pve_sunbeam_juju_openstack_model }}", app: opentelemetry-collector-infra, endpoint: send-loki-logs,             offer: "{{ pve_sunbeam_obs_loki_offer }}"}
+  - {model: "{{ pve_sunbeam_juju_openstack_model }}", app: opentelemetry-collector-infra, endpoint: grafana-dashboards-provider, offer: "{{ pve_sunbeam_obs_grafana_offer }}"}
+  - {model: "{{ pve_sunbeam_juju_machines_model }}", app: opentelemetry-collector,      endpoint: send-remote-write,           offer: "{{ pve_sunbeam_obs_prometheus_offer }}"}
+  - {model: "{{ pve_sunbeam_juju_machines_model }}", app: opentelemetry-collector,      endpoint: send-loki-logs,              offer: "{{ pve_sunbeam_obs_loki_offer }}"}
+  - {model: "{{ pve_sunbeam_juju_machines_model }}", app: opentelemetry-collector,      endpoint: grafana-dashboards-provider, offer: "{{ pve_sunbeam_obs_grafana_offer }}"}
 
-sunbeam_nodes: >-
+pve_sunbeam_nodes: >-
   {%- set ns = namespace(out=[]) -%}
-  {%- for n in sunbeam_nodes_input -%}
-  {%- set lv = '/dev/' ~ sunbeam_pve_storage ~ '/vm-' ~ n.vmid ~ '-disk-1' -%}
-  {%- set by_id = '/dev/disk/by-id/' ~ sunbeam_osd_by_id_prefix ~ n.vmid -%}
-  {%- set slots = n.osd_slots | default(sunbeam_osd_slots_default) -%}
+  {%- for n in pve_sunbeam_nodes_input -%}
+  {%- set lv = '/dev/' ~ pve_sunbeam_storage ~ '/vm-' ~ n.vmid ~ '-disk-1' -%}
+  {%- set by_id = '/dev/disk/by-id/' ~ pve_sunbeam_osd_by_id_prefix ~ n.vmid -%}
+  {%- set slots = n.osd_slots | default(pve_sunbeam_osd_slots_default) -%}
   {%- set devs = [{'index': slots.lv, 'path': lv}] -%}
   {%- if slots.by_id is defined and slots.by_id is not none -%}
   {%-   set _ = devs.append({'index': slots.by_id, 'path': by_id}) -%}
   {%- endif -%}
-  {%- set nics = n.interfaces | default(sunbeam_interface_names) -%}
+  {%- set nics = n.interfaces | default(pve_sunbeam_interface_names) -%}
   {%- set bridges = {} -%}
   {%- for role, nic in nics.items() -%}
-  {%-   set _ = bridges.update({nic: sunbeam_pve_bridges[role]}) -%}
+  {%-   set _ = bridges.update({nic: pve_sunbeam_bridges[role]}) -%}
   {%- endfor -%}
   {%- set derived = {
-        'fqdn': n.hostname ~ '.' ~ sunbeam_domain,
+        'fqdn': n.hostname ~ '.' ~ pve_sunbeam_domain,
         'interfaces': nics,
         'pve_bridges': bridges,
         'osd_pve_lv': lv,
         'osd_by_id': by_id,
-        'osd_microceph_device': '/dev/disk/by-id/' ~ sunbeam_osd_microceph_device_prefix ~ n.vmid,
+        'osd_microceph_device': '/dev/disk/by-id/' ~ pve_sunbeam_osd_microceph_device_prefix ~ n.vmid,
         'pve_devices': devs,
-        'char_devices': sunbeam_char_devices_default,
+        'char_devices': pve_sunbeam_char_devices_default,
         'mounts': [],
         'loop_devices': n.primary | default(false),
       } -%}
@@ -217,66 +217,66 @@ sunbeam_nodes: >-
   {%- endfor -%}
   {{ ns.out }}
 
-sunbeam_primary_node: "{{ sunbeam_nodes | selectattr('primary') | list | first }}"
-sunbeam_worker_nodes: "{{ sunbeam_nodes | rejectattr('primary') | list }}"
-sunbeam_ceph_managed_osd_devices: "{{ sunbeam_nodes | length }}"
-sunbeam_ceph_osd_devices: "{{ sunbeam_nodes | map(attribute='osd_microceph_device') | list }}"
+pve_sunbeam_primary_node: "{{ pve_sunbeam_nodes | selectattr('primary') | list | first }}"
+pve_sunbeam_worker_nodes: "{{ pve_sunbeam_nodes | rejectattr('primary') | list }}"
+pve_sunbeam_ceph_managed_osd_devices: "{{ pve_sunbeam_nodes | length }}"
+pve_sunbeam_ceph_osd_devices: "{{ pve_sunbeam_nodes | map(attribute='osd_microceph_device') | list }}"
 
-sunbeam_compute_nodes: "{{ sunbeam_nodes | selectattr('role', 'search', 'compute') | list }}"
+pve_sunbeam_compute_nodes: "{{ pve_sunbeam_nodes | selectattr('role', 'search', 'compute') | list }}"
 
-sunbeam_loop_nodes: "{{ sunbeam_nodes | selectattr('loop_devices') | list }}"
+pve_sunbeam_loop_nodes: "{{ pve_sunbeam_nodes | selectattr('loop_devices') | list }}"
 
-sunbeam_host_expected_bridges: "{{ sunbeam_pve_bridges.values() | list }}"
-sunbeam_host_expected_vnets: "{{ sunbeam_pve_bridges.values() | list }}"
-sunbeam_host_expected_subnets:
-  - "{{ sunbeam_management_cidr }}"
-  - "{{ sunbeam_internal_cidr }}"
-  - "{{ sunbeam_external_network.cidr }}"
-sunbeam_host_expected_subnet_ids: >-
-  {{ sunbeam_host_expected_subnets | map('regex_replace', '/', '-') | list }}
-sunbeam_host_expected_snat_cidrs:
-  - "{{ sunbeam_management_cidr }}"
-  - "{{ sunbeam_external_network.cidr }}"
-sunbeam_manifest_external_nic: "{{ sunbeam_interface_names.external }}"
-sunbeam_vm_test_network: "{{ sunbeam_tenant_network_name }}"
+pve_sunbeam_host_expected_bridges: "{{ pve_sunbeam_bridges.values() | list }}"
+pve_sunbeam_host_expected_vnets: "{{ pve_sunbeam_bridges.values() | list }}"
+pve_sunbeam_host_expected_subnets:
+  - "{{ pve_sunbeam_management_cidr }}"
+  - "{{ pve_sunbeam_internal_cidr }}"
+  - "{{ pve_sunbeam_external_network.cidr }}"
+pve_sunbeam_host_expected_subnet_ids: >-
+  {{ pve_sunbeam_host_expected_subnets | map('regex_replace', '/', '-') | list }}
+pve_sunbeam_host_expected_snat_cidrs:
+  - "{{ pve_sunbeam_management_cidr }}"
+  - "{{ pve_sunbeam_external_network.cidr }}"
+pve_sunbeam_manifest_external_nic: "{{ pve_sunbeam_interface_names.external }}"
+pve_sunbeam_vm_test_network: "{{ pve_sunbeam_tenant_network_name }}"
 
-sunbeam_proxy_no_proxy: >-
-  {{ ['localhost', '127.0.0.1', '::1', '.' ~ sunbeam_domain, '.svc', '.svc.cluster.local',
-      sunbeam_management_cidr]
-     + (sunbeam_nodes | map(attribute='pub_ip') | list)
-     + [sunbeam_internal_cidr]
-     + (sunbeam_nodes | map(attribute='internal_ip') | list)
-     + sunbeam_proxy_no_proxy_tail }}
-sunbeam_proxy_no_proxy_effective: "{{ sunbeam_proxy_no_proxy | join(',') }}"
+pve_sunbeam_proxy_no_proxy: >-
+  {{ ['localhost', '127.0.0.1', '::1', '.' ~ pve_sunbeam_domain, '.svc', '.svc.cluster.local',
+      pve_sunbeam_management_cidr]
+     + (pve_sunbeam_nodes | map(attribute='pub_ip') | list)
+     + [pve_sunbeam_internal_cidr]
+     + (pve_sunbeam_nodes | map(attribute='internal_ip') | list)
+     + pve_sunbeam_proxy_no_proxy_tail }}
+pve_sunbeam_proxy_no_proxy_effective: "{{ pve_sunbeam_proxy_no_proxy | join(',') }}"
 
-sunbeam_tls_endpoint_apps:
+pve_sunbeam_tls_endpoint_apps:
   public: traefik-public
   internal: traefik
   rgw: traefik-rgw
 
-sunbeam_ceph_unmanaged_osds: []
-sunbeam_ceph_expected_osds: >-
-  {{ (sunbeam_ceph_managed_osd_devices | int)
-     + (0 if (sunbeam_ceph_remove_bootstrap_osd | bool) else (sunbeam_ceph_unmanaged_osds | length)) }}
-sunbeam_ceph_expected_pgs: 385
-sunbeam_ceph_expected_pools: 7
-sunbeam_ceph_pool_size: 3
-sunbeam_ceph_pool_min_size: 2
-sunbeam_health_require_all_active: false
-sunbeam_known_blocked_applications: [sunbeam-machine]
-sunbeam_ceph_tolerated_warnings:
+pve_sunbeam_ceph_unmanaged_osds: []
+pve_sunbeam_ceph_expected_osds: >-
+  {{ (pve_sunbeam_ceph_managed_osd_devices | int)
+     + (0 if (pve_sunbeam_ceph_remove_bootstrap_osd | bool) else (pve_sunbeam_ceph_unmanaged_osds | length)) }}
+pve_sunbeam_ceph_expected_pgs: 385
+pve_sunbeam_ceph_expected_pools: 7
+pve_sunbeam_ceph_pool_size: 3
+pve_sunbeam_ceph_pool_min_size: 2
+pve_sunbeam_health_require_all_active: false
+pve_sunbeam_known_blocked_applications: [sunbeam-machine]
+pve_sunbeam_ceph_tolerated_warnings:
   - "pool\\(s\\) have no replicas configured"
   - "experiencing slow operations in BlueStore"
-sunbeam_pve_module_release: 7.0.2-6-pve
+pve_sunbeam_module_release: 7.0.2-6-pve
 
-sunbeam_baseline_fingerprint: "2faacd72-c0f3-4c39-ac88-302eb9ee15c7"
-sunbeam_baseline_enforced: true
+pve_sunbeam_baseline_fingerprint: "2faacd72-c0f3-4c39-ac88-302eb9ee15c7"
+pve_sunbeam_baseline_enforced: true
 
-sunbeam_thinpool_max_data_percent: 90
-sunbeam_ct_rootfs_warn_percent: 85
-sunbeam_snap_hold_forever: true
-sunbeam_hold_snapd_deb: true
-sunbeam_held_snaps:
+pve_sunbeam_thinpool_max_data_percent: 90
+pve_sunbeam_ct_rootfs_warn_percent: 85
+pve_sunbeam_snap_hold_forever: true
+pve_sunbeam_hold_snapd_deb: true
+pve_sunbeam_held_snaps:
   - openstack
   - microceph
   - k8s
@@ -285,18 +285,18 @@ sunbeam_held_snaps:
   - epa-orchestrator
   - snapd
 
-sunbeam_vm_volume_test: false
-sunbeam_vm_test_name: sunbeam-ansible-smoke
-sunbeam_vm_test_volume_name: sunbeam-ansible-volume-smoke
-sunbeam_vm_test_image_name: sunbeam-ansible-cirros-smoke
-sunbeam_vm_test_volume_size_gb: 1
-sunbeam_vm_test_cirros_url: "{{ sunbeam_cirros_image_url }}"
-sunbeam_vm_test_flavor: m1.tiny
-sunbeam_vm_test_ping: false
-sunbeam_vm_test_security_group: sunbeam-ansible-smoke
-sunbeam_vm_test_ping_timeout: 120
+pve_sunbeam_vm_volume_test: false
+pve_sunbeam_vm_test_name: sunbeam-ansible-smoke
+pve_sunbeam_vm_test_volume_name: sunbeam-ansible-volume-smoke
+pve_sunbeam_vm_test_image_name: sunbeam-ansible-cirros-smoke
+pve_sunbeam_vm_test_volume_size_gb: 1
+pve_sunbeam_vm_test_cirros_url: "{{ pve_sunbeam_cirros_image_url }}"
+pve_sunbeam_vm_test_flavor: m1.tiny
+pve_sunbeam_vm_test_ping: false
+pve_sunbeam_vm_test_security_group: sunbeam-ansible-smoke
+pve_sunbeam_vm_test_ping_timeout: 120
 
-sunbeam_flavors:
+pve_sunbeam_flavors:
   - { name: cirros,      ram: 512,  disk: 1,  vcpus: 1 }
   - { name: m1.nano,     ram: 128,  disk: 1,  vcpus: 1 }
   - { name: m1.tiny,     ram: 512,  disk: 4,  vcpus: 1 }
@@ -305,11 +305,11 @@ sunbeam_flavors:
   - { name: m1.small,    ram: 2048, disk: 10, vcpus: 1 }
   - { name: m1.medium,   ram: 4096, disk: 20, vcpus: 2 }
 
-sunbeam_flavors_remove:
+pve_sunbeam_flavors_remove:
   - m1.small-sev
   - m1.medium-sev
   - m1.large
   - m1.large-sev
 
-sunbeam_cirros_image_name: cirros
-sunbeam_cirros_image_url: https://download.cirros-cloud.net/0.5.2/cirros-0.5.2-x86_64-disk.img
+pve_sunbeam_cirros_image_name: cirros
+pve_sunbeam_cirros_image_url: https://download.cirros-cloud.net/0.5.2/cirros-0.5.2-x86_64-disk.img

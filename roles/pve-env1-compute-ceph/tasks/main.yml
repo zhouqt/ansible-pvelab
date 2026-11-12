@@ -2,35 +2,35 @@
 
 - name: Define the Juju 2.9 model handle
   ansible.builtin.set_fact:
-    pve_ussuri_model: "{{ pve_juju_controller_name }}:{{ pve_ussuri_model_name }}"
+    pve_env1_model: "{{ pve_env1_juju_controller_name }}:{{ pve_env1_model_name }}"
 
 - name: Read the OpenStack model status before the compute/ceph stage
   ansible.builtin.command:
     argv:
       - pct
       - exec
-      - "{{ pve_juju_client_vmid }}"
+      - "{{ pve_env1_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_juju_client_user }}"
+      - "{{ pve_env1_juju_client_user }}"
       - -c
-      - "{{ pve_juju_bin }} status -m {{ pve_ussuri_model }} --format json"
-  register: pve_ussuri_ceph_stage_status
+      - "{{ pve_env1_juju_bin }} status -m {{ pve_env1_model }} --format json"
+  register: pve_env1_ceph_stage_status
   changed_when: false
 
 - name: Require the control plane to be fully deployed before touching compute/ceph
   ansible.builtin.assert:
     that:
-      - pve_ussuri_ceph_stage_status.rc == 0
+      - pve_env1_ceph_stage_status.rc == 0
       - >-
-        pve_ussuri_core_applications
-        | difference((pve_ussuri_ceph_stage_status.stdout | from_json).applications.keys() | list)
+        pve_env1_core_applications
+        | difference((pve_env1_ceph_stage_status.stdout | from_json).applications.keys() | list)
         | length == 0
     fail_msg: >-
       the control plane is still incomplete (missing: {{
-        pve_ussuri_core_applications
-        | difference((pve_ussuri_ceph_stage_status.stdout | from_json).applications.keys() | list)
+        pve_env1_core_applications
+        | difference((pve_env1_ceph_stage_status.stdout | from_json).applications.keys() | list)
         | join(', ') }}). Run --tags pve-env1-control-plane first and wait for it to settle.
 
 - name: Read the host thin pool utilisation before creating OSD volumes
@@ -42,19 +42,19 @@
       - lv_size,data_percent,metadata_percent
       - --units
       - g
-      - "{{ pve_ussuri_osd_thinpool }}"
-  register: pve_ussuri_ceph_pool_usage
+      - "{{ pve_env1_osd_thinpool }}"
+  register: pve_env1_ceph_pool_usage
   changed_when: false
 
 - name: Require enough thin pool headroom for this environment
   ansible.builtin.assert:
     that:
-      - (pve_ussuri_ceph_pool_usage.stdout.split()[1] | float) < (pve_ussuri_osd_thinpool_max_data_percent | float)
+      - (pve_env1_ceph_pool_usage.stdout.split()[1] | float) < (pve_env1_osd_thinpool_max_data_percent | float)
     fail_msg: >-
-      thin pool {{ pve_ussuri_osd_thinpool }} usage
-      {{ pve_ussuri_ceph_pool_usage.stdout.split()[1] }}% has reached the cap
-      {{ pve_ussuri_osd_thinpool_max_data_percent }}%({{ pve_ussuri_ceph_pool_usage.stdout | trim }}).
-      tear down unused envs to free pool space, or raise pve_ussuri_osd_thinpool_max_data_percent.
+      thin pool {{ pve_env1_osd_thinpool }} usage
+      {{ pve_env1_ceph_pool_usage.stdout.split()[1] }}% has reached the cap
+      {{ pve_env1_osd_thinpool_max_data_percent }}%({{ pve_env1_ceph_pool_usage.stdout | trim }}).
+      tear down unused envs to free pool space, or raise pve_env1_osd_thinpool_max_data_percent.
 
 - name: Deploy the compute and Ceph applications
   ansible.builtin.include_tasks: deploy.yml

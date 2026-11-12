@@ -2,25 +2,25 @@
 
 - name: Define the client command prefix and model reference
   ansible.builtin.set_fact:
-    pve_yoga_juju_cmd: "JUJU_DATA={{ pve_yoga_juju_data }} {{ pve_yoga_juju_bin }}"
-    pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
+    pve_openstack_juju_cmd: "JUJU_DATA={{ pve_openstack_juju_data }} {{ pve_openstack_juju_bin }}"
+    pve_openstack_model: "{{ pve_openstack_controller_name }}:{{ pve_openstack_model_name }}"
 
 - name: Require a donor controller to borrow the admin password from
   ansible.builtin.assert:
     that:
-      - pve_yoga_seed_restore_admin_donor | length > 0
-      - pve_yoga_seed_restore_admin_donor is match('.*-env[0-9]+-ctrl$')
+      - pve_openstack_seed_restore_admin_donor | length > 0
+      - pve_openstack_seed_restore_admin_donor is match('.*-env[0-9]+-ctrl$')
     fail_msg: >-
-      pass the password source with -e pve_yoga_seed_restore_admin_donor=<name of another controller that is up>
+      pass the password source with -e pve_openstack_seed_restore_admin_donor=<name of another controller that is up>
       (e.g. focal-ussuri-env6-ctrl). The restored controller keeps only the password hash; the plaintext was lost with the teardown.
 
 - name: Resolve the donor controller container id
   ansible.builtin.set_fact:
-    pve_yoga_seed_restore_donor_vmid: >-
-      {%- if pve_yoga_seed_restore_admin_donor_vmid | length > 0 -%}
-      {{ pve_yoga_seed_restore_admin_donor_vmid }}
+    pve_openstack_seed_restore_donor_vmid: >-
+      {%- if pve_openstack_seed_restore_admin_donor_vmid | length > 0 -%}
+      {{ pve_openstack_seed_restore_admin_donor_vmid }}
       {%- else -%}
-      {{ (pve_yoga_seed_restore_admin_donor.split('-env')[1][:-5] | int) * 100 + 1000 }}
+      {{ (pve_openstack_seed_restore_admin_donor.split('-env')[1][:-5] | int) * 100 + 1000 }}
       {%- endif -%}
 
 - name: Read the shared Juju client accounts file
@@ -28,121 +28,121 @@
     argv:
       - pct
       - exec
-      - "{{ pve_yoga_juju_client_vmid }}"
+      - "{{ pve_openstack_juju_client_vmid }}"
       - --
       - cat
-      - "{{ pve_yoga_juju_data }}/accounts.yaml"
-  register: pve_yoga_seed_accounts_raw
+      - "{{ pve_openstack_juju_data }}/accounts.yaml"
+  register: pve_openstack_seed_accounts_raw
   changed_when: false
   failed_when: false
 
 - name: Require the donor's plaintext password in the client store
   ansible.builtin.assert:
     that:
-      - pve_yoga_seed_accounts_raw.rc == 0
-      - (pve_yoga_seed_accounts_raw.stdout | from_yaml).controllers[pve_yoga_seed_restore_admin_donor] is defined
+      - pve_openstack_seed_accounts_raw.rc == 0
+      - (pve_openstack_seed_accounts_raw.stdout | from_yaml).controllers[pve_openstack_seed_restore_admin_donor] is defined
     fail_msg: >-
-      accounts.yaml on CT {{ pve_yoga_juju_client_vmid }} has no
-      the plaintext password of {{ pve_yoga_seed_restore_admin_donor }}; pick another env controller that is still up as the donor.
+      accounts.yaml on CT {{ pve_openstack_juju_client_vmid }} has no
+      the plaintext password of {{ pve_openstack_seed_restore_admin_donor }}; pick another env controller that is still up as the donor.
 
 - name: Read the donor controller's admin password hash and salt
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_yoga_seed_restore_donor_vmid }} -- tee /root/pve-yoga-seed-restore-probe.py >/dev/null <<'PYEOF'
+    pct exec {{ pve_openstack_seed_restore_donor_vmid }} -- tee /root/pve-yoga-seed-restore-probe.py >/dev/null <<'PYEOF'
     {{ lookup('file', role_path + '/files/controller-mongo.py') }}
     PYEOF
-    pct exec {{ pve_yoga_seed_restore_donor_vmid }} -- python3 /root/pve-yoga-seed-restore-probe.py \
+    pct exec {{ pve_openstack_seed_restore_donor_vmid }} -- python3 /root/pve-yoga-seed-restore-probe.py \
       --action probe --timeout 120
   args:
     executable: /bin/bash
-  register: pve_yoga_seed_donor_probe
+  register: pve_openstack_seed_donor_probe
   changed_when: false
 
 - name: Read the restored controller's own identity and model inventory
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_yoga_controller_vmid }} -- tee /root/pve-yoga-seed-restore-probe.py >/dev/null <<'PYEOF'
+    pct exec {{ pve_openstack_controller_vmid }} -- tee /root/pve-yoga-seed-restore-probe.py >/dev/null <<'PYEOF'
     {{ lookup('file', role_path + '/files/controller-mongo.py') }}
     PYEOF
-    pct exec {{ pve_yoga_controller_vmid }} -- python3 /root/pve-yoga-seed-restore-probe.py \
-      --action probe --timeout {{ pve_yoga_seed_restore_probe_timeout }}
+    pct exec {{ pve_openstack_controller_vmid }} -- python3 /root/pve-yoga-seed-restore-probe.py \
+      --action probe --timeout {{ pve_openstack_seed_restore_probe_timeout }}
   args:
     executable: /bin/bash
-  register: pve_yoga_seed_ctrl_probe
+  register: pve_openstack_seed_ctrl_probe
   changed_when: false
 
 - name: Assemble the restored controller state
   ansible.builtin.set_fact:
-    pve_yoga_seed_ctrl_state: "{{ pve_yoga_seed_ctrl_probe.stdout.strip().splitlines()[-1] | from_json }}"
-    pve_yoga_seed_donor_admin: "{{ pve_yoga_seed_donor_probe.stdout.strip().splitlines()[-1] | from_json }}"
+    pve_openstack_seed_ctrl_state: "{{ pve_openstack_seed_ctrl_probe.stdout.strip().splitlines()[-1] | from_json }}"
+    pve_openstack_seed_donor_admin: "{{ pve_openstack_seed_donor_probe.stdout.strip().splitlines()[-1] | from_json }}"
 
 - name: Require the restored controller to report a usable state
   ansible.builtin.assert:
     that:
-      - pve_yoga_seed_ctrl_state.uuid | length > 0
-      - pve_yoga_seed_ctrl_state.ca_cert | length > 0
-      - pve_yoga_seed_ctrl_state.api_addresses | length > 0
-      - pve_yoga_seed_ctrl_state.models | length > 0
-      - pve_yoga_seed_donor_admin.admin.passwordhash | length > 0
-      - pve_yoga_seed_donor_admin.admin.passwordsalt | length > 0
+      - pve_openstack_seed_ctrl_state.uuid | length > 0
+      - pve_openstack_seed_ctrl_state.ca_cert | length > 0
+      - pve_openstack_seed_ctrl_state.api_addresses | length > 0
+      - pve_openstack_seed_ctrl_state.models | length > 0
+      - pve_openstack_seed_donor_admin.admin.passwordhash | length > 0
+      - pve_openstack_seed_donor_admin.admin.passwordsalt | length > 0
     fail_msg: "the controller's self-reported state is incomplete (uuid/ca/api/models, or the donor's hash/salt, is missing); refusing to write the client store."
 
 - name: Adopt the donor controller's admin password hash on the restored controller
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_yoga_controller_vmid }} -- python3 /root/pve-yoga-seed-restore-probe.py \
+    pct exec {{ pve_openstack_controller_vmid }} -- python3 /root/pve-yoga-seed-restore-probe.py \
       --action set-admin \
-      --hash '{{ pve_yoga_seed_donor_admin.admin.passwordhash }}' \
-      --salt '{{ pve_yoga_seed_donor_admin.admin.passwordsalt }}'
+      --hash '{{ pve_openstack_seed_donor_admin.admin.passwordhash }}' \
+      --salt '{{ pve_openstack_seed_donor_admin.admin.passwordsalt }}'
   args:
     executable: /bin/bash
-  register: pve_yoga_seed_set_admin
-  changed_when: "'SET-ADMIN-OK' in pve_yoga_seed_set_admin.stdout"
+  register: pve_openstack_seed_set_admin
+  changed_when: "'SET-ADMIN-OK' in pve_openstack_seed_set_admin.stdout"
 
 - name: Merge the controller entry into the client store
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_yoga_juju_client_vmid }} -- tee /root/pve-yoga-seed-restore-payload.json >/dev/null <<'JSONEOF'
+    pct exec {{ pve_openstack_juju_client_vmid }} -- tee /root/pve-yoga-seed-restore-payload.json >/dev/null <<'JSONEOF'
     {{ {'controller': {
-          'name': pve_yoga_controller_name,
-          'uuid': pve_yoga_seed_ctrl_state.uuid,
-          'api_endpoints': pve_yoga_seed_ctrl_state.api_addresses,
-          'ca_cert': pve_yoga_seed_ctrl_state.ca_cert,
-          'agent_version': pve_yoga_seed_ctrl_state.agent_version,
-          'machine_count': pve_yoga_seed_ctrl_state.machine_count,
-          'models': pve_yoga_seed_ctrl_state.models,
-          'current_model': 'admin/' ~ pve_yoga_model_name,
+          'name': pve_openstack_controller_name,
+          'uuid': pve_openstack_seed_ctrl_state.uuid,
+          'api_endpoints': pve_openstack_seed_ctrl_state.api_addresses,
+          'ca_cert': pve_openstack_seed_ctrl_state.ca_cert,
+          'agent_version': pve_openstack_seed_ctrl_state.agent_version,
+          'machine_count': pve_openstack_seed_ctrl_state.machine_count,
+          'models': pve_openstack_seed_ctrl_state.models,
+          'current_model': 'admin/' ~ pve_openstack_model_name,
           'user': 'admin',
-          'password': (pve_yoga_seed_accounts_raw.stdout | from_yaml).controllers[pve_yoga_seed_restore_admin_donor].password,
+          'password': (pve_openstack_seed_accounts_raw.stdout | from_yaml).controllers[pve_openstack_seed_restore_admin_donor].password,
         }} | to_json }}
     JSONEOF
-    pct exec {{ pve_yoga_juju_client_vmid }} -- tee /root/pve-yoga-seed-restore-store.py >/dev/null <<'PYEOF'
+    pct exec {{ pve_openstack_juju_client_vmid }} -- tee /root/pve-yoga-seed-restore-store.py >/dev/null <<'PYEOF'
     {{ lookup('file', role_path + '/files/client-store-merge.py') }}
     PYEOF
-    pct exec {{ pve_yoga_juju_client_vmid }} -- python3 /root/pve-yoga-seed-restore-store.py \
-      /root/pve-yoga-seed-restore-payload.json {{ pve_yoga_juju_data }} \
-      --owner {{ pve_yoga_juju_client_user }}
+    pct exec {{ pve_openstack_juju_client_vmid }} -- python3 /root/pve-yoga-seed-restore-store.py \
+      /root/pve-yoga-seed-restore-payload.json {{ pve_openstack_juju_data }} \
+      --owner {{ pve_openstack_juju_client_user }}
   args:
     executable: /bin/bash
-  register: pve_yoga_seed_store_merge
-  changed_when: "'CLIENT-STORE-OK' in pve_yoga_seed_store_merge.stdout"
+  register: pve_openstack_seed_store_merge
+  changed_when: "'CLIENT-STORE-OK' in pve_openstack_seed_store_merge.stdout"
 
 - name: Wait for the client to reach the restored controller
   ansible.builtin.command:
     argv:
       - pct
       - exec
-      - "{{ pve_yoga_juju_client_vmid }}"
+      - "{{ pve_openstack_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_yoga_juju_client_user }}"
+      - "{{ pve_openstack_juju_client_user }}"
       - -c
-      - "{{ pve_yoga_juju_cmd }} status -m {{ pve_yoga_model }} --format json"
-  register: pve_yoga_seed_status
+      - "{{ pve_openstack_juju_cmd }} status -m {{ pve_openstack_model }} --format json"
+  register: pve_openstack_seed_status
   until:
-    - pve_yoga_seed_status.rc == 0
-    - "'\"applications\"' in pve_yoga_seed_status.stdout"
+    - pve_openstack_seed_status.rc == 0
+    - "'\"applications\"' in pve_openstack_seed_status.stdout"
   retries: 60
   delay: 10
   changed_when: false
@@ -150,19 +150,19 @@
 - name: Report the restored model inventory
   ansible.builtin.debug:
     msg: >-
-      client store rebuilt: {{ pve_yoga_controller_name }}
-      (uuid {{ pve_yoga_seed_ctrl_state.uuid }}, {{ pve_yoga_seed_ctrl_state.machine_count }} machines,
-      {{ (pve_yoga_seed_status.stdout | from_json).applications | length }} apps;
-      password source {{ pve_yoga_seed_restore_admin_donor }}).
+      client store rebuilt: {{ pve_openstack_controller_name }}
+      (uuid {{ pve_openstack_seed_ctrl_state.uuid }}, {{ pve_openstack_seed_ctrl_state.machine_count }} machines,
+      {{ (pve_openstack_seed_status.stdout | from_json).applications | length }} apps;
+      password source {{ pve_openstack_seed_restore_admin_donor }}).
 
 - name: Remove the helper scripts and the payload that carried the password
   ansible.builtin.shell: |
     set -euo pipefail
     for f in /root/pve-yoga-seed-restore-probe.py; do
-      pct exec {{ pve_yoga_controller_vmid }} -- rm -f "$f"
-      pct exec {{ pve_yoga_seed_restore_donor_vmid }} -- rm -f "$f"
+      pct exec {{ pve_openstack_controller_vmid }} -- rm -f "$f"
+      pct exec {{ pve_openstack_seed_restore_donor_vmid }} -- rm -f "$f"
     done
-    pct exec {{ pve_yoga_juju_client_vmid }} -- rm -f \
+    pct exec {{ pve_openstack_juju_client_vmid }} -- rm -f \
       /root/pve-yoga-seed-restore-payload.json /root/pve-yoga-seed-restore-store.py
     echo "SEED-RESTORE-CLEANUP-OK"
   args:

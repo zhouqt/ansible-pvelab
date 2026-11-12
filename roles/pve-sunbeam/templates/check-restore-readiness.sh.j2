@@ -1,11 +1,11 @@
 #!/bin/bash
 set -u
 
-ceph={{ sunbeam_microceph_ceph_bin }}
-user={{ sunbeam_node_user }}
-expected_mon={{ sunbeam_nodes | length }}
-expected_osd={{ sunbeam_ceph_expected_osds | int }}
-expected_pgs={{ sunbeam_ceph_expected_pgs | int }}
+ceph={{ pve_sunbeam_microceph_ceph_bin }}
+user={{ pve_sunbeam_node_user }}
+expected_mon={{ pve_sunbeam_nodes | length }}
+expected_osd={{ pve_sunbeam_ceph_expected_osds | int }}
+expected_pgs={{ pve_sunbeam_ceph_expected_pgs | int }}
 ready=yes
 
 echo "### CEPH"
@@ -43,7 +43,7 @@ running=$(printf '%s\n' "$lx" | grep -c ',RUNNING$' || true)
 echo "### CLUSTER"
 cl=$(su - "$user" -c 'sunbeam cluster list --format yaml' 2>&1 || true)
 printf '%s\n' "$cl" | head -40
-for host in {{ sunbeam_nodes | map(attribute='hostname') | join(' ') }}; do
+for host in {{ pve_sunbeam_nodes | map(attribute='hostname') | join(' ') }}; do
     printf '%s\n' "$cl" | grep -q "hostname: $host" || { echo "cluster-missing=$host"; ready=no; }
 done
 bad=$(printf '%s\n' "$cl" \

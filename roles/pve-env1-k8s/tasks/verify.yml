@@ -3,40 +3,40 @@
 - name: Check that the Juju 3.6 controller is registered
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "{{ pve_ussuri_k8s_juju36_bin }} controllers 2>/dev/null | awk 'NR>1 {print \$1}' | grep -qx '{{ pve_ussuri_k8s_controller_name }}' && echo PRESENT || echo ABSENT"
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "{{ pve_env1_k8s_juju36_bin }} controllers 2>/dev/null | awk 'NR>1 {print \$1}' | grep -qx '{{ pve_env1_k8s_controller_name }}' && echo PRESENT || echo ABSENT"
   args:
     executable: /bin/bash
-  register: pve_ussuri_k8s_verify_controller
+  register: pve_env1_k8s_verify_controller
   changed_when: false
 
 - name: Require the controller before verifying
   ansible.builtin.assert:
     that:
-      - "'PRESENT' in pve_ussuri_k8s_verify_controller.stdout"
+      - "'PRESENT' in pve_env1_k8s_verify_controller.stdout"
     fail_msg: >-
-      {{ pve_ussuri_k8s_controller_name }} is not registered with the juju_yoga
+      {{ pve_env1_k8s_controller_name }} is not registered with the juju_yoga
       client; run --tags pve-ussuri-k8s-bootstrap first.
 
 - name: Check that the k8s model exists
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "{{ pve_ussuri_k8s_juju36_bin }} models -c {{ pve_ussuri_k8s_controller_name }} 2>/dev/null \
-         | awk 'NR>1 {n=\$1; sub(/.*\//, \"\", n); print n}' | grep -qx '{{ pve_ussuri_k8s_model_name }}' \
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "{{ pve_env1_k8s_juju36_bin }} models -c {{ pve_env1_k8s_controller_name }} 2>/dev/null \
+         | awk 'NR>1 {n=\$1; sub(/.*\//, \"\", n); print n}' | grep -qx '{{ pve_env1_k8s_model_name }}' \
          && echo PRESENT || echo ABSENT"
   args:
     executable: /bin/bash
-  register: pve_ussuri_k8s_verify_model
+  register: pve_env1_k8s_verify_model
   changed_when: false
 
 - name: Require the k8s model before verifying
   ansible.builtin.assert:
     that:
-      - "'PRESENT' in pve_ussuri_k8s_verify_model.stdout"
+      - "'PRESENT' in pve_env1_k8s_verify_model.stdout"
     fail_msg: >-
-      Model {{ pve_ussuri_k8s_model_name }} is not on
-      {{ pve_ussuri_k8s_controller_name }}; run --tags pve-ussuri-k8s-model first.
+      Model {{ pve_env1_k8s_model_name }} is not on
+      {{ pve_env1_k8s_controller_name }}; run --tags pve-ussuri-k8s-model first.
 
 - name: Install the status checker on the PVE host
   ansible.builtin.copy:
@@ -49,27 +49,27 @@
 - name: Wait for the bundle to converge
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "{{ pve_ussuri_k8s_juju36_bin }} status -m {{ pve_ussuri_k8s_controller_name }}:{{ pve_ussuri_k8s_model_name }} --format json 2>&1 | cat" \
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "{{ pve_env1_k8s_juju36_bin }} status -m {{ pve_env1_k8s_controller_name }}:{{ pve_env1_k8s_model_name }} --format json 2>&1 | cat" \
       > /tmp/pve-ussuri-k8s-status.json
     python3 /root/pve-ussuri-k8s-status-check.py \
-      --expected '{{ pve_ussuri_k8s_expected_apps | join(",") }}' < /tmp/pve-ussuri-k8s-status.json
+      --expected '{{ pve_env1_k8s_expected_apps | join(",") }}' < /tmp/pve-ussuri-k8s-status.json
   args:
     executable: /bin/bash
-  register: pve_ussuri_k8s_settle
-  until: "'READY' in (pve_ussuri_k8s_settle.stdout | default(''))"
-  retries: "{{ pve_ussuri_k8s_wait_retries }}"
-  delay: "{{ pve_ussuri_k8s_wait_delay }}"
+  register: pve_env1_k8s_settle
+  until: "'READY' in (pve_env1_k8s_settle.stdout | default(''))"
+  retries: "{{ pve_env1_k8s_wait_retries }}"
+  delay: "{{ pve_env1_k8s_wait_delay }}"
   changed_when: false
   failed_when: false
 
 - name: Require the bundle to be fully active
   ansible.builtin.assert:
     that:
-      - "'READY' in (pve_ussuri_k8s_settle.stdout | default(''))"
+      - "'READY' in (pve_env1_k8s_settle.stdout | default(''))"
     fail_msg: >-
       The k8s model did not settle after the wait budget:
-      {{ pve_ussuri_k8s_settle.stdout | default('') }}
+      {{ pve_env1_k8s_settle.stdout | default('') }}
       Common causes on env1: a machine pending on the security-group quota (free
       a group, then `juju_yoga retry-provisioning <machine>`), a unit erroring
       on the overlay constraint, or a VM that got no metadata (then the OVN
@@ -78,8 +78,8 @@
 - name: Read the node status from the control plane
   ansible.builtin.shell: |
     set -euo pipefail
-    out="$(pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "{{ pve_ussuri_k8s_juju36_bin }} exec -m {{ pve_ussuri_k8s_controller_name }}:{{ pve_ussuri_k8s_model_name }} \
+    out="$(pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "{{ pve_env1_k8s_juju36_bin }} exec -m {{ pve_env1_k8s_controller_name }}:{{ pve_env1_k8s_model_name }} \
          --unit kubernetes-control-plane/0 -- sudo kubectl --kubeconfig=/root/.kube/config get nodes --no-headers 2>&1 | cat")"
     ready="$(printf '%s\n' "$out" | awk '$2 ~ /Ready/ && $2 !~ /NotReady/' | wc -l)"
     notready="$(printf '%s\n' "$out" | awk '$2 ~ /NotReady/' | wc -l)"
@@ -87,58 +87,58 @@
     echo "NODES ready=$ready notready=$notready nodes=$(printf '%s\n' "$out" | grep -c .)"
   args:
     executable: /bin/bash
-  register: pve_ussuri_k8s_nodes_summary
+  register: pve_env1_k8s_nodes_summary
   changed_when: false
 
 - name: Show the nodes
   ansible.builtin.command: cat /tmp/pve-ussuri-k8s-nodes.txt
-  register: pve_ussuri_k8s_nodes_text
+  register: pve_env1_k8s_nodes_text
   changed_when: false
 
 - name: Show the node list
   ansible.builtin.debug:
-    msg: "{{ pve_ussuri_k8s_nodes_text.stdout_lines }}"
+    msg: "{{ pve_env1_k8s_nodes_text.stdout_lines }}"
 
 - name: Require every node to be Ready
   ansible.builtin.assert:
     that:
-      - pve_ussuri_k8s_nodes_summary.stdout is match('NODES ready=\\d+ notready=0 ')
+      - pve_env1_k8s_nodes_summary.stdout is match('NODES ready=\\d+ notready=0 ')
       - >-
-        (pve_ussuri_k8s_nodes_summary.stdout | regex_findall('ready=(\\d+)') | first | int)
-        >= pve_ussuri_k8s_expected_ready_nodes
+        (pve_env1_k8s_nodes_summary.stdout | regex_findall('ready=(\\d+)') | first | int)
+        >= pve_env1_k8s_expected_ready_nodes
     fail_msg: >-
-      Expected at least {{ pve_ussuri_k8s_expected_ready_nodes }} Ready nodes and
-      no NotReady node: {{ pve_ussuri_k8s_nodes_summary.stdout }}
-      {{ pve_ussuri_k8s_nodes_text.stdout | default('') }}
-      {{ pve_ussuri_k8s_nodes_summary.stderr | default('') }}
+      Expected at least {{ pve_env1_k8s_expected_ready_nodes }} Ready nodes and
+      no NotReady node: {{ pve_env1_k8s_nodes_summary.stdout }}
+      {{ pve_env1_k8s_nodes_text.stdout | default('') }}
+      {{ pve_env1_k8s_nodes_summary.stderr | default('') }}
 
 - name: Read the pod status from the control plane
   ansible.builtin.shell: |
     set -euo pipefail
-    out="$(pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "{{ pve_ussuri_k8s_juju36_bin }} exec -m {{ pve_ussuri_k8s_controller_name }}:{{ pve_ussuri_k8s_model_name }} \
+    out="$(pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "{{ pve_env1_k8s_juju36_bin }} exec -m {{ pve_env1_k8s_controller_name }}:{{ pve_env1_k8s_model_name }} \
          --unit kubernetes-control-plane/0 -- sudo kubectl --kubeconfig=/root/.kube/config get pods -A --no-headers 2>&1 | cat")"
     bad="$(printf '%s\n' "$out" | awk 'NF > 3 && $4 !~ /^(Running|Completed|Succeeded)$/' | wc -l)"
     printf '%s\n' "$out" > /tmp/pve-ussuri-k8s-pods.txt
     echo "PODS bad=$bad total=$(printf '%s\n' "$out" | awk 'NF > 3' | wc -l)"
   args:
     executable: /bin/bash
-  register: pve_ussuri_k8s_pods_summary
+  register: pve_env1_k8s_pods_summary
   changed_when: false
 
 - name: Show the pod list
   ansible.builtin.command: cat /tmp/pve-ussuri-k8s-pods.txt
-  register: pve_ussuri_k8s_pods_text
+  register: pve_env1_k8s_pods_text
   changed_when: false
 
 - name: Show the pods
   ansible.builtin.debug:
-    msg: "{{ pve_ussuri_k8s_pods_text.stdout_lines }}"
+    msg: "{{ pve_env1_k8s_pods_text.stdout_lines }}"
 
 - name: Require every pod to be Running or Completed
   ansible.builtin.assert:
     that:
-      - pve_ussuri_k8s_pods_summary.stdout is match('PODS bad=0 total=\\d+')
+      - pve_env1_k8s_pods_summary.stdout is match('PODS bad=0 total=\\d+')
     fail_msg: >-
-      Pods that are neither Running nor Completed: {{ pve_ussuri_k8s_pods_summary.stdout }}
-      {{ pve_ussuri_k8s_pods_text.stdout | default('') }}
+      Pods that are neither Running nor Completed: {{ pve_env1_k8s_pods_summary.stdout }}
+      {{ pve_env1_k8s_pods_text.stdout | default('') }}

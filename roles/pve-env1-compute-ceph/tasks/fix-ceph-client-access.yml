@@ -2,16 +2,16 @@
 
 - name: Derive which Ceph client services must be able to read the active ceph.conf
   ansible.builtin.set_fact:
-    pve_ussuri_ceph_client_targets: >-
+    pve_env1_ceph_client_targets: >-
       {%- set out = [] -%}
       {%- set spec = [
             {'unit': 'glance', 'user': 'glance', 'service': 'glance-api'},
             {'unit': 'cinder', 'user': 'cinder', 'service': 'cinder-volume'}
           ] -%}
       {%- for s in spec -%}
-      {%-   set m = pve_ussuri_machine_of_unit.get(s.unit) -%}
+      {%-   set m = pve_env1_machine_of_unit.get(s.unit) -%}
       {%-   if m is not none -%}
-      {%-     set _ = out.append({'vmid': pve_ussuri_topology[m | int].vmid,
+      {%-     set _ = out.append({'vmid': pve_env1_topology[m | int].vmid,
                                   'user': s.user, 'service': s.service}) -%}
       {%-   endif -%}
       {%- endfor -%}
@@ -38,11 +38,11 @@
         usermod -aG ceph "$user" || { echo "USERMOD-FAILED $user"; exit 1; }
         systemctl try-restart {{ item.service }} >/dev/null 2>&1 || true
         echo "ADDED $user"
-  loop: "{{ pve_ussuri_ceph_client_targets }}"
+  loop: "{{ pve_env1_ceph_client_targets }}"
   loop_control:
     label: "{{ item.service }} @ CT{{ item.vmid }}"
-  register: pve_ussuri_ceph_client_group
-  changed_when: "'ADDED' in pve_ussuri_ceph_client_group.stdout"
+  register: pve_env1_ceph_client_group
+  changed_when: "'ADDED' in pve_env1_ceph_client_group.stdout"
 
 - name: Assert every Ceph client service user can read the active ceph.conf
   ansible.builtin.command:
@@ -57,7 +57,7 @@
       - "{{ item.user }}"
       - -c
       - "test -r /etc/ceph/ceph.conf && echo READABLE || { echo UNREADABLE; exit 1; }"
-  loop: "{{ pve_ussuri_ceph_client_targets }}"
+  loop: "{{ pve_env1_ceph_client_targets }}"
   loop_control:
     label: "{{ item.service }} @ CT{{ item.vmid }}"
   changed_when: false

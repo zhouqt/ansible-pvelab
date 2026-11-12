@@ -2,15 +2,15 @@
 - name: Read the Sunbeam node identity from every node
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
-      - "{{ sunbeam_snap_python }}"
+      - "{{ pve_sunbeam_snap_python }}"
       - -c
       - "from sunbeam import utils; print(utils.get_fqdn())"
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_identity_probe
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_node_identity_probe
   changed_when: false
   failed_when: false
   loop_control:
@@ -28,15 +28,15 @@
       Is the openstack snap installed (node-prepare) and /snap/openstack/current/bin/python3
       usable? Without this name the manifest and the join token would be keyed by a
       name Sunbeam does not know.
-  loop: "{{ sunbeam_node_identity_probe.results }}"
+  loop: "{{ pve_sunbeam_node_identity_probe.results }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Record each node's Sunbeam identity
   ansible.builtin.set_fact:
-    sunbeam_node_names: >-
-      {{ sunbeam_node_names | default({})
+    pve_sunbeam_node_names: >-
+      {{ pve_sunbeam_node_names | default({})
          | combine({ (item.item.vmid | string): (item.stdout | trim) }) }}
-  loop: "{{ sunbeam_node_identity_probe.results }}"
+  loop: "{{ pve_sunbeam_node_identity_probe.results }}"
   loop_control:
     label: "{{ item.item.fqdn }}"

@@ -5,18 +5,18 @@ import re
 import subprocess
 import sys
 
-BRIDGE = {{ sunbeam_pve_bridges.external | to_json }}
-CIDR = {{ sunbeam_external_network.cidr | to_json }}
-FLOATING_RANGE = {{ sunbeam_external_network.floating_range | to_json }}
-RESERVED_IPS = {{ sunbeam_external_reserved_ips | default([]) | to_json }}
-RESERVED_RANGES = {{ sunbeam_external_reserved_ranges | default([]) | to_json }}
-OWN_VMIDS = {{ sunbeam_nodes | map(attribute='vmid') | map('string') | list | to_json }}
-IP_BIN = {{ sunbeam_ip_bin | default('/usr/sbin/ip') | to_json }}
+BRIDGE = {{ pve_sunbeam_bridges.external | to_json }}
+CIDR = {{ pve_sunbeam_external_network.cidr | to_json }}
+FLOATING_RANGE = {{ pve_sunbeam_external_network.floating_range | to_json }}
+RESERVED_IPS = {{ pve_sunbeam_external_reserved_ips | default([]) | to_json }}
+RESERVED_RANGES = {{ pve_sunbeam_external_reserved_ranges | default([]) | to_json }}
+OWN_VMIDS = {{ pve_sunbeam_nodes | map(attribute='vmid') | map('string') | list | to_json }}
+IP_BIN = {{ pve_sunbeam_ip_bin | default('/usr/sbin/ip') | to_json }}
 
 try:
     net = ipaddress.ip_network(CIDR, strict=False)
 except ValueError as exc:
-    print("RISK external-ip: sunbeam_external_network.cidr %s is not a valid network (%s)" % (CIDR, exc))
+    print("RISK external-ip: pve_sunbeam_external_network.cidr %s is not a valid network (%s)" % (CIDR, exc))
     print("CONFLICTS=1")
     sys.exit(0)
 
@@ -25,7 +25,7 @@ try:
     floating = (ipaddress.ip_address(floating_first.strip()),
                 ipaddress.ip_address(floating_last.strip()))
 except ValueError as exc:
-    print("RISK external-ip: sunbeam_external_network.floating_range %s is malformed (%s)"
+    print("RISK external-ip: pve_sunbeam_external_network.floating_range %s is malformed (%s)"
           % (FLOATING_RANGE, exc))
     print("CONFLICTS=1")
     sys.exit(0)
@@ -93,7 +93,7 @@ for entry in RESERVED_IPS:
     try:
         ip = ipaddress.ip_address(entry.strip())
     except ValueError:
-        risk("sunbeam_external_reserved_ips entry %s is not an IP address" % entry)
+        risk("pve_sunbeam_external_reserved_ips entry %s is not an IP address" % entry)
         continue
     if net[0] <= ip <= net[-1] and floating[0] <= ip <= floating[1]:
         risk("reserved address %s is inside the floating range %s" % (ip, FLOATING_RANGE))
@@ -103,7 +103,7 @@ for entry in RESERVED_RANGES:
     try:
         interval = (ipaddress.ip_address(first.strip()), ipaddress.ip_address(last.strip()))
     except ValueError:
-        risk("sunbeam_external_reserved_ranges entry %s is malformed" % entry)
+        risk("pve_sunbeam_external_reserved_ranges entry %s is malformed" % entry)
         continue
     if net[0] <= interval[0] and interval[1] <= net[-1] and overlaps(interval, floating):
         risk("reserved range %s overlaps the floating range %s" % (entry, FLOATING_RANGE))

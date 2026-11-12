@@ -2,94 +2,94 @@
 
 - name: Require the shared public bridge to exist
   ansible.builtin.command:
-    argv: ["{{ pve_obs_hub_ip_bin }}", -o, link, show, "{{ pve_obs_hub_bridge }}"]
-  register: pve_obs_hub_bridge_link
+    argv: ["{{ pve_obs_cos_hub_ip_bin }}", -o, link, show, "{{ pve_obs_cos_hub_bridge }}"]
+  register: pve_obs_cos_hub_bridge_link
   changed_when: false
   failed_when: false
 
 - name: Fail when the shared bridge is missing
   ansible.builtin.assert:
-    that: pve_obs_hub_bridge_link.rc == 0
+    that: pve_obs_cos_hub_bridge_link.rc == 0
     fail_msg: >-
-      {{ pve_obs_hub_bridge }} does not exist on the host. The hub deliberately **reuses** env1's public bridge instead of creating one;
+      {{ pve_obs_cos_hub_bridge }} does not exist on the host. The hub deliberately **reuses** env1's public bridge instead of creating one;
       first make sure the reference environment (--tags pve-env1-prepare) has created that bridge.
 
 - name: Read the shared bridge addresses
   ansible.builtin.command:
-    argv: ["{{ pve_obs_hub_ip_bin }}", -o, -4, addr, show, "{{ pve_obs_hub_bridge }}"]
-  register: pve_obs_hub_bridge_addr
+    argv: ["{{ pve_obs_cos_hub_ip_bin }}", -o, -4, addr, show, "{{ pve_obs_cos_hub_bridge }}"]
+  register: pve_obs_cos_hub_bridge_addr
   changed_when: false
 
 - name: Require the bridge to carry the expected gateway address
   ansible.builtin.assert:
-    that: "pve_obs_hub_gateway ~ '/24' in pve_obs_hub_bridge_addr.stdout"
+    that: "pve_obs_cos_hub_gateway ~ '/24' in pve_obs_cos_hub_bridge_addr.stdout"
     fail_msg: >-
-      {{ pve_obs_hub_bridge }} has no {{ pve_obs_hub_gateway }}/24. The hub CTs use that address as their
+      {{ pve_obs_cos_hub_bridge }} has no {{ pve_obs_cos_hub_gateway }}/24. The hub CTs use that address as their
       the default gateway; if the addresses disagree you get a batch of containers with no network.
 
 - name: Check the hub SNAT rule
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_iptables_bin }}"
+      - "{{ pve_obs_cos_hub_iptables_bin }}"
       - -t
       - nat
       - -C
       - POSTROUTING
       - -s
-      - "{{ pve_obs_hub_cidr }}"
+      - "{{ pve_obs_cos_hub_cidr }}"
       - -o
       - vmbr0
       - -j
       - SNAT
       - --to-source
-      - "{{ pve_obs_hub_snat_to_source }}"
-  register: pve_obs_hub_snat_check
+      - "{{ pve_obs_cos_hub_snat_to_source }}"
+  register: pve_obs_cos_hub_snat_check
   changed_when: false
   failed_when: false
 
 - name: Add the hub SNAT rule when it is missing
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_iptables_bin }}"
+      - "{{ pve_obs_cos_hub_iptables_bin }}"
       - -t
       - nat
       - -A
       - POSTROUTING
       - -s
-      - "{{ pve_obs_hub_cidr }}"
+      - "{{ pve_obs_cos_hub_cidr }}"
       - -o
       - vmbr0
       - -j
       - SNAT
       - --to-source
-      - "{{ pve_obs_hub_snat_to_source }}"
-  when: pve_obs_hub_snat_check.rc != 0
+      - "{{ pve_obs_cos_hub_snat_to_source }}"
+  when: pve_obs_cos_hub_snat_check.rc != 0
 
 - name: Require IP forwarding on the host
-  ansible.builtin.command: "{{ pve_obs_hub_ip_bin }} -o -4 route show default"
-  register: pve_obs_hub_default_route
+  ansible.builtin.command: "{{ pve_obs_cos_hub_ip_bin }} -o -4 route show default"
+  register: pve_obs_cos_hub_default_route
   changed_when: false
 
 - name: Report the host default route (the CTs are NATed out through it)
   ansible.builtin.debug:
-    msg: "host default route: {{ pve_obs_hub_default_route.stdout | trim }}"
+    msg: "host default route: {{ pve_obs_cos_hub_default_route.stdout | trim }}"
 
 - name: Check which hub CTs already exist
-  ansible.builtin.command: "{{ pve_obs_hub_pct_bin }} status {{ item.vmid }}"
-  loop: "{{ pve_obs_hub_active_cts }}"
+  ansible.builtin.command: "{{ pve_obs_cos_hub_pct_bin }} status {{ item.vmid }}"
+  loop: "{{ pve_obs_cos_hub_active_cts }}"
   loop_control:
     label: "CT {{ item.vmid }} {{ item.name }}"
-  register: pve_obs_hub_ct_exists
+  register: pve_obs_cos_hub_ct_exists
   changed_when: false
   failed_when: false
 
 - name: Probe the address of every CT that still has to be created
   ansible.builtin.command:
-    argv: ["{{ pve_obs_hub_ping_bin }}", -c, "1", -W, "1", "{{ item.item.ip }}"]
-  loop: "{{ pve_obs_hub_ct_exists.results }}"
+    argv: ["{{ pve_obs_cos_hub_ping_bin }}", -c, "1", -W, "1", "{{ item.item.ip }}"]
+  loop: "{{ pve_obs_cos_hub_ct_exists.results }}"
   loop_control:
     label: "{{ item.item.ip }}"
-  register: pve_obs_hub_ip_probe
+  register: pve_obs_cos_hub_ip_probe
   changed_when: false
   failed_when: false
   when: item.rc != 0
@@ -100,49 +100,49 @@
     fail_msg: >-
       {{ item.item.item.ip }} already answers, but CT {{ item.item.item.vmid }} has not been created yet.
       192.168.11.0/24 is shared with env1 (and .200-.250 is the reserved floating IP range),
-      find out who holds it before changing pve_obs_hub_cts.
-  loop: "{{ pve_obs_hub_ip_probe.results | default([], true) | selectattr('skipped', 'undefined') | list }}"
+      find out who holds it before changing pve_obs_cos_hub_cts.
+  loop: "{{ pve_obs_cos_hub_ip_probe.results | default([], true) | selectattr('skipped', 'undefined') | list }}"
   loop_control:
     label: "{{ item.item.item.ip }}"
 
 - name: Collect the series of the CTs still to be created
   ansible.builtin.set_fact:
-    pve_obs_hub_missing_series: >-
-      {{ pve_obs_hub_ct_exists.results | selectattr('rc', 'ne', 0)
+    pve_obs_cos_hub_missing_series: >-
+      {{ pve_obs_cos_hub_ct_exists.results | selectattr('rc', 'ne', 0)
          | map(attribute='item') | map(attribute='series') | unique | list }}
 
 - name: Require the container template for every series to be created
   ansible.builtin.stat:
     path: >-
       /var/lib/vz/template/cache/{{
-        pve_obs_hub_templates[item] | regex_replace('^local:vztmpl/', '') }}
-  loop: "{{ pve_obs_hub_missing_series }}"
+        pve_obs_cos_hub_templates[item] | regex_replace('^local:vztmpl/', '') }}
+  loop: "{{ pve_obs_cos_hub_missing_series }}"
   loop_control:
     label: "{{ item }}"
-  register: pve_obs_hub_template_stat
+  register: pve_obs_cos_hub_template_stat
 
 - name: Fail when a required container template is missing
   ansible.builtin.assert:
     that: item.stat.exists
     fail_msg: >-
-      the template {{ pve_obs_hub_templates[item.item] }} of {{ item.item }} is not in
+      the template {{ pve_obs_cos_hub_templates[item.item] }} of {{ item.item }} is not in
       /var/lib/vz/template/cache. jammy/focal are prepared by pve-env1-prepare in the reference environment;
       bionic is EOL, generate it by running pve/scripts/build-bionic-template.sh first.
-  loop: "{{ pve_obs_hub_template_stat.results }}"
+  loop: "{{ pve_obs_cos_hub_template_stat.results }}"
   loop_control:
     label: "{{ item.item }}"
 
 - name: Read the target storage status
-  ansible.builtin.command: "{{ pve_obs_hub_pvesm_bin }} status -storage {{ pve_storage }}"
-  register: pve_obs_hub_storage_status
+  ansible.builtin.command: "{{ pve_obs_cos_hub_pvesm_bin }} status -storage {{ pve_common_storage }}"
+  register: pve_obs_cos_hub_storage_status
   changed_when: false
   failed_when: false
 
 - name: Require the target storage to be active
   ansible.builtin.assert:
     that:
-      - pve_obs_hub_storage_status.rc == 0
-      - "' active ' in (' ' ~ pve_obs_hub_storage_status.stdout ~ ' ')"
+      - pve_obs_cos_hub_storage_status.rc == 0
+      - "' active ' in (' ' ~ pve_obs_cos_hub_storage_status.stdout ~ ' ')"
     fail_msg: >-
-      storage {{ pve_storage }} is not usable (pvesm status failed or is not active):
-      {{ pve_obs_hub_storage_status.stdout | default(pve_obs_hub_storage_status.stderr) | trim }}
+      storage {{ pve_common_storage }} is not usable (pvesm status failed or is not active):
+      {{ pve_obs_cos_hub_storage_status.stdout | default(pve_obs_cos_hub_storage_status.stderr) | trim }}

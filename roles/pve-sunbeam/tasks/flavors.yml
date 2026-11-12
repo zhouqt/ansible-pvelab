@@ -5,60 +5,60 @@
 - name: Require explicit authorization for flavor changes
   ansible.builtin.assert:
     that:
-      - sunbeam_confirm_external_changes | bool
+      - pve_sunbeam_confirm_external_changes | bool
     fail_msg: >-
-      This stage deletes the stock flavors {{ sunbeam_flavors_remove | join(', ') }},
-      re-creates any flavor in sunbeam_flavors whose ram/disk/vcpus differ, and
-      uploads the {{ sunbeam_cirros_image_name }} image.
-      To confirm, pass -e sunbeam_confirm_external_changes=true.
+      This stage deletes the stock flavors {{ pve_sunbeam_flavors_remove | join(', ') }},
+      re-creates any flavor in pve_sunbeam_flavors whose ram/disk/vcpus differ, and
+      uploads the {{ pve_sunbeam_cirros_image_name }} image.
+      To confirm, pass -e pve_sunbeam_confirm_external_changes=true.
 
 - name: Reconcile the flavor set and the cirros image on the primary
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'run-flavors.sh.j2') }}"
-  register: sunbeam_flavors_run
-  async: "{{ sunbeam_configure_timeout }}"
-  poll: "{{ sunbeam_poll_interval }}"
-  changed_when: "'changed=0' not in sunbeam_flavors_run.stdout"
+  register: pve_sunbeam_flavors_run
+  async: "{{ pve_sunbeam_configure_timeout }}"
+  poll: "{{ pve_sunbeam_poll_interval }}"
+  changed_when: "'changed=0' not in pve_sunbeam_flavors_run.stdout"
 
 - name: Parse the flavor summary
   ansible.builtin.set_fact:
-    sunbeam_flavors_summary: >-
-      {{ dict((sunbeam_flavors_run.stdout
+    pve_sunbeam_flavors_summary: >-
+      {{ dict((pve_sunbeam_flavors_run.stdout
               | regex_findall('(?s)=== SUMMARY ===\n(.*?)=== END SUMMARY ===') | join(''))
               | regex_findall('(?m)^([a-z0-9_]+)=(.*)$')) }}
 
 - name: Assert the cirros image is active
   ansible.builtin.assert:
     that:
-      - sunbeam_flavors_summary['image_status'] | default('') == 'active'
+      - pve_sunbeam_flavors_summary['image_status'] | default('') == 'active'
     fail_msg: >-
-      The {{ sunbeam_cirros_image_name }} image did not become active: {{ sunbeam_flavors_summary }}.
-      Check {{ sunbeam_node_log_dir }}/flavors.log inside {{ sunbeam_primary_node.fqdn }}.
+      The {{ pve_sunbeam_cirros_image_name }} image did not become active: {{ pve_sunbeam_flavors_summary }}.
+      Check {{ pve_sunbeam_node_log_dir }}/flavors.log inside {{ pve_sunbeam_primary_node.fqdn }}.
 
 - name: Assert every desired flavor is present with the requested size
   ansible.builtin.assert:
     that:
       - >-
-        sunbeam_flavors_summary['flavor_' + (item.name | replace('.', '_') | replace('-', '_'))]
+        pve_sunbeam_flavors_summary['flavor_' + (item.name | replace('.', '_') | replace('-', '_'))]
         | default('') == item.ram ~ '/' ~ item.disk ~ '/' ~ item.vcpus
     fail_msg: >-
       Flavor {{ item.name }} is not {{ item.ram }}/{{ item.disk }}/{{ item.vcpus }}:
-      {{ sunbeam_flavors_summary }}.
-  loop: "{{ sunbeam_flavors }}"
+      {{ pve_sunbeam_flavors_summary }}.
+  loop: "{{ pve_sunbeam_flavors }}"
   loop_control:
     label: "{{ item.name }}"
 
 - name: Report the flavor reconciliation result
   ansible.builtin.debug:
     msg:
-      - "image: {{ sunbeam_cirros_image_name }} -> {{ sunbeam_flavors_summary['image_status'] | default('?') }}"
-      - "flavors: {{ sunbeam_flavors | map(attribute='name') | join(', ') }}"
-      - "removed stock flavors: {{ sunbeam_flavors_remove | join(', ') }}"
-      - "changes made: {{ sunbeam_flavors_summary['changed'] | default('?') }}"
+      - "image: {{ pve_sunbeam_cirros_image_name }} -> {{ pve_sunbeam_flavors_summary['image_status'] | default('?') }}"
+      - "flavors: {{ pve_sunbeam_flavors | map(attribute='name') | join(', ') }}"
+      - "removed stock flavors: {{ pve_sunbeam_flavors_remove | join(', ') }}"
+      - "changes made: {{ pve_sunbeam_flavors_summary['changed'] | default('?') }}"

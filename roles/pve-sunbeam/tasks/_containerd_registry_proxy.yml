@@ -1,34 +1,34 @@
 ---
 - name: Skip the containerd registry proxy when no URL is configured
   ansible.builtin.debug:
-    msg: "sunbeam_containerd_registry_proxy_url is empty; leaving containerd alone"
-  when: sunbeam_containerd_registry_proxy_url | length == 0
+    msg: "pve_sunbeam_containerd_registry_proxy_url is empty; leaving containerd alone"
+  when: pve_sunbeam_containerd_registry_proxy_url | length == 0
 
 - name: Check which nodes run the k8s snap's containerd
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
       - test
       - -f
       - /etc/systemd/system/snap.k8s.containerd.service
-  loop: "{{ sunbeam_nodes }}"
+  loop: "{{ pve_sunbeam_nodes }}"
   loop_control:
     label: "{{ item.fqdn }}"
-  register: sunbeam_containerd_unit_probe
+  register: pve_sunbeam_containerd_unit_probe
   changed_when: false
   failed_when: false
-  when: sunbeam_containerd_registry_proxy_url | length > 0
+  when: pve_sunbeam_containerd_registry_proxy_url | length > 0
 
 - name: Build the list of nodes that run containerd
   ansible.builtin.set_fact:
-    sunbeam_containerd_proxy_nodes: >-
-      {{ sunbeam_containerd_unit_probe.results | default([])
+    pve_sunbeam_containerd_proxy_nodes: >-
+      {{ pve_sunbeam_containerd_unit_probe.results | default([])
          | selectattr('rc', 'defined') | selectattr('rc', 'equalto', 0)
          | map(attribute='item') | list }}
-  when: sunbeam_containerd_registry_proxy_url | length > 0
+  when: pve_sunbeam_containerd_registry_proxy_url | length > 0
 
 - name: Report that no node runs the k8s snap yet
   ansible.builtin.debug:
@@ -36,29 +36,29 @@
       No node carries snap.k8s.containerd.service yet; the k8s snap is installed by
       the CAAS deployment, so there is nothing to configure at this point.
   when:
-    - sunbeam_containerd_registry_proxy_url | length > 0
-    - sunbeam_containerd_proxy_nodes | default([]) | length == 0
+    - pve_sunbeam_containerd_registry_proxy_url | length > 0
+    - pve_sunbeam_containerd_proxy_nodes | default([]) | length == 0
 
 - name: Read the current containerd proxy drop-in
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
       - cat
       - /etc/systemd/system/snap.k8s.containerd.service.d/zz-registry-proxy.conf
-  loop: "{{ sunbeam_containerd_proxy_nodes | default([]) }}"
+  loop: "{{ pve_sunbeam_containerd_proxy_nodes | default([]) }}"
   loop_control:
     label: "{{ item.fqdn }}"
-  register: sunbeam_containerd_proxy_current
+  register: pve_sunbeam_containerd_proxy_current
   changed_when: false
   failed_when: false
 
 - name: Write the containerd proxy drop-in
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.item.vmid }}"
       - --
@@ -67,10 +67,10 @@
       - >-
         cat > /etc/systemd/system/snap.k8s.containerd.service.d/zz-registry-proxy.conf
     stdin: "{{ lookup('template', 'containerd-registry-proxy.conf.j2') }}"
-  loop: "{{ sunbeam_containerd_proxy_current.results | default([]) }}"
+  loop: "{{ pve_sunbeam_containerd_proxy_current.results | default([]) }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
-  register: sunbeam_containerd_proxy_write
+  register: pve_sunbeam_containerd_proxy_write
   changed_when: true
   when: >-
     (item.stdout | default('') | trim)
@@ -78,29 +78,29 @@
 
 - name: Build the list of nodes whose drop-in changed
   ansible.builtin.set_fact:
-    sunbeam_containerd_changed_nodes: >-
-      {{ sunbeam_containerd_proxy_write.results | default([])
+    pve_sunbeam_containerd_changed_nodes: >-
+      {{ pve_sunbeam_containerd_proxy_write.results | default([])
          | selectattr('changed', 'defined') | selectattr('changed')
          | map(attribute='item.item') | list }}
 
 - name: Restart containerd where the proxy drop-in changed
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
       - bash
       - -c
       - systemctl daemon-reload && systemctl restart snap.k8s.containerd.service
-  loop: "{{ sunbeam_containerd_changed_nodes | default([]) }}"
+  loop: "{{ pve_sunbeam_containerd_changed_nodes | default([]) }}"
   loop_control:
     label: "{{ item.fqdn }}"
 
 - name: Delete the kube-state-metrics pod so it pulls again immediately
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
@@ -109,17 +109,17 @@
       - >-
         k8s kubectl delete pod -n kube-system
         -l app.kubernetes.io/name=kube-state-metrics --ignore-not-found --wait=false
-  loop: "{{ sunbeam_containerd_changed_nodes | default([]) }}"
+  loop: "{{ pve_sunbeam_containerd_changed_nodes | default([]) }}"
   loop_control:
     label: "{{ item.fqdn }}"
-  register: sunbeam_containerd_addon_restart
+  register: pve_sunbeam_containerd_addon_restart
   changed_when: true
   failed_when: false
 
 - name: Wait for the kube-state-metrics pod to become ready
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
@@ -128,10 +128,10 @@
       - >-
         k8s kubectl wait --for=condition=Ready --timeout=180s
         pod -l app.kubernetes.io/name=kube-state-metrics -n kube-system
-  loop: "{{ sunbeam_containerd_changed_nodes | default([]) }}"
+  loop: "{{ pve_sunbeam_containerd_changed_nodes | default([]) }}"
   loop_control:
     label: "{{ item.fqdn }}"
-  register: sunbeam_containerd_addon_ready
+  register: pve_sunbeam_containerd_addon_ready
   changed_when: false
   failed_when: false
 
@@ -140,14 +140,14 @@
     msg: >-
       {{ item.item.fqdn }}: kube-state-metrics
       {{ 'ready' if item.rc | default(1) == 0 else 'not ready yet (' ~ (item.stderr | default('no output') | trim | truncate(120)) ~ ')' }}
-  loop: "{{ sunbeam_containerd_addon_ready.results | default([]) }}"
+  loop: "{{ pve_sunbeam_containerd_addon_ready.results | default([]) }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Read the containerd unit environment
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
@@ -156,29 +156,29 @@
       - snap.k8s.containerd.service
       - -p
       - Environment
-  loop: "{{ sunbeam_containerd_proxy_nodes | default([]) }}"
+  loop: "{{ pve_sunbeam_containerd_proxy_nodes | default([]) }}"
   loop_control:
     label: "{{ item.fqdn }}"
-  register: sunbeam_containerd_proxy_env
+  register: pve_sunbeam_containerd_proxy_env
   changed_when: false
 
 - name: Require containerd to run with the registry proxy in its environment
   ansible.builtin.assert:
     that:
-      - "'HTTPS_PROXY=' ~ sunbeam_containerd_registry_proxy_url in item.stdout"
+      - "'HTTPS_PROXY=' ~ pve_sunbeam_containerd_registry_proxy_url in item.stdout"
     fail_msg: >-
       containerd on {{ item.item.fqdn }} does not carry
-      HTTPS_PROXY={{ sunbeam_containerd_registry_proxy_url }} after the drop-in was
+      HTTPS_PROXY={{ pve_sunbeam_containerd_registry_proxy_url }} after the drop-in was
       written (systemctl show said: {{ item.stdout | default('no output') }}).
       Registry pulls that redirect to *.pkg.dev will keep failing.
-  loop: "{{ sunbeam_containerd_proxy_env.results | default([]) }}"
+  loop: "{{ pve_sunbeam_containerd_proxy_env.results | default([]) }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Check that the registry redirect target is reachable through the proxy
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
       - "{{ item.vmid }}"
       - --
@@ -187,23 +187,23 @@
       - --max-time
       - "20"
       - -x
-      - "{{ sunbeam_containerd_registry_proxy_url }}"
+      - "{{ pve_sunbeam_containerd_registry_proxy_url }}"
       - -o
       - /dev/null
       - -w
       - "%{http_code}"
       - https://registry.k8s.io/v2/
-  loop: "{{ sunbeam_containerd_proxy_nodes | default([]) }}"
+  loop: "{{ pve_sunbeam_containerd_proxy_nodes | default([]) }}"
   loop_control:
     label: "{{ item.fqdn }}"
-  register: sunbeam_containerd_proxy_probe
+  register: pve_sunbeam_containerd_proxy_probe
   changed_when: false
   failed_when: false
 
 - name: Report the containerd registry probe
   ansible.builtin.debug:
     msg: "{{ item.item.fqdn }}: registry.k8s.io through the proxy -> {{ item.stdout | default('no output') }}"
-  loop: "{{ sunbeam_containerd_proxy_probe.results | default([]) }}"
+  loop: "{{ pve_sunbeam_containerd_proxy_probe.results | default([]) }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
 
@@ -214,10 +214,10 @@
       - item.stdout | trim == '401'
     fail_msg: >-
       registry.k8s.io could not be reached through
-      {{ sunbeam_containerd_registry_proxy_url }} from {{ item.item.fqdn }}
+      {{ pve_sunbeam_containerd_registry_proxy_url }} from {{ item.item.fqdn }}
       (got "{{ item.stdout | default(item.stderr | default('no output')) }}").
       containerd will fall back to ImagePullBackOff for the kube-state-metrics
       addon and the k8s application will stay in "waiting".
-  loop: "{{ sunbeam_containerd_proxy_probe.results | default([]) }}"
+  loop: "{{ pve_sunbeam_containerd_proxy_probe.results | default([]) }}"
   loop_control:
     label: "{{ item.item.fqdn }}"

@@ -5,27 +5,27 @@
   gather_facts: false
 
   vars:
-    pve_ct_uuid_apply: false
-    pve_ct_uuid_vmids: []
-    pve_ct_uuid_vmids_list: >-
-      {{ pve_ct_uuid_vmids if pve_ct_uuid_vmids is not string
-         else (pve_ct_uuid_vmids | regex_replace('[\[\]" ]', '') | split(',') | select | list) }}
-    pve_ct_uuid_print_registry: false
-    pve_ct_uuid_items: []
+    pve_common_ct_uuid_apply: false
+    pve_common_ct_uuid_vmids: []
+    pve_common_ct_uuid_vmids_list: >-
+      {{ pve_common_ct_uuid_vmids if pve_common_ct_uuid_vmids is not string
+         else (pve_common_ct_uuid_vmids | regex_replace('[\[\]" ]', '') | split(',') | select | list) }}
+    pve_common_ct_uuid_print_registry: false
+    pve_common_ct_uuid_items: []
 
   tasks:
-    - name: Turn pve_ct_uuid_vmids into role items
+    - name: Turn pve_common_ct_uuid_vmids into role items
       ansible.builtin.set_fact:
-        pve_ct_uuid_items: "{{ pve_ct_uuid_items + [{'vmid': item | int}] }}"
-      loop: "{{ pve_ct_uuid_vmids_list }}"
+        pve_common_ct_uuid_items: "{{ pve_common_ct_uuid_items + [{'vmid': item | int}] }}"
+      loop: "{{ pve_common_ct_uuid_vmids_list }}"
       loop_control:
         label: "{{ item }}"
-      when: not (pve_ct_uuid_print_registry | bool)
+      when: not (pve_common_ct_uuid_print_registry | bool)
 
     - name: Apply or verify the container system UUIDs
       ansible.builtin.include_role:
         name: pve-common-ct-uuid
       vars:
-        pve_ct_system_uuid_items: "{{ pve_ct_uuid_items }}"
-        pve_ct_system_uuid_print_registry: "{{ pve_ct_uuid_print_registry }}"
-        pve_ct_system_uuid_verify_only: "{{ not (pve_ct_uuid_apply | bool) }}"
+        pve_common_ct_uuid_items: "{{ pve_common_ct_uuid_items }}"
+        pve_common_ct_uuid_print_registry: "{{ pve_common_ct_uuid_print_registry }}"
+        pve_common_ct_uuid_verify_only: "{{ not (pve_common_ct_uuid_apply | bool) }}"

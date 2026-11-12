@@ -1,10 +1,10 @@
 #!/bin/bash
 set -uo pipefail
 
-USER={{ sunbeam_node_user }}
-CTRL={{ sunbeam_obs_controller }}
-CAAS={{ sunbeam_juju_openstack_model }}
-MACH={{ sunbeam_juju_machines_model }}
+USER={{ pve_sunbeam_node_user }}
+CTRL={{ pve_sunbeam_obs_controller }}
+CAAS={{ pve_sunbeam_juju_openstack_model }}
+MACH={{ pve_sunbeam_juju_machines_model }}
 
 jrun() { su - "$USER" -c "$1"; }
 
@@ -104,9 +104,9 @@ if [ -f "$acct" ]; then
     echo "ACCOUNT_FILE=yes"
     offers="$(su - "$USER" -c "juju find-offers $CTRL:" 2>/dev/null || true)"
     missing=0
-    for want in {{ sunbeam_obs_grafana_offer }} \
-                {{ sunbeam_obs_prometheus_offer }} \
-                {{ sunbeam_obs_loki_offer }}; do
+    for want in {{ pve_sunbeam_obs_grafana_offer }} \
+                {{ pve_sunbeam_obs_prometheus_offer }} \
+                {{ pve_sunbeam_obs_loki_offer }}; do
         printf '%s\n' "$offers" | grep -qF "$want" || missing=$((missing + 1))
     done
     echo "HUB_OFFERS=$((3 - missing))"

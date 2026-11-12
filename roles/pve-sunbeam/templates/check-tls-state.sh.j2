@@ -1,13 +1,13 @@
 #!/bin/bash
 set -u
 
-user={{ sunbeam_node_user }}
-rc_path={{ sunbeam_admin_openrc_path }}
+user={{ pve_sunbeam_node_user }}
+rc_path={{ pve_sunbeam_admin_openrc_path }}
 
-relations="$(su - "$user" -c 'juju status -m {{ sunbeam_juju_openstack_model }} --relations' 2>/dev/null || true)"
+relations="$(su - "$user" -c 'juju status -m {{ pve_sunbeam_juju_openstack_model }} --relations' 2>/dev/null || true)"
 
-{% for endpoint in sunbeam_tls_endpoints %}
-{% set app = sunbeam_tls_endpoint_apps[endpoint] %}
+{% for endpoint in pve_sunbeam_tls_endpoints %}
+{% set app = pve_sunbeam_tls_endpoint_apps[endpoint] %}
 if printf '%s\n' "$relations" | grep -q '{{ app }}:certificates'; then
     echo "tls.{{ endpoint }}=yes"
 else

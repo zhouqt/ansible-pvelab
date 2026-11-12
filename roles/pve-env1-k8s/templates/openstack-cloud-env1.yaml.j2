@@ -1,11 +1,11 @@
 clouds:
-  {{ pve_ussuri_k8s_cloud_name }}:
+  {{ pve_env1_k8s_cloud_name }}:
     type: openstack
     auth-types: [userpass]
-    endpoint: {{ pve_ussuri_k8s_keystone_url }}
+    endpoint: {{ pve_env1_k8s_keystone_url }}
     regions:
-      {{ pve_ussuri_k8s_region }}:
-        endpoint: {{ pve_ussuri_k8s_keystone_url }}
+      {{ pve_env1_k8s_region }}:
+        endpoint: {{ pve_env1_k8s_keystone_url }}
     ca-certificates:
       - |
-{{ lookup('file', pve_ussuri_k8s_vault_ca_file) | indent(8, true) }}
+{{ lookup('file', pve_env1_k8s_vault_ca_file) | indent(8, true) }}

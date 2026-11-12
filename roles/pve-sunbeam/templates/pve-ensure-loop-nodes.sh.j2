@@ -3,7 +3,7 @@ set -u
 
 created=0
 replaced=0
-for n in {{ sunbeam_loop_nodes_needed | join(' ') }}; do
+for n in {{ pve_sunbeam_loop_nodes_needed | join(' ') }}; do
     dev="/dev/loop$n"
     if [ -b "$dev" ]; then
         continue

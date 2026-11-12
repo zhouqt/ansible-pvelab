@@ -3,38 +3,38 @@
 - name: Confirm the play is running on the approved PVE host
   ansible.builtin.assert:
     that:
-      - sunbeam_host is defined
-      - inventory_hostname == sunbeam_host or sunbeam_host in group_names
+      - pve_sunbeam_host is defined
+      - inventory_hostname == pve_sunbeam_host or pve_sunbeam_host in group_names
     fail_msg: >-
-      This role may only run on the PVE host {{ sunbeam_host }} (inventory group pve);
+      This role may only run on the PVE host {{ pve_sunbeam_host }} (inventory group pve);
       all PVE/Sunbeam operations must go through root@pve-host.
   run_once: true
 
 - name: Verify node inventory is internally consistent
   ansible.builtin.assert:
     that:
-      - sunbeam_nodes | length == sunbeam_cluster_list_expected_nodes
-      - sunbeam_nodes | selectattr('primary') | list | length == 1
-      - sunbeam_nodes | map(attribute='fqdn') | unique | length == sunbeam_nodes | length
-      - sunbeam_nodes | map(attribute='vmid') | unique | length == sunbeam_nodes | length
+      - pve_sunbeam_nodes | length == pve_sunbeam_cluster_list_expected_nodes
+      - pve_sunbeam_nodes | selectattr('primary') | list | length == 1
+      - pve_sunbeam_nodes | map(attribute='fqdn') | unique | length == pve_sunbeam_nodes | length
+      - pve_sunbeam_nodes | map(attribute='vmid') | unique | length == pve_sunbeam_nodes | length
     fail_msg: >-
-      sunbeam_nodes is inconsistent (node count, primary uniqueness, or fqdn/vmid
+      pve_sunbeam_nodes is inconsistent (node count, primary uniqueness, or fqdn/vmid
       uniqueness).
 
 - name: Ensure the PVE-side staging directory exists
   ansible.builtin.file:
-    path: "{{ sunbeam_staging_dir }}"
+    path: "{{ pve_sunbeam_staging_dir }}"
     state: directory
     owner: root
     group: root
     mode: "0700"
   when: >-
-    sunbeam_stage not in sunbeam_readonly_stages
-    and not (sunbeam_pve_preflight_only | bool)
-    and not (sunbeam_stage == 'system-uuid'
-             and not (sunbeam_confirm_system_uuid | default(false) | bool))
+    pve_sunbeam_stage not in pve_sunbeam_readonly_stages
+    and not (pve_sunbeam_preflight_only | bool)
+    and not (pve_sunbeam_stage == 'system-uuid'
+             and not (pve_sunbeam_confirm_system_uuid | default(false) | bool))
 
 - name: Derive per-node helper facts
   ansible.builtin.set_fact:
-    sunbeam_primary_node: "{{ sunbeam_nodes | selectattr('primary') | list | first }}"
-    sunbeam_worker_nodes: "{{ sunbeam_nodes | rejectattr('primary') | list }}"
+    pve_sunbeam_primary_node: "{{ pve_sunbeam_nodes | selectattr('primary') | list | first }}"
+    pve_sunbeam_worker_nodes: "{{ pve_sunbeam_nodes | rejectattr('primary') | list }}"

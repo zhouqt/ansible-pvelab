@@ -1,9 +1,9 @@
-{% set p = pve_yoga_profiles[pve_yoga_profile] %}
+{% set p = pve_openstack_profiles[pve_openstack_profile] %}
 {% set revisions = p.app_revisions | default({}) %}
 {% set extra_opts = p.app_options | default({}) %}
 
 name: openstack-pve
-series: {{ pve_yoga_openstack_series }}
+series: {{ pve_openstack_series }}
 variables:
   openstack-origin: &openstack-origin {{ p.origin }}
 

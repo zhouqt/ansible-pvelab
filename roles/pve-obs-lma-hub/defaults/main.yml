@@ -1,5 +1,5 @@
 ---
 
-pve_lma_skip_wait: false
+pve_obs_lma_hub_skip_wait: false
 
-pve_obs_hub_pct_bin: /usr/sbin/pct
+pve_obs_cos_hub_pct_bin: /usr/sbin/pct

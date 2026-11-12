@@ -5,246 +5,246 @@
 - name: Require explicit authorization for deployment configuration
   ansible.builtin.assert:
     that:
-      - sunbeam_confirm_external_changes | bool
+      - pve_sunbeam_confirm_external_changes | bool
     fail_msg: >-
       This stage applies the manifest to the existing juju model and creates the external
       network, tenant network and demo user.
-      To confirm, pass -e sunbeam_confirm_external_changes=true.
+      To confirm, pass -e pve_sunbeam_confirm_external_changes=true.
 
 - name: Check whether the deployment is already configured
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'check-deployment-configured.sh.j2') }}"
-  register: sunbeam_deployment_state
+  register: pve_sunbeam_deployment_state
   changed_when: false
   failed_when: false
 
 - name: Classify the deployment configuration state
   ansible.builtin.set_fact:
-    sunbeam_configure_state: >-
-      {{ (sunbeam_deployment_state.stdout | default(''))
+    pve_sunbeam_configure_state: >-
+      {{ (pve_sunbeam_deployment_state.stdout | default(''))
          | regex_findall('(?m)^configured=(\S+)') | first | default('unknown') }}
-    sunbeam_configure_missing: >-
-      {{ (sunbeam_deployment_state.stdout | default(''))
+    pve_sunbeam_configure_missing: >-
+      {{ (pve_sunbeam_deployment_state.stdout | default(''))
          | regex_findall('(?m)^configured=partial missing=(.*)$') | first | default('') }}
 
 - name: Refuse to walk past a half-written openrc
   ansible.builtin.assert:
     that:
-      - sunbeam_repair_openrc | bool or sunbeam_force_configure | bool
+      - pve_sunbeam_repair_openrc | bool or pve_sunbeam_force_configure | bool
     fail_msg: >-
-      {{ sunbeam_admin_openrc_path }} exists but is incomplete: missing
-      {{ sunbeam_configure_missing | default('(unknown keys)') }}.
+      {{ pve_sunbeam_admin_openrc_path }} exists but is incomplete: missing
+      {{ pve_sunbeam_configure_missing | default('(unknown keys)') }}.
       Running further would leave every OpenStack call failing on an incomplete
       environment. Either repair the credentials in place with
-      -e sunbeam_repair_openrc=true (re-renders the openrc, touches no cloud resources),
-      or replay the whole configuration with -e sunbeam_force_configure=true.
-  when: sunbeam_configure_state == 'partial'
+      -e pve_sunbeam_repair_openrc=true (re-renders the openrc, touches no cloud resources),
+      or replay the whole configuration with -e pve_sunbeam_force_configure=true.
+  when: pve_sunbeam_configure_state == 'partial'
 
 - name: Repair the half-written openrc
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'run-refresh-openrc.sh.j2') }}"
-  register: sunbeam_openrc_repair
+  register: pve_sunbeam_openrc_repair
   when:
-    - sunbeam_configure_state == 'partial'
-    - sunbeam_repair_openrc | bool
+    - pve_sunbeam_configure_state == 'partial'
+    - pve_sunbeam_repair_openrc | bool
 
 - name: Re-check the openrc after the repair
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'check-deployment-configured.sh.j2') }}"
-  register: sunbeam_deployment_state_repaired
+  register: pve_sunbeam_deployment_state_repaired
   changed_when: false
   failed_when: false
   when:
-    - sunbeam_configure_state == 'partial'
-    - sunbeam_repair_openrc | bool
+    - pve_sunbeam_configure_state == 'partial'
+    - pve_sunbeam_repair_openrc | bool
 
 - name: Assert the repaired openrc is complete
   ansible.builtin.assert:
     that:
-      - "'configured=yes' in (sunbeam_deployment_state_repaired.stdout | default(''))"
+      - "'configured=yes' in (pve_sunbeam_deployment_state_repaired.stdout | default(''))"
     fail_msg: >-
-      The openrc repair ran but {{ sunbeam_admin_openrc_path }} is still incomplete:
-      {{ sunbeam_deployment_state_repaired.stdout | default('') | trim | default('(no output)', true) }}.
-      Check {{ sunbeam_node_log_dir }}/refresh-openrc.log inside {{ sunbeam_primary_node.fqdn }}.
+      The openrc repair ran but {{ pve_sunbeam_admin_openrc_path }} is still incomplete:
+      {{ pve_sunbeam_deployment_state_repaired.stdout | default('') | trim | default('(no output)', true) }}.
+      Check {{ pve_sunbeam_node_log_dir }}/refresh-openrc.log inside {{ pve_sunbeam_primary_node.fqdn }}.
   when:
-    - sunbeam_configure_state == 'partial'
-    - sunbeam_repair_openrc | bool
+    - pve_sunbeam_configure_state == 'partial'
+    - pve_sunbeam_repair_openrc | bool
 
 - name: Decide whether configure deployment must run
   ansible.builtin.set_fact:
-    sunbeam_configure_needed: >-
-      {{ sunbeam_configure_state != 'yes' or sunbeam_force_configure | bool }}
+    pve_sunbeam_configure_needed: >-
+      {{ pve_sunbeam_configure_state != 'yes' or pve_sunbeam_force_configure | bool }}
 
 - name: Resolve the Sunbeam node identities
   ansible.builtin.include_tasks: _node_identity.yml
-  when: sunbeam_configure_needed | bool
+  when: pve_sunbeam_configure_needed | bool
 
 - name: Render the Sunbeam deployment manifest
   ansible.builtin.template:
     src: manifest.yaml.j2
-    dest: "{{ sunbeam_staging_dir }}/manifest.yaml"
+    dest: "{{ pve_sunbeam_staging_dir }}/manifest.yaml"
     mode: "0600"
-  when: sunbeam_configure_needed | bool
+  when: pve_sunbeam_configure_needed | bool
 
 - name: Require the rendered manifest to be keyed by the probed node identities
   ansible.builtin.include_tasks: _manifest_identity_guard.yml
-  when: sunbeam_configure_needed | bool
+  when: pve_sunbeam_configure_needed | bool
 
 - name: Read the manifest currently stored in the primary CT
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - cat
-      - "{{ sunbeam_manifest_path }}"
-  register: sunbeam_configure_manifest_current
+      - "{{ pve_sunbeam_manifest_path }}"
+  register: pve_sunbeam_configure_manifest_current
   changed_when: false
   failed_when: false
-  when: sunbeam_configure_needed | bool
+  when: pve_sunbeam_configure_needed | bool
 
 - name: Push the manifest into the primary CT when it differs
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - push
-      - "{{ sunbeam_primary_node.vmid }}"
-      - "{{ sunbeam_staging_dir }}/manifest.yaml"
-      - "{{ sunbeam_manifest_path }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_staging_dir }}/manifest.yaml"
+      - "{{ pve_sunbeam_manifest_path }}"
       - --user
-      - "{{ sunbeam_node_user }}"
+      - "{{ pve_sunbeam_node_user }}"
       - --group
-      - "{{ sunbeam_node_user }}"
+      - "{{ pve_sunbeam_node_user }}"
       - --perms
       - "0600"
   when:
-    - sunbeam_configure_needed | bool
+    - pve_sunbeam_configure_needed | bool
     - >-
-      (sunbeam_configure_manifest_current.stdout | default('') | trim)
+      (pve_sunbeam_configure_manifest_current.stdout | default('') | trim)
       != (lookup('template', 'manifest.yaml.j2') | trim)
 
 - name: Apply the deployment configuration
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'run-configure-deployment.sh.j2') }}"
-  when: sunbeam_configure_needed | bool
-  register: sunbeam_configure_run
-  async: "{{ sunbeam_configure_timeout }}"
-  poll: "{{ sunbeam_poll_interval }}"
+  when: pve_sunbeam_configure_needed | bool
+  register: pve_sunbeam_configure_run
+  async: "{{ pve_sunbeam_configure_timeout }}"
+  poll: "{{ pve_sunbeam_poll_interval }}"
   failed_when: false
 
 - name: Re-check the deployment configuration state
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'check-deployment-configured.sh.j2') }}"
-  register: sunbeam_deployment_state_after
+  register: pve_sunbeam_deployment_state_after
   changed_when: false
   failed_when: false
 
 - name: Restore the admin openrc that the configure CLI overwrote
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'run-refresh-openrc.sh.j2') }}"
-  register: sunbeam_openrc_restore
+  register: pve_sunbeam_openrc_restore
   when:
-    - sunbeam_configure_needed | bool
-    - "'configured=yes' not in (sunbeam_deployment_state_after.stdout | default(''))"
+    - pve_sunbeam_configure_needed | bool
+    - "'configured=yes' not in (pve_sunbeam_deployment_state_after.stdout | default(''))"
 
 - name: Re-check the openrc after the restore
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'check-deployment-configured.sh.j2') }}"
-  register: sunbeam_deployment_state_final
+  register: pve_sunbeam_deployment_state_final
   changed_when: false
   failed_when: false
   when:
-    - sunbeam_configure_needed | bool
-    - "'configured=yes' not in (sunbeam_deployment_state_after.stdout | default(''))"
+    - pve_sunbeam_configure_needed | bool
+    - "'configured=yes' not in (pve_sunbeam_deployment_state_after.stdout | default(''))"
 
 - name: Assert the openrc file is in place
   ansible.builtin.assert:
     that:
-      - "'configured=yes' in (sunbeam_deployment_state_final.stdout | default(sunbeam_deployment_state_after.stdout | default('')))"
+      - "'configured=yes' in (pve_sunbeam_deployment_state_final.stdout | default(pve_sunbeam_deployment_state_after.stdout | default('')))"
     fail_msg: >-
-      {{ sunbeam_admin_openrc_path }} does not exist or is empty, which means configure
-      deployment did not complete. Check {{ sunbeam_node_log_dir }}/configure-deployment.log
-      and {{ sunbeam_node_log_dir }}/refresh-openrc.log inside {{ sunbeam_primary_node.fqdn }}.
+      {{ pve_sunbeam_admin_openrc_path }} does not exist or is empty, which means configure
+      deployment did not complete. Check {{ pve_sunbeam_node_log_dir }}/configure-deployment.log
+      and {{ pve_sunbeam_node_log_dir }}/refresh-openrc.log inside {{ pve_sunbeam_primary_node.fqdn }}.
       State after the run:
-      {{ (sunbeam_deployment_state_final.stdout | default(sunbeam_deployment_state_after.stdout | default(''))) | trim }}.
+      {{ (pve_sunbeam_deployment_state_final.stdout | default(pve_sunbeam_deployment_state_after.stdout | default(''))) | trim }}.
 
 - name: Read the deployed OpenStack resource inventory
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'verify-deployment.sh.j2') }}"
-  register: sunbeam_deployment_inventory
+  register: pve_sunbeam_deployment_inventory
   changed_when: false
 
 - name: Assert the external network exists
   ansible.builtin.assert:
     that:
-      - sunbeam_external_network.openstack_name in sunbeam_deployment_inventory.stdout
+      - pve_sunbeam_external_network.openstack_name in pve_sunbeam_deployment_inventory.stdout
     fail_msg: >-
-      External network {{ sunbeam_external_network.openstack_name }} was not found in OpenStack.
+      External network {{ pve_sunbeam_external_network.openstack_name }} was not found in OpenStack.
       The manifest's external-networks does not match the live environment.
 
 - name: Assert the tenant network exists
   ansible.builtin.assert:
     that:
-      - sunbeam_tenant_network_name in sunbeam_deployment_inventory.stdout
+      - pve_sunbeam_tenant_network_name in pve_sunbeam_deployment_inventory.stdout
     fail_msg: >-
-      Tenant network {{ sunbeam_tenant_network_name }} was not found in OpenStack (demo setup incomplete?).
+      Tenant network {{ pve_sunbeam_tenant_network_name }} was not found in OpenStack (demo setup incomplete?).
 
 - name: Point containerd's image pulls at the registry proxy
   ansible.builtin.include_tasks: _containerd_registry_proxy.yml
@@ -253,17 +253,17 @@
   ansible.builtin.debug:
     msg: >-
       {{ [
-           'openrc: ' ~ sunbeam_admin_openrc_path ~ ' (' ~ sunbeam_node_user ~ ', 0600)',
-           'configure deployment state on entry: ' ~ sunbeam_configure_state,
+           'openrc: ' ~ pve_sunbeam_admin_openrc_path ~ ' (' ~ pve_sunbeam_node_user ~ ', 0600)',
+           'configure deployment state on entry: ' ~ pve_sunbeam_configure_state,
          ]
-         + (['missing openrc keys: ' ~ sunbeam_configure_missing]
-            if (sunbeam_configure_missing | default('') | length > 0) else [])
+         + (['missing openrc keys: ' ~ pve_sunbeam_configure_missing]
+            if (pve_sunbeam_configure_missing | default('') | length > 0) else [])
          + [
            'configure deployment executed this run: '
-           ~ ('yes' if sunbeam_configure_needed | bool else 'no (already configured)'),
-           'configure CLI rc: ' ~ (sunbeam_configure_run.rc | default('n/a (skipped)')),
+           ~ ('yes' if pve_sunbeam_configure_needed | bool else 'no (already configured)'),
+           'configure CLI rc: ' ~ (pve_sunbeam_configure_run.rc | default('n/a (skipped)')),
            'admin openrc restored after configure: '
-           ~ (sunbeam_openrc_restore.stdout_lines | default(['n/a (skipped)']) | join('; ')),
+           ~ (pve_sunbeam_openrc_restore.stdout_lines | default(['n/a (skipped)']) | join('; ')),
            'resource inventory:',
          ]
-         + sunbeam_deployment_inventory.stdout_lines }}
+         + pve_sunbeam_deployment_inventory.stdout_lines }}

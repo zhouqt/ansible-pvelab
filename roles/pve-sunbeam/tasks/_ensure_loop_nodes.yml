@@ -2,9 +2,9 @@
 
 - name: Compute the loop device numbers the primary container needs
   ansible.builtin.set_fact:
-    sunbeam_loop_nodes_needed: >-
-      {{ ((range(sunbeam_loop_device_first, sunbeam_loop_device_last + 1) | list)
-          + (sunbeam_loop_device_low_slots | map(attribute='loop') | list))
+    pve_sunbeam_loop_nodes_needed: >-
+      {{ ((range(pve_sunbeam_loop_device_first, pve_sunbeam_loop_device_last + 1) | list)
+          + (pve_sunbeam_loop_device_low_slots | map(attribute='loop') | list))
          | unique | sort }}
 
 - name: Install the helper that creates the loop device nodes
@@ -14,7 +14,7 @@
     owner: root
     group: root
     mode: "0755"
-  register: sunbeam_loop_nodes_script
+  register: pve_sunbeam_loop_nodes_script
 
 - name: Install the boot unit that keeps the loop device nodes in place
   ansible.builtin.template:
@@ -23,29 +23,29 @@
     owner: root
     group: root
     mode: "0644"
-  register: sunbeam_loop_nodes_unit
+  register: pve_sunbeam_loop_nodes_unit
 
 - name: Reload systemd after installing the loop node unit
   ansible.builtin.systemd:
     daemon_reload: true
-  when: sunbeam_loop_nodes_unit.changed
+  when: pve_sunbeam_loop_nodes_unit.changed
 
 - name: Enable the loop node unit
   ansible.builtin.systemd:
     name: pve-ensure-loop-nodes.service
     enabled: true
-  when: sunbeam_loop_nodes_unit.changed
+  when: pve_sunbeam_loop_nodes_unit.changed
 
 - name: Create the missing loop device nodes
   ansible.builtin.command:
     argv: ["/usr/local/sbin/pve-ensure-loop-nodes.sh"]
-  register: sunbeam_loop_nodes_run
-  changed_when: "'LOOP-NODES-CREATED=0 REPLACED=0' not in sunbeam_loop_nodes_run.stdout"
+  register: pve_sunbeam_loop_nodes_run
+  changed_when: "'LOOP-NODES-CREATED=0 REPLACED=0' not in pve_sunbeam_loop_nodes_run.stdout"
 
 - name: Verify every loop device node the primary binds exists
   ansible.builtin.command:
     argv: ["test", "-b", "/dev/loop{{ item }}"]
-  loop: "{{ sunbeam_loop_nodes_needed }}"
+  loop: "{{ pve_sunbeam_loop_nodes_needed }}"
   loop_control:
     label: "/dev/loop{{ item }}"
   changed_when: false

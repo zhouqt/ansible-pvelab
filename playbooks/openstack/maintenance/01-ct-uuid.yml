@@ -9,8 +9,8 @@
       ansible.builtin.include_role:
         name: pve-common-ct-uuid
       vars:
-        pve_ct_system_uuid_items: >-
-          {{ ([pve_yoga_controller_vmid | int]
-              + (pve_yoga_workload_cts | map(attribute='vmid') | map('int') | list)) }}
-        pve_ct_system_uuid_apply_live: true
-      when: pve_yoga_run_ct_system_uuid | bool
+        pve_common_ct_uuid_items: >-
+          {{ ([pve_openstack_controller_vmid | int]
+              + (pve_openstack_workload_cts | map(attribute='vmid') | map('int') | list)) }}
+        pve_common_ct_uuid_apply_live: true
+      when: pve_openstack_run_ct_system_uuid | bool

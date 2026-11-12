@@ -5,34 +5,34 @@
     argv:
       - pct
       - exec
-      - "{{ pve_juju_client_vmid }}"
+      - "{{ pve_env1_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_juju_client_user }}"
+      - "{{ pve_env1_juju_client_user }}"
       - -c
-      - "{{ pve_juju_bin }} status -m {{ pve_ussuri_model }} --format json"
-  register: pve_ussuri_ceph_verify_status
+      - "{{ pve_env1_juju_bin }} status -m {{ pve_env1_model }} --format json"
+  register: pve_env1_ceph_verify_status
   failed_when: false
   until: >-
     {%- set ns = namespace(ok=true) -%}
-    {%- set apps = (pve_ussuri_ceph_verify_status.stdout | default('{}', true) | from_json).applications | default({}) -%}
-    {%- for name in pve_ussuri_ceph_compute_applications -%}
+    {%- set apps = (pve_env1_ceph_verify_status.stdout | default('{}', true) | from_json).applications | default({}) -%}
+    {%- for name in pve_env1_ceph_compute_applications -%}
     {%-   if apps.get(name, {}).get('application-status', {}).get('current', '') != 'active' -%}
     {%-     set ns.ok = false -%}
     {%-   endif -%}
     {%- endfor -%}
     {{ ns.ok | bool }}
-  retries: "{{ pve_ussuri_wait_retries }}"
-  delay: "{{ pve_ussuri_wait_delay }}"
+  retries: "{{ pve_env1_wait_retries }}"
+  delay: "{{ pve_env1_wait_delay }}"
   changed_when: false
 
 - name: Report the final state of every compute/ceph application
   ansible.builtin.debug:
     msg: >-
       {%- set ns = namespace(out=[]) -%}
-      {%- set apps = (pve_ussuri_ceph_verify_status.stdout | default('{}', true) | from_json).applications | default({}) -%}
-      {%- for name in pve_ussuri_ceph_compute_applications -%}
+      {%- set apps = (pve_env1_ceph_verify_status.stdout | default('{}', true) | from_json).applications | default({}) -%}
+      {%- for name in pve_env1_ceph_compute_applications -%}
       {%-   set _ = ns.out.append(name ~ ': '
              ~ apps.get(name, {}).get('application-status', {}).get('current', 'missing')) -%}
       {%- endfor -%}
@@ -42,9 +42,9 @@
   ansible.builtin.assert:
     that:
       - >-
-        pve_ussuri_ceph_compute_applications
+        pve_env1_ceph_compute_applications
         | difference(
-            ((pve_ussuri_ceph_verify_status.stdout | default('{}', true) | from_json).applications | default({}))
+            ((pve_env1_ceph_verify_status.stdout | default('{}', true) | from_json).applications | default({}))
             | dict2items
             | selectattr('value.application-status.current', 'defined')
             | selectattr('value.application-status.current', 'equalto', 'active')
@@ -52,18 +52,18 @@
         | length == 0
     fail_msg: >-
       applications are still not active after 30 minutes (see the previous debug output for the full state).
-      look at `juju status -m {{ pve_ussuri_model }}` and `juju debug-log` of the unit first.
+      look at `juju status -m {{ pve_env1_model }}` and `juju debug-log` of the unit first.
       common causes: ceph-mon is waiting for expected-osd-count (look at bootstrapped-osds of ceph-osd),
       nova-compute waits for the ceph keyring, ovn-chassis waits for ovn-central.
 
 - name: Build the list of primary units that the topology must place
   ansible.builtin.set_fact:
-    pve_ussuri_ceph_units_to_check: "{{ pve_ussuri_ceph_units_to_check_doc | from_json }}"
+    pve_env1_ceph_units_to_check: "{{ pve_env1_ceph_units_to_check_doc | from_json }}"
   vars:
-    pve_ussuri_ceph_units_to_check_doc: >-
+    pve_env1_ceph_units_to_check_doc: >-
       {%- set ns = namespace(out=[]) -%}
-      {%- set apps = (pve_ussuri_ceph_verify_status.stdout | default('{}', true) | from_json).applications | default({}) -%}
-      {%- for a in pve_ussuri_compute_ceph_apps if not (a.subordinate | default(false)) -%}
+      {%- set apps = (pve_env1_ceph_verify_status.stdout | default('{}', true) | from_json).applications | default({}) -%}
+      {%- for a in pve_env1_compute_ceph_apps if not (a.subordinate | default(false)) -%}
       {%-   for u in apps.get(a.app, {}).get('units', {}) | list -%}
       {%-     set _ = ns.out.append(u) -%}
       {%-   endfor -%}
@@ -80,13 +80,13 @@
       {{ item }} is actually on machine
       {{ (st_apps.get(item.split('/')[0], {}).get('units', {}).get(item, {}).get('machine', '?')) }},
       while the topology expects machine {{ wanted }}.
-      check how pve_ussuri_topology and pve_ussuri_unit_machines are derived.
-  loop: "{{ pve_ussuri_ceph_units_to_check }}"
+      check how pve_env1_topology and pve_env1_unit_machines are derived.
+  loop: "{{ pve_env1_ceph_units_to_check }}"
   loop_control:
     label: "{{ item }}"
   vars:
-    st_apps: "{{ (pve_ussuri_ceph_verify_status.stdout | from_json).applications | default({}) }}"
-    machine_of: "{{ pve_ussuri_machine_of_unit }}"
+    st_apps: "{{ (pve_env1_ceph_verify_status.stdout | from_json).applications | default({}) }}"
+    machine_of: "{{ pve_env1_machine_of_unit }}"
     wanted: >-
       {{ machine_of[item] if item in machine_of else machine_of.get(item.split('/')[0], '?') }}
 
@@ -100,33 +100,33 @@
       {{ item.app }} has
       {{ st_apps.get(item.app, {}).get('units', {}) | length }} units,
       the topology expects {{ item.num_units | default(1) }}.
-  loop: "{{ pve_ussuri_compute_ceph_apps | rejectattr('subordinate', 'defined') | list }}"
+  loop: "{{ pve_env1_compute_ceph_apps | rejectattr('subordinate', 'defined') | list }}"
   loop_control:
     label: "{{ item.app }}"
   vars:
-    st_apps: "{{ (pve_ussuri_ceph_verify_status.stdout | from_json).applications | default({}) }}"
+    st_apps: "{{ (pve_env1_ceph_verify_status.stdout | from_json).applications | default({}) }}"
 
 - name: Resolve the guest that hosts the first Ceph monitor
   ansible.builtin.set_fact:
-    pve_ussuri_ceph_probe_vmid: >-
-      {{ (pve_ussuri_topology | selectattr('units', 'contains', 'ceph-mon/0') | first).vmid }}
+    pve_env1_ceph_probe_vmid: >-
+      {{ (pve_env1_topology | selectattr('units', 'contains', 'ceph-mon/0') | first).vmid }}
 
 - name: Read the Ceph cluster status from that monitor
   ansible.builtin.command:
     argv:
       - pct
       - exec
-      - "{{ pve_ussuri_ceph_probe_vmid }}"
+      - "{{ pve_env1_ceph_probe_vmid }}"
       - --
       - ceph
       - status
       - --format
       - json
-  register: pve_ussuri_ceph_status
+  register: pve_env1_ceph_status
   until: >-
-    pve_ussuri_ceph_status.rc == 0
-    and ((pve_ussuri_ceph_status.stdout | default('{}', true) | from_json).get('osdmap', {}).get('num_up_osds', 0) | int) >= (pve_ussuri_osd_units | length)
-    and ((pve_ussuri_ceph_status.stdout | default('{}', true) | from_json).get('osdmap', {}).get('num_in_osds', 0) | int) >= (pve_ussuri_osd_units | length)
+    pve_env1_ceph_status.rc == 0
+    and ((pve_env1_ceph_status.stdout | default('{}', true) | from_json).get('osdmap', {}).get('num_up_osds', 0) | int) >= (pve_env1_osd_units | length)
+    and ((pve_env1_ceph_status.stdout | default('{}', true) | from_json).get('osdmap', {}).get('num_in_osds', 0) | int) >= (pve_env1_osd_units | length)
   retries: 30
   delay: 10
   failed_when: false
@@ -135,40 +135,40 @@
 - name: Show the Ceph health and membership
   ansible.builtin.debug:
     msg: >-
-      health={{ (pve_ussuri_ceph_status.stdout | default('{}', true) | from_json).get('health', {}).get('status', 'n/a') }}
-      mons={{ (pve_ussuri_ceph_status.stdout | default('{}', true) | from_json).get('monmap', {}).get('num_mons', '?') }}
-      osd_up={{ (pve_ussuri_ceph_status.stdout | default('{}', true) | from_json).get('osdmap', {}).get('num_up_osds', '?') }}
-      osd_in={{ (pve_ussuri_ceph_status.stdout | default('{}', true) | from_json).get('osdmap', {}).get('num_in_osds', '?') }}
-      checks={{ (pve_ussuri_ceph_status.stdout | default('{}', true) | from_json).get('health', {}).get('checks', {}) | list }}
+      health={{ (pve_env1_ceph_status.stdout | default('{}', true) | from_json).get('health', {}).get('status', 'n/a') }}
+      mons={{ (pve_env1_ceph_status.stdout | default('{}', true) | from_json).get('monmap', {}).get('num_mons', '?') }}
+      osd_up={{ (pve_env1_ceph_status.stdout | default('{}', true) | from_json).get('osdmap', {}).get('num_up_osds', '?') }}
+      osd_in={{ (pve_env1_ceph_status.stdout | default('{}', true) | from_json).get('osdmap', {}).get('num_in_osds', '?') }}
+      checks={{ (pve_env1_ceph_status.stdout | default('{}', true) | from_json).get('health', {}).get('checks', {}) | list }}
 
 - name: Require three monitors in quorum
   ansible.builtin.assert:
     that:
-      - pve_ussuri_ceph_status.rc == 0
-      - ((pve_ussuri_ceph_status.stdout | from_json).monmap.num_mons | int) == (pve_ussuri_compute_ceph_apps | selectattr('app', 'equalto', 'ceph-mon') | map(attribute='num_units') | first | int)
-      - ((pve_ussuri_ceph_status.stdout | from_json).quorum | length) == ((pve_ussuri_ceph_status.stdout | from_json).monmap.num_mons | int)
+      - pve_env1_ceph_status.rc == 0
+      - ((pve_env1_ceph_status.stdout | from_json).monmap.num_mons | int) == (pve_env1_compute_ceph_apps | selectattr('app', 'equalto', 'ceph-mon') | map(attribute='num_units') | first | int)
+      - ((pve_env1_ceph_status.stdout | from_json).quorum | length) == ((pve_env1_ceph_status.stdout | from_json).monmap.num_mons | int)
     fail_msg: >-
-      cannot read a healthy mon quorum from CT {{ pve_ussuri_ceph_probe_vmid }}
-      (rc={{ pve_ussuri_ceph_status.rc }}, output: {{ pve_ussuri_ceph_status.stdout | default('') }}
-      {{ pve_ussuri_ceph_status.stderr | default('') }}).
+      cannot read a healthy mon quorum from CT {{ pve_env1_ceph_probe_vmid }}
+      (rc={{ pve_env1_ceph_status.rc }}, output: {{ pve_env1_ceph_status.stdout | default('') }}
+      {{ pve_env1_ceph_status.stderr | default('') }}).
 
 - name: Require every created OSD to be up and in
   ansible.builtin.assert:
     that:
-      - ((pve_ussuri_ceph_status.stdout | from_json).osdmap.num_osds | int) == (pve_ussuri_osd_units | length)
-      - ((pve_ussuri_ceph_status.stdout | from_json).osdmap.num_up_osds | int) == (pve_ussuri_osd_units | length)
-      - ((pve_ussuri_ceph_status.stdout | from_json).osdmap.num_in_osds | int) == (pve_ussuri_osd_units | length)
+      - ((pve_env1_ceph_status.stdout | from_json).osdmap.num_osds | int) == (pve_env1_osd_units | length)
+      - ((pve_env1_ceph_status.stdout | from_json).osdmap.num_up_osds | int) == (pve_env1_osd_units | length)
+      - ((pve_env1_ceph_status.stdout | from_json).osdmap.num_in_osds | int) == (pve_env1_osd_units | length)
     fail_msg: >-
-      expected all {{ pve_ussuri_osd_units | length }} OSDs to be up/in, actual
-      num_osds={{ (pve_ussuri_ceph_status.stdout | from_json).osdmap.num_osds | default('?') }}
-      up={{ (pve_ussuri_ceph_status.stdout | from_json).osdmap.num_up_osds | default('?') }}
-      in={{ (pve_ussuri_ceph_status.stdout | from_json).osdmap.num_in_osds | default('?') }}.
+      expected all {{ pve_env1_osd_units | length }} OSDs to be up/in, actual
+      num_osds={{ (pve_env1_ceph_status.stdout | from_json).osdmap.num_osds | default('?') }}
+      up={{ (pve_env1_ceph_status.stdout | from_json).osdmap.num_up_osds | default('?') }}
+      in={{ (pve_env1_ceph_status.stdout | from_json).osdmap.num_in_osds | default('?') }}.
       check `ceph-volume lvm list` and `journalctl -u ceph-osd@<id>` on each OSD CT.
 
 - name: Require the cluster to be free of hard errors
   ansible.builtin.assert:
     that:
-      - ((pve_ussuri_ceph_status.stdout | from_json).health.status | default('')) != 'HEALTH_ERR'
+      - ((pve_env1_ceph_status.stdout | from_json).health.status | default('')) != 'HEALTH_ERR'
     fail_msg: >-
-      Ceph reports HEALTH_ERR: {{ (pve_ussuri_ceph_status.stdout | from_json).health.checks | default({}) }}.
-      run `ceph health detail` on CT {{ pve_ussuri_ceph_probe_vmid }}.
+      Ceph reports HEALTH_ERR: {{ (pve_env1_ceph_status.stdout | from_json).health.checks | default({}) }}.
+      run `ceph health detail` on CT {{ pve_env1_ceph_probe_vmid }}.

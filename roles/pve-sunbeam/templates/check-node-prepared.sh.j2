@@ -1,8 +1,8 @@
 #!/bin/bash
 set -u
 
-user={{ sunbeam_node_user }}
-home={{ sunbeam_node_home }}
+user={{ pve_sunbeam_node_user }}
+home={{ pve_sunbeam_node_home }}
 require_controller=no
 [ "${1:-}" = "--require-controller" ] && require_controller=yes
 

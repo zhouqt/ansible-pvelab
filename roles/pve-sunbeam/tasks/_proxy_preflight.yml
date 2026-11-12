@@ -2,10 +2,10 @@
 
 - name: Probe the proxy endpoint from inside every CT
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, bash, "-s"]
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, bash, "-s"]
     stdin: "{{ lookup('template', 'check-proxy-reachability.sh.j2') }}"
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_proxy_probe
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_node_proxy_probe
   changed_when: false
   failed_when: false
   loop_control:
@@ -14,15 +14,15 @@
 - name: Show the proxy probe results
   ansible.builtin.debug:
     msg: "{{ item.item.fqdn }}: rc={{ item.rc }} {{ (item.stdout | default('')) | trim }}"
-  loop: "{{ sunbeam_node_proxy_probe.results }}"
+  loop: "{{ pve_sunbeam_node_proxy_probe.results }}"
   loop_control:
     label: "{{ item.item.fqdn }}"
 
 - name: Read the current /etc/environment inside every CT
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, cat, "{{ sunbeam_etc_environment }}"]
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_environment
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, cat, "{{ pve_sunbeam_etc_environment }}"]
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_node_environment
   changed_when: false
   failed_when: false
   loop_control:
@@ -30,9 +30,9 @@
 
 - name: Read the current apt proxy configuration inside every CT
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, cat, "{{ sunbeam_apt_proxy_file }}"]
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_apt_proxy
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, cat, "{{ pve_sunbeam_apt_proxy_file }}"]
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_node_apt_proxy
   changed_when: false
   failed_when: false
   loop_control:
@@ -40,9 +40,9 @@
 
 - name: Read the snap daemon proxy configuration
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, snap, get, system, proxy]
-  loop: "{{ sunbeam_nodes }}"
-  register: sunbeam_node_snap_proxy
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", --, snap, get, system, proxy]
+  loop: "{{ pve_sunbeam_nodes }}"
+  register: pve_sunbeam_node_snap_proxy
   changed_when: false
   failed_when: false
   loop_control:
@@ -50,82 +50,82 @@
 
 - name: Index the probe results by vmid
   ansible.builtin.set_fact:
-    sunbeam_proxy_probe_by_vmid: >-
-      {{ (sunbeam_proxy_probe_by_vmid | default({}))
+    pve_sunbeam_proxy_probe_by_vmid: >-
+      {{ (pve_sunbeam_proxy_probe_by_vmid | default({}))
          | combine({ (item.item.vmid | string): item }) }}
-  loop: "{{ sunbeam_node_proxy_probe.results }}"
+  loop: "{{ pve_sunbeam_node_proxy_probe.results }}"
   loop_control:
     label: "{{ item.item.vmid }}"
 
 - name: Index the environment reads by vmid
   ansible.builtin.set_fact:
-    sunbeam_env_by_vmid: >-
-      {{ (sunbeam_env_by_vmid | default({}))
+    pve_sunbeam_env_by_vmid: >-
+      {{ (pve_sunbeam_env_by_vmid | default({}))
          | combine({ (item.item.vmid | string): (item.stdout | default('')) }) }}
-  loop: "{{ sunbeam_node_environment.results }}"
+  loop: "{{ pve_sunbeam_node_environment.results }}"
   loop_control:
     label: "{{ item.item.vmid }}"
 
 - name: Index the apt proxy reads by vmid
   ansible.builtin.set_fact:
-    sunbeam_apt_by_vmid: >-
-      {{ (sunbeam_apt_by_vmid | default({}))
+    pve_sunbeam_apt_by_vmid: >-
+      {{ (pve_sunbeam_apt_by_vmid | default({}))
          | combine({ (item.item.vmid | string): (item.stdout | default('')) }) }}
-  loop: "{{ sunbeam_node_apt_proxy.results }}"
+  loop: "{{ pve_sunbeam_node_apt_proxy.results }}"
   loop_control:
     label: "{{ item.item.vmid }}"
 
 - name: Index the snap daemon proxy reads by vmid
   ansible.builtin.set_fact:
-    sunbeam_snap_by_vmid: >-
-      {{ (sunbeam_snap_by_vmid | default({}))
+    pve_sunbeam_snap_by_vmid: >-
+      {{ (pve_sunbeam_snap_by_vmid | default({}))
          | combine({ (item.item.vmid | string): (item.stdout | default('')) }) }}
-  loop: "{{ sunbeam_node_snap_proxy.results }}"
+  loop: "{{ pve_sunbeam_node_snap_proxy.results }}"
   loop_control:
     label: "{{ item.item.vmid }}"
 
 - name: Classify the proxy state of every node
   ansible.builtin.set_fact:
-    sunbeam_proxy_preflight: "{{ (sunbeam_proxy_preflight | default([])) + [ entry ] }}"
-  loop: "{{ sunbeam_nodes }}"
+    pve_sunbeam_proxy_preflight: "{{ (pve_sunbeam_proxy_preflight | default([])) + [ entry ] }}"
+  loop: "{{ pve_sunbeam_nodes }}"
   vars:
-    probe: "{{ sunbeam_proxy_probe_by_vmid[item.vmid | string] | default({}) }}"
-    env_out: "{{ sunbeam_env_by_vmid[item.vmid | string] | default('') }}"
-    apt_out: "{{ sunbeam_apt_by_vmid[item.vmid | string] | default('') }}"
-    snap_out: "{{ sunbeam_snap_by_vmid[item.vmid | string] | default('') }}"
-    proxy_on: "{{ sunbeam_proxy_enabled | bool }}"
+    probe: "{{ pve_sunbeam_proxy_probe_by_vmid[item.vmid | string] | default({}) }}"
+    env_out: "{{ pve_sunbeam_env_by_vmid[item.vmid | string] | default('') }}"
+    apt_out: "{{ pve_sunbeam_apt_by_vmid[item.vmid | string] | default('') }}"
+    snap_out: "{{ pve_sunbeam_snap_by_vmid[item.vmid | string] | default('') }}"
+    proxy_on: "{{ pve_sunbeam_proxy_enabled | bool }}"
     env_differs: >-
       {{ (env_out | regex_findall('(?m)^HTTP_PROXY=(\S+)$') | first | default(''))
-         != sunbeam_proxy_url
+         != pve_sunbeam_proxy_url
          or (env_out | regex_findall('(?m)^HTTPS_PROXY=(\S+)$') | first | default(''))
-            != sunbeam_proxy_url
+            != pve_sunbeam_proxy_url
          or (env_out | regex_findall('(?m)^no_proxy=(\S+)$') | first | default(''))
-            != sunbeam_proxy_no_proxy_effective
-         or (sunbeam_proxy_no_proxy | reject('in', env_out) | list | length > 0) }}
+            != pve_sunbeam_proxy_no_proxy_effective
+         or (pve_sunbeam_proxy_no_proxy | reject('in', env_out) | list | length > 0) }}
     env_has_proxy: "{{ 'HTTP_PROXY=' in env_out or 'HTTPS_PROXY=' in env_out }}"
     apt_has_proxy: "{{ apt_out | trim | length > 0 }}"
     snap_has_proxy: "{{ snap_out | trim | length > 0 }}"
     entry:
       vmid: "{{ item.vmid }}"
       fqdn: "{{ item.fqdn }}"
-      enabled: "{{ sunbeam_proxy_enabled | bool }}"
+      enabled: "{{ pve_sunbeam_proxy_enabled | bool }}"
       probe_rc: "{{ probe.rc | default(-1) }}"
       probe_out: "{{ (probe.stdout | default('')) | trim }}"
       reachable: "{{ 'reachable=yes' in (probe.stdout | default('')) }}"
       env_differs: "{{ env_differs | bool }}"
-      apt_differs: "{{ (apt_out | trim) != sunbeam_apt_proxy_content }}"
-      snap_differs: "{{ sunbeam_proxy_url not in snap_out }}"
+      apt_differs: "{{ (apt_out | trim) != pve_sunbeam_apt_proxy_content }}"
+      snap_differs: "{{ pve_sunbeam_proxy_url not in snap_out }}"
       hard_write_needed: >-
-        {{ (sunbeam_proxy_enabled | bool
+        {{ (pve_sunbeam_proxy_enabled | bool
             and ((env_differs | bool)
-                 or ((apt_out | trim) != sunbeam_apt_proxy_content)
-                 or (sunbeam_proxy_url not in snap_out)))
-           or (not (sunbeam_proxy_enabled | bool)
+                 or ((apt_out | trim) != pve_sunbeam_apt_proxy_content)
+                 or (pve_sunbeam_proxy_url not in snap_out)))
+           or (not (pve_sunbeam_proxy_enabled | bool)
                and (env_has_proxy | bool or apt_has_proxy | bool or snap_has_proxy | bool)) }}
 
 - name: Debug the classified proxy state
   ansible.builtin.debug:
-    var: sunbeam_proxy_preflight
+    var: pve_sunbeam_proxy_preflight
 
 - name: Refuse to point components at an unreachable proxy
   ansible.builtin.assert:
@@ -135,11 +135,11 @@
         not (item.enabled | bool and item.hard_write_needed | bool
              and not (item.reachable | bool))
     fail_msg: >-
-      The proxy {{ sunbeam_proxy_url }} is not reachable from {{ item.fqdn }}
+      The proxy {{ pve_sunbeam_proxy_url }} is not reachable from {{ item.fqdn }}
       (probe: {{ item.probe_out }}), but this run would write proxy configuration there
       (hard_write_needed=yes), which would leave apt/snapd pointing at a dead endpoint.
-      Fix the proxy, or pass -e sunbeam_proxy_allow_unreachable=true to proceed anyway.
-  loop: "{{ sunbeam_proxy_preflight }}"
+      Fix the proxy, or pass -e pve_sunbeam_proxy_allow_unreachable=true to proceed anyway.
+  loop: "{{ pve_sunbeam_proxy_preflight }}"
   loop_control:
     label: "{{ item.fqdn }}"
-  when: not (sunbeam_proxy_allow_unreachable | bool)
+  when: not (pve_sunbeam_proxy_allow_unreachable | bool)

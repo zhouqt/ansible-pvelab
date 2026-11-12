@@ -3,115 +3,115 @@
 - name: Probe the model on the controller
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "{{ pve_ussuri_k8s_juju36_bin }} models -c {{ pve_ussuri_k8s_controller_name }} 2>/dev/null \
-         | awk 'NR>1 {n=\$1; sub(/.*\//, \"\", n); print n}' | grep -qx '{{ pve_ussuri_k8s_model_name }}' \
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "{{ pve_env1_k8s_juju36_bin }} models -c {{ pve_env1_k8s_controller_name }} 2>/dev/null \
+         | awk 'NR>1 {n=\$1; sub(/.*\//, \"\", n); print n}' | grep -qx '{{ pve_env1_k8s_model_name }}' \
          && echo PRESENT || echo ABSENT"
   args:
     executable: /bin/bash
-  register: pve_ussuri_k8s_model_probe
+  register: pve_env1_k8s_model_probe
   changed_when: false
 
 - name: Create the k8s model
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "{{ pve_ussuri_k8s_juju36_bin }} add-model -c {{ pve_ussuri_k8s_controller_name }} {{ pve_ussuri_k8s_model_name }} 2>&1 | cat"
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "{{ pve_env1_k8s_juju36_bin }} add-model -c {{ pve_env1_k8s_controller_name }} {{ pve_env1_k8s_model_name }} 2>&1 | cat"
   args:
     executable: /bin/bash
-  when: "'PRESENT' not in pve_ussuri_k8s_model_probe.stdout"
+  when: "'PRESENT' not in pve_env1_k8s_model_probe.stdout"
   changed_when: true
 
 - name: Probe the model constraints
   ansible.builtin.shell: |
     set -euo pipefail
-    out="$(pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "{{ pve_ussuri_k8s_juju36_bin }} model-constraints -m {{ pve_ussuri_k8s_controller_name }}:{{ pve_ussuri_k8s_model_name }} 2>&1 | cat")"
+    out="$(pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "{{ pve_env1_k8s_juju36_bin }} model-constraints -m {{ pve_env1_k8s_controller_name }}:{{ pve_env1_k8s_model_name }} 2>&1 | cat")"
     case "$out" in
-      *"zones={{ pve_ussuri_k8s_aggregate }}"*) echo "CONSTRAINTS-OK $out" ;;
+      *"zones={{ pve_env1_k8s_aggregate }}"*) echo "CONSTRAINTS-OK $out" ;;
       *) echo "CONSTRAINTS-MISSING $out" ;;
     esac
   args:
     executable: /bin/bash
-  register: pve_ussuri_k8s_model_constraints_probe
+  register: pve_env1_k8s_model_constraints_probe
   changed_when: false
 
 - name: Set the model constraints (zone pinning)
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "{{ pve_ussuri_k8s_juju36_bin }} set-model-constraints -m {{ pve_ussuri_k8s_controller_name }}:{{ pve_ussuri_k8s_model_name }} '{{ pve_ussuri_k8s_model_constraints }}' 2>&1 | cat"
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "{{ pve_env1_k8s_juju36_bin }} set-model-constraints -m {{ pve_env1_k8s_controller_name }}:{{ pve_env1_k8s_model_name }} '{{ pve_env1_k8s_model_constraints }}' 2>&1 | cat"
   args:
     executable: /bin/bash
-  when: "'CONSTRAINTS-OK' not in pve_ussuri_k8s_model_constraints_probe.stdout"
+  when: "'CONSTRAINTS-OK' not in pve_env1_k8s_model_constraints_probe.stdout"
   changed_when: true
 
 - name: Confirm the model constraints
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "{{ pve_ussuri_k8s_juju36_bin }} model-constraints -m {{ pve_ussuri_k8s_controller_name }}:{{ pve_ussuri_k8s_model_name }} 2>&1 | cat"
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "{{ pve_env1_k8s_juju36_bin }} model-constraints -m {{ pve_env1_k8s_controller_name }}:{{ pve_env1_k8s_model_name }} 2>&1 | cat"
   args:
     executable: /bin/bash
-  register: pve_ussuri_k8s_model_constraints
+  register: pve_env1_k8s_model_constraints
   changed_when: false
   failed_when: >-
-    pve_ussuri_k8s_model_constraints.rc != 0
-    or not pve_ussuri_k8s_model_constraints.stdout is search('(?m)(^|\s)zones=' ~ pve_ussuri_k8s_aggregate ~ '(\s|$)')
+    pve_env1_k8s_model_constraints.rc != 0
+    or not pve_env1_k8s_model_constraints.stdout is search('(?m)(^|\s)zones=' ~ pve_env1_k8s_aggregate ~ '(\s|$)')
 
 - name: Read the checksum of the overlay bundled with the role
   ansible.builtin.stat:
-    path: "{{ pve_ussuri_k8s_overlay_src }}"
+    path: "{{ pve_env1_k8s_overlay_src }}"
     checksum_algorithm: sha256
     get_checksum: true
   delegate_to: localhost
-  register: pve_ussuri_k8s_overlay_stat
+  register: pve_env1_k8s_overlay_stat
 
 - name: Require the overlay to exist
   ansible.builtin.assert:
     that:
-      - pve_ussuri_k8s_overlay_stat.stat.exists
-    fail_msg: "{{ pve_ussuri_k8s_overlay_src }} is missing (calico cidr + unit constraints of the bundle)."
+      - pve_env1_k8s_overlay_stat.stat.exists
+    fail_msg: "{{ pve_env1_k8s_overlay_src }} is missing (calico cidr + unit constraints of the bundle)."
 
 - name: Push the overlay to the PVE host
   ansible.builtin.copy:
-    src: "{{ pve_ussuri_k8s_overlay_src }}"
-    dest: "/root/{{ pve_ussuri_k8s_overlay_name }}"
+    src: "{{ pve_env1_k8s_overlay_src }}"
+    dest: "/root/{{ pve_env1_k8s_overlay_name }}"
     owner: root
     group: root
     mode: "0644"
-  register: pve_ussuri_k8s_overlay_host
+  register: pve_env1_k8s_overlay_host
   changed_when: false
 
 - name: Probe the overlay inside the Juju client container
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "sha256sum /home/{{ pve_ussuri_k8s_juju_client_user }}/{{ pve_ussuri_k8s_overlay_name }} 2>/dev/null | cut -d' ' -f1 || echo absent"
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "sha256sum /home/{{ pve_env1_k8s_juju_client_user }}/{{ pve_env1_k8s_overlay_name }} 2>/dev/null | cut -d' ' -f1 || echo absent"
   args:
     executable: /bin/bash
-  register: pve_ussuri_k8s_overlay_ct
+  register: pve_env1_k8s_overlay_ct
   changed_when: false
 
 - name: Install the overlay in the client home
   ansible.builtin.shell: |
     set -euo pipefail
-    pct push {{ pve_ussuri_k8s_juju_client_vmid }} /root/{{ pve_ussuri_k8s_overlay_name }} \
-      /home/{{ pve_ussuri_k8s_juju_client_user }}/{{ pve_ussuri_k8s_overlay_name }} --perms 0644
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- chown {{ pve_ussuri_k8s_juju_client_user }}:{{ pve_ussuri_k8s_juju_client_user }} \
-      /home/{{ pve_ussuri_k8s_juju_client_user }}/{{ pve_ussuri_k8s_overlay_name }}
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- rm -f /root/{{ pve_ussuri_k8s_overlay_name }}
-    rm -f /root/{{ pve_ussuri_k8s_overlay_name }}
+    pct push {{ pve_env1_k8s_juju_client_vmid }} /root/{{ pve_env1_k8s_overlay_name }} \
+      /home/{{ pve_env1_k8s_juju_client_user }}/{{ pve_env1_k8s_overlay_name }} --perms 0644
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- chown {{ pve_env1_k8s_juju_client_user }}:{{ pve_env1_k8s_juju_client_user }} \
+      /home/{{ pve_env1_k8s_juju_client_user }}/{{ pve_env1_k8s_overlay_name }}
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- rm -f /root/{{ pve_env1_k8s_overlay_name }}
+    rm -f /root/{{ pve_env1_k8s_overlay_name }}
   args:
     executable: /bin/bash
-  when: pve_ussuri_k8s_overlay_stat.stat.checksum not in pve_ussuri_k8s_overlay_ct.stdout
+  when: pve_env1_k8s_overlay_stat.stat.checksum not in pve_env1_k8s_overlay_ct.stdout
   changed_when: true
 
 - name: List the security groups of the env
   ansible.builtin.command:
     argv:
       - bash
-      - "{{ pve_ussuri_k8s_openstack_wrapper }}"
+      - "{{ pve_env1_k8s_openstack_wrapper }}"
       - openstack
       - security
       - group
@@ -120,14 +120,14 @@
       - -f
       - json
   delegate_to: localhost
-  register: pve_ussuri_k8s_secgroups
+  register: pve_env1_k8s_secgroups
   changed_when: false
 
 - name: List the servers of the env (security groups in use)
   ansible.builtin.command:
     argv:
       - bash
-      - "{{ pve_ussuri_k8s_openstack_wrapper }}"
+      - "{{ pve_env1_k8s_openstack_wrapper }}"
       - openstack
       - server
       - list
@@ -135,23 +135,23 @@
       - -f
       - json
   delegate_to: localhost
-  register: pve_ussuri_k8s_servers
+  register: pve_env1_k8s_servers
   changed_when: false
 
 - name: Work out which juju security groups no server uses
   ansible.builtin.set_fact:
-    pve_ussuri_k8s_secgroups_in_use: >-
+    pve_env1_k8s_secgroups_in_use: >-
       {{
-        pve_ussuri_k8s_servers.stdout | from_json
+        pve_env1_k8s_servers.stdout | from_json
         | map(attribute='Security Groups', default='') | join(',')
         | split(',') | map('trim') | reject('eq', '') | unique | list
       }}
-    pve_ussuri_k8s_stale_secgroups: >-
+    pve_env1_k8s_stale_secgroups: >-
       {{
-        pve_ussuri_k8s_secgroups.stdout | from_json
+        pve_env1_k8s_secgroups.stdout | from_json
         | selectattr('Name', 'defined') | selectattr('Name', 'match', '^juju-')
         | rejectattr('Name', 'in',
-            pve_ussuri_k8s_servers.stdout | from_json
+            pve_env1_k8s_servers.stdout | from_json
             | map(attribute='Security Groups', default='') | join(',')
             | split(',') | map('trim') | reject('eq', '') | list)
         | map(attribute='Name') | unique | list
@@ -160,31 +160,31 @@
 - name: Report the security-group headroom
   ansible.builtin.debug:
     msg: >-
-      security groups: {{ pve_ussuri_k8s_secgroups.stdout | from_json | length }}
-      of {{ pve_ussuri_k8s_secgroup_quota }};
-      {{ pve_ussuri_k8s_stale_secgroups | length }} unused juju group(s) can be
-      recycled ({{ pve_ussuri_k8s_stale_secgroups | join(', ') }}). The bundle
+      security groups: {{ pve_env1_k8s_secgroups.stdout | from_json | length }}
+      of {{ pve_env1_k8s_secgroup_quota }};
+      {{ pve_env1_k8s_stale_secgroups | length }} unused juju group(s) can be
+      recycled ({{ pve_env1_k8s_stale_secgroups | join(', ') }}). The bundle
       needs about 10 more.
 
 - name: Delete the unused juju security groups
   ansible.builtin.command:
     argv:
       - bash
-      - "{{ pve_ussuri_k8s_openstack_wrapper }}"
+      - "{{ pve_env1_k8s_openstack_wrapper }}"
       - openstack
       - security
       - group
       - delete
       - "{{ item }}"
   delegate_to: localhost
-  loop: "{{ pve_ussuri_k8s_stale_secgroups }}"
-  when: pve_ussuri_k8s_cleanup_stale_secgroups | bool
+  loop: "{{ pve_env1_k8s_stale_secgroups }}"
+  when: pve_env1_k8s_cleanup_stale_secgroups | bool
 
 - name: Re-list the security groups after the recycling
   ansible.builtin.command:
     argv:
       - bash
-      - "{{ pve_ussuri_k8s_openstack_wrapper }}"
+      - "{{ pve_env1_k8s_openstack_wrapper }}"
       - openstack
       - security
       - group
@@ -193,60 +193,60 @@
       - -f
       - json
   delegate_to: localhost
-  register: pve_ussuri_k8s_secgroups_after
+  register: pve_env1_k8s_secgroups_after
   changed_when: false
 
 - name: Stop when the security-group quota leaves no room for the bundle
   ansible.builtin.assert:
     that:
-      - (pve_ussuri_k8s_secgroups_after.stdout | from_json | length) < pve_ussuri_k8s_secgroup_quota
+      - (pve_env1_k8s_secgroups_after.stdout | from_json | length) < pve_env1_k8s_secgroup_quota
     fail_msg: >-
-      {{ pve_ussuri_k8s_secgroups_after.stdout | from_json | length }} of
-      {{ pve_ussuri_k8s_secgroup_quota }} security groups are used. The next
+      {{ pve_env1_k8s_secgroups_after.stdout | from_json | length }} of
+      {{ pve_env1_k8s_secgroup_quota }} security groups are used. The next
       machine would fail with `failed to create a security group` and stay
       pending. Free a group by hand or run this stage with
-      -e pve_ussuri_k8s_cleanup_stale_secgroups=true ({{ pve_ussuri_k8s_stale_secgroups
+      -e pve_env1_k8s_cleanup_stale_secgroups=true ({{ pve_env1_k8s_stale_secgroups
       | length }} unused juju group(s) were detected before recycling).
 
 - name: Probe the model status for an existing bundle
   ansible.builtin.shell: |
     set -euo pipefail
-    out="$(pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "{{ pve_ussuri_k8s_juju36_bin }} status -m {{ pve_ussuri_k8s_controller_name }}:{{ pve_ussuri_k8s_model_name }} --format json 2>&1 | cat")"
+    out="$(pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "{{ pve_env1_k8s_juju36_bin }} status -m {{ pve_env1_k8s_controller_name }}:{{ pve_env1_k8s_model_name }} --format json 2>&1 | cat")"
     case "$out" in
       *'"kubernetes-control-plane"'*) echo DEPLOYED ;;
       *) echo NOT-DEPLOYED ;;
     esac
   args:
     executable: /bin/bash
-  register: pve_ussuri_k8s_deploy_probe
+  register: pve_env1_k8s_deploy_probe
   changed_when: false
 
 - name: Deploy Charmed Kubernetes 1.32 with the env1 overlay
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_ussuri_k8s_juju_client_vmid }} -- su - {{ pve_ussuri_k8s_juju_client_user }} -c \
-      "cd ~ && timeout {{ pve_ussuri_k8s_deploy_timeout }} {{ pve_ussuri_k8s_juju36_bin }} deploy \
-         -m {{ pve_ussuri_k8s_controller_name }}:{{ pve_ussuri_k8s_model_name }} \
-         {{ pve_ussuri_k8s_bundle }} --channel {{ pve_ussuri_k8s_channel }} \
-         --overlay {{ pve_ussuri_k8s_overlay_name }} 2>&1 | cat"
+    pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
+      "cd ~ && timeout {{ pve_env1_k8s_deploy_timeout }} {{ pve_env1_k8s_juju36_bin }} deploy \
+         -m {{ pve_env1_k8s_controller_name }}:{{ pve_env1_k8s_model_name }} \
+         {{ pve_env1_k8s_bundle }} --channel {{ pve_env1_k8s_channel }} \
+         --overlay {{ pve_env1_k8s_overlay_name }} 2>&1 | cat"
   args:
     executable: /bin/bash
-  register: pve_ussuri_k8s_deploy
-  when: "'DEPLOYED' not in pve_ussuri_k8s_deploy_probe.stdout"
+  register: pve_env1_k8s_deploy
+  when: "'DEPLOYED' not in pve_env1_k8s_deploy_probe.stdout"
   changed_when: true
   failed_when: false
 
 - name: Stop with the deploy output when the bundle was not committed
   ansible.builtin.fail:
     msg: >-
-      `juju_yoga deploy {{ pve_ussuri_k8s_bundle }}` failed (rc
-      {{ pve_ussuri_k8s_deploy.rc | default('timeout') }}):
-      {{ (pve_ussuri_k8s_deploy.stdout | default('')).splitlines()[-20:] | join(' | ') }}
-      {{ (pve_ussuri_k8s_deploy.stderr | default('')).splitlines()[-20:] | join(' | ') }}
+      `juju_yoga deploy {{ pve_env1_k8s_bundle }}` failed (rc
+      {{ pve_env1_k8s_deploy.rc | default('timeout') }}):
+      {{ (pve_env1_k8s_deploy.stdout | default('')).splitlines()[-20:] | join(' | ') }}
+      {{ (pve_env1_k8s_deploy.stderr | default('')).splitlines()[-20:] | join(' | ') }}
       A security-group failure shows up later as a pending machine; then free a
       group and run `juju_yoga retry-provisioning <machine-id> -m
-      {{ pve_ussuri_k8s_controller_name }}:{{ pve_ussuri_k8s_model_name }}`.
+      {{ pve_env1_k8s_controller_name }}:{{ pve_env1_k8s_model_name }}`.
   when:
-    - "'DEPLOYED' not in pve_ussuri_k8s_deploy_probe.stdout"
-    - (pve_ussuri_k8s_deploy.rc | default(1)) != 0
+    - "'DEPLOYED' not in pve_env1_k8s_deploy_probe.stdout"
+    - (pve_env1_k8s_deploy.rc | default(1)) != 0

@@ -2,57 +2,57 @@
 
 - name: "{{ obs_model }} — compute the model reference"
   ansible.builtin.set_fact:
-    obs_model_ref: "{{ pve_obs_hub_cos_controller }}:admin/{{ obs_model }}"
+    obs_model_ref: "{{ pve_obs_cos_hub_cos_controller }}:admin/{{ obs_model }}"
 
 - name: "{{ obs_model }} — read the models of the hub controller"
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
-      - "{{ pve_obs_hub_juju_cmd }} models --controller {{ pve_obs_hub_cos_controller }} --format json"
+      - "{{ pve_obs_cos_hub_juju_cmd }} models --controller {{ pve_obs_cos_hub_cos_controller }} --format json"
   register: obs_models
   changed_when: false
 
 - name: "{{ obs_model }} — create the model when it does not exist"
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
       - >-
-        {{ pve_obs_hub_juju_cmd }} add-model --controller {{ pve_obs_hub_cos_controller }}
-        {{ obs_model }} {{ pve_obs_hub_manual_cloud }} --config enable-os-upgrade=false
+        {{ pve_obs_cos_hub_juju_cmd }} add-model --controller {{ pve_obs_cos_hub_cos_controller }}
+        {{ obs_model }} {{ pve_obs_cos_hub_manual_cloud }} --config enable-os-upgrade=false
   when: >-
     (((obs_models.stdout | from_json).models | default([], true))
      | selectattr('short-name', 'equalto', obs_model) | list | length) == 0
 
 - name: "{{ obs_model }} — point the model at the lab HTTP proxy"
-  when: pve_obs_hub_http_proxy | length > 0
+  when: pve_obs_cos_hub_http_proxy | length > 0
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
       - >-
-        {{ pve_obs_hub_juju_cmd }} model-config -m {{ obs_model_ref }}
-        http-proxy={{ pve_obs_hub_http_proxy }} https-proxy={{ pve_obs_hub_http_proxy }}
-        no-proxy={{ pve_obs_hub_no_proxy }}
+        {{ pve_obs_cos_hub_juju_cmd }} model-config -m {{ obs_model_ref }}
+        http-proxy={{ pve_obs_cos_hub_http_proxy }} https-proxy={{ pve_obs_cos_hub_http_proxy }}
+        no-proxy={{ pve_obs_cos_hub_no_proxy }}
   register: obs_model_proxy
   changed_when: false
 
@@ -62,8 +62,8 @@
     ip={{ obs_add_machine_ip }}
     keyscan=$(ssh-keyscan -T 5 -H "$ip" 2>/dev/null)
     [[ -n "$keyscan" ]] || { echo "SSH did not become available on $ip" >&2; exit 1; }
-    printf '%s\n' "$keyscan" | {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
-      su - {{ pve_obs_hub_juju_client_user }} -c \
+    printf '%s\n' "$keyscan" | {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_juju_client_vmid }} -- \
+      su - {{ pve_obs_cos_hub_juju_client_user }} -c \
       "install -d -m 0700 ~/.ssh; touch ~/.ssh/known_hosts; \
        ssh-keygen -R \"$ip\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; \
        ssh-keygen -R \"[$ip]:22\" -f ~/.ssh/known_hosts >/dev/null 2>&1 || true; \
@@ -76,15 +76,15 @@
 - name: "{{ obs_model }} — read the model status"
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
-      - "{{ pve_obs_hub_juju_cmd }} status -m {{ obs_model_ref }} --format json"
+      - "{{ pve_obs_cos_hub_juju_cmd }} status -m {{ obs_model_ref }} --format json"
   register: obs_status
   changed_when: false
   failed_when: false
@@ -92,16 +92,16 @@
 - name: "{{ obs_model }} — register {{ obs_add_machine_ip }} as a machine"
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
       - >-
-        {{ pve_obs_hub_juju_cmd }} add-machine ssh:ubuntu@{{ obs_add_machine_ip }}
+        {{ pve_obs_cos_hub_juju_cmd }} add-machine ssh:ubuntu@{{ obs_add_machine_ip }}
         -m {{ obs_model_ref }}
   when:
     - obs_add_machine_ip | length > 0
@@ -110,15 +110,15 @@
 - name: "{{ obs_model }} — wait for the machine to report its address"
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
-      - "{{ pve_obs_hub_juju_cmd }} status -m {{ obs_model_ref }} --format json"
+      - "{{ pve_obs_cos_hub_juju_cmd }} status -m {{ obs_model_ref }} --format json"
   register: obs_status_after
   changed_when: false
   until: obs_add_machine_ip in obs_status_after.stdout
@@ -150,17 +150,17 @@
 - name: "{{ obs_model }} — deploy cos-proxy"
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
       - >-
-        {{ pve_obs_hub_juju_cmd }} deploy cos-proxy -m {{ obs_model_ref }}
-        --channel {{ pve_obs_hub_cos_proxy_channel }} --series jammy
+        {{ pve_obs_cos_hub_juju_cmd }} deploy cos-proxy -m {{ obs_model_ref }}
+        --channel {{ pve_obs_cos_hub_cos_proxy_channel }} --series jammy
         --to {{ obs_machine_spec }}
   register: obs_deploy_cos_proxy
   failed_when: >-
@@ -171,17 +171,17 @@
 - name: "{{ obs_model }} — deploy nrpe (subordinate)"
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
       - >-
-        {{ pve_obs_hub_juju_cmd }} deploy nrpe -m {{ obs_model_ref }}
-        --channel {{ pve_obs_hub_nrpe_channel }} --series jammy
+        {{ pve_obs_cos_hub_juju_cmd }} deploy nrpe -m {{ obs_model_ref }}
+        --channel {{ pve_obs_cos_hub_nrpe_channel }} --series jammy
   register: obs_deploy_nrpe
   failed_when: >-
     obs_deploy_nrpe.rc != 0
@@ -191,17 +191,17 @@
 - name: "{{ obs_model }} — deploy grafana-agent (subordinate)"
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
       - >-
-        {{ pve_obs_hub_juju_cmd }} deploy grafana-agent -m {{ obs_model_ref }}
-        --channel {{ pve_obs_hub_grafana_agent_channel }} --series jammy
+        {{ pve_obs_cos_hub_juju_cmd }} deploy grafana-agent -m {{ obs_model_ref }}
+        --channel {{ pve_obs_cos_hub_grafana_agent_channel }} --series jammy
   register: obs_deploy_agent
   failed_when: >-
     obs_deploy_agent.rc != 0
@@ -212,9 +212,9 @@
   ansible.builtin.shell: |
     set -uo pipefail
     juju() {
-      {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
-        su - {{ pve_obs_hub_juju_client_user }} -c \
-        "{{ pve_obs_hub_juju_cmd }} $* -m {{ obs_model_ref }}"
+      {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_juju_client_vmid }} -- \
+        su - {{ pve_obs_cos_hub_juju_client_user }} -c \
+        "{{ pve_obs_cos_hub_juju_cmd }} $* -m {{ obs_model_ref }}"
     }
     rc=0
     run() {
@@ -224,10 +224,10 @@
         rc=1
       fi
     }
-    for offer in {{ pve_obs_hub_infra_consumes | join(' ') }}; do
-      run consume {{ pve_obs_hub_cos_controller }}:admin/{{ pve_obs_hub_cos_model }}."$offer"
+    for offer in {{ pve_obs_cos_hub_infra_consumes | join(' ') }}; do
+      run consume {{ pve_obs_cos_hub_cos_controller }}:admin/{{ pve_obs_cos_hub_cos_model }}."$offer"
     done
-    {% for relation in pve_obs_hub_infra_relations %}
+    {% for relation in pve_obs_cos_hub_infra_relations %}
     run relate {{ relation }}
     {% endfor %}
     exit "$rc"
@@ -237,7 +237,7 @@
   changed_when: "'already' not in obs_wiring.stdout"
 
 - name: "{{ obs_model }} — wait for cos-proxy"
-  when: not (pve_obs_hub_skip_wait | bool)
+  when: not (pve_obs_cos_hub_skip_wait | bool)
   ansible.builtin.include_tasks: wait-model-active.yml
   vars:
     obs_wait_model_ref: "{{ obs_model_ref }}"
@@ -247,15 +247,15 @@
 - name: "{{ obs_model }} — read the final status"
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
-      - "{{ pve_obs_hub_juju_cmd }} status -m {{ obs_model_ref }}"
+      - "{{ pve_obs_cos_hub_juju_cmd }} status -m {{ obs_model_ref }}"
   register: obs_status_final
   changed_when: false
 

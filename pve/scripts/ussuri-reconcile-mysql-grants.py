@@ -393,7 +393,7 @@ def main():
     parser.add_argument("--machine-vmids", required=True,
                         help="Juju machine number -> vmid mapping, comma separated, ascending by machine"
                              "(machine i corresponds to entry i, the order is the numbering, see group_vars "
-                             " pve_ussuri_workload_vmids)")
+                             " pve_env1_workload_vmids)")
     parser.add_argument("--wait", type=int, default=300,
                         help="fallback timeout in seconds (default 300). The normal path is **event driven**:"
                              "the expected set stayed quiet for --quiet-rounds rounds and no mysql-router "

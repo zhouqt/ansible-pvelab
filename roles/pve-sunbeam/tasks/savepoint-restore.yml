@@ -5,83 +5,83 @@
 - name: Require an explicit opt-in before restoring a savepoint
   ansible.builtin.assert:
     that:
-      - sunbeam_savepoint_restore | bool
+      - pve_sunbeam_savepoint_restore | bool
     fail_msg: >-
       Restoring a savepoint destroys the current volumes of every guest. To
-      confirm, pass -e sunbeam_savepoint_restore=true.
+      confirm, pass -e pve_sunbeam_savepoint_restore=true.
 
 - name: Require a usable savepoint name
   ansible.builtin.assert:
     that:
-      - sunbeam_env_id | length > 0
-      - sunbeam_savepoint_tag | length > 0
-      - sunbeam_savepoint_prefix is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$')
+      - pve_sunbeam_env_id | length > 0
+      - pve_sunbeam_savepoint_tag | length > 0
+      - pve_sunbeam_savepoint_prefix is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$')
     fail_msg: >-
-      sunbeam_env_id / sunbeam_savepoint_tag must be set and
-      sunbeam_savepoint_prefix ('{{ sunbeam_savepoint_prefix | default("") }}')
+      pve_sunbeam_env_id / pve_sunbeam_savepoint_tag must be set and
+      pve_sunbeam_savepoint_prefix ('{{ pve_sunbeam_savepoint_prefix | default("") }}')
       must be a valid LVM name.
 
 - name: Check for the savepoint metadata file
   ansible.builtin.stat:
-    path: "{{ sunbeam_savepoint_metadata_dir }}/{{ sunbeam_savepoint_prefix }}.txt"
-  register: sunbeam_savepoint_meta_stat
+    path: "{{ pve_sunbeam_savepoint_metadata_dir }}/{{ pve_sunbeam_savepoint_prefix }}.txt"
+  register: pve_sunbeam_savepoint_meta_stat
 
 - name: Refuse to restore without the savepoint metadata file
   ansible.builtin.assert:
     that:
-      - sunbeam_savepoint_meta_stat.stat.exists
+      - pve_sunbeam_savepoint_meta_stat.stat.exists
     fail_msg: >-
-      {{ sunbeam_savepoint_metadata_dir }}/{{ sunbeam_savepoint_prefix }}.txt does
+      {{ pve_sunbeam_savepoint_metadata_dir }}/{{ pve_sunbeam_savepoint_prefix }}.txt does
       not exist. It is written by the savepoint stage and says which volumes the
       savepoint consists of; a restore cannot proceed safely without it. Check
       `lvs` for the base volumes and the exact savepoint name.
 
 - name: Read the savepoint metadata file
   ansible.builtin.slurp:
-    src: "{{ sunbeam_savepoint_metadata_dir }}/{{ sunbeam_savepoint_prefix }}.txt"
-  register: sunbeam_savepoint_meta_raw
+    src: "{{ pve_sunbeam_savepoint_metadata_dir }}/{{ pve_sunbeam_savepoint_prefix }}.txt"
+  register: pve_sunbeam_savepoint_meta_raw
 
 - name: Parse the savepoint metadata
   ansible.builtin.set_fact:
-    sunbeam_savepoint_meta: >-
-      {{ dict(sunbeam_savepoint_meta_raw.content | b64decode
+    pve_sunbeam_savepoint_meta: >-
+      {{ dict(pve_sunbeam_savepoint_meta_raw.content | b64decode
               | regex_findall('(?m)^([a-z_]+)=(.*)$')) }}
 
 - name: Assert the metadata describes this savepoint
   ansible.builtin.assert:
     that:
-      - sunbeam_savepoint_meta['prefix'] | default('') == sunbeam_savepoint_prefix
+      - pve_sunbeam_savepoint_meta['prefix'] | default('') == pve_sunbeam_savepoint_prefix
     fail_msg: >-
       The metadata file declares prefix
-      '{{ sunbeam_savepoint_meta['prefix'] | default('?') }}', expected
-      '{{ sunbeam_savepoint_prefix }}'. The name resolves to the wrong file.
+      '{{ pve_sunbeam_savepoint_meta['prefix'] | default('?') }}', expected
+      '{{ pve_sunbeam_savepoint_prefix }}'. The name resolves to the wrong file.
 
 - name: Decide whether the OSD volumes are part of this savepoint
   ansible.builtin.set_fact:
-    sunbeam_savepoint_restore_osd: >-
-      {{ sunbeam_savepoint_meta['include_osd'] | default('false') | bool }}
+    pve_sunbeam_savepoint_restore_osd: >-
+      {{ pve_sunbeam_savepoint_meta['include_osd'] | default('false') | bool }}
 
 - name: Warn when the savepoint does not contain the OSD volumes
   ansible.builtin.debug:
     msg: >-
-      WARNING: this savepoint was taken with sunbeam_savepoint_include_osd=false.
+      WARNING: this savepoint was taken with pve_sunbeam_savepoint_include_osd=false.
       The CT filesystems will be rolled back while Ceph keeps its current data:
       the resulting cluster is NOT consistent. Only use this for debugging the
       rootfs side.
-  when: not sunbeam_savepoint_restore_osd | bool
+  when: not pve_sunbeam_savepoint_restore_osd | bool
 
 - name: Require every savepoint base to exist before touching the live volumes
   ansible.builtin.shell: |
     set -euo pipefail
     missing=""
-    {% for n in sunbeam_nodes %}
-    lvs --noheadings -o lv_name "{{ sunbeam_pve_storage }}/{{ sunbeam_savepoint_prefix }}-{{ n.hostname }}" >/dev/null 2>&1 \
-      || missing="$missing {{ sunbeam_savepoint_prefix }}-{{ n.hostname }}"
+    {% for n in pve_sunbeam_nodes %}
+    lvs --noheadings -o lv_name "{{ pve_sunbeam_storage }}/{{ pve_sunbeam_savepoint_prefix }}-{{ n.hostname }}" >/dev/null 2>&1 \
+      || missing="$missing {{ pve_sunbeam_savepoint_prefix }}-{{ n.hostname }}"
     {% endfor %}
-    {% if sunbeam_savepoint_restore_osd | bool %}
-    {% for n in sunbeam_nodes %}
-    lvs --noheadings -o lv_name "{{ sunbeam_pve_storage }}/{{ sunbeam_savepoint_prefix }}-osd-{{ n.vmid }}" >/dev/null 2>&1 \
-      || missing="$missing {{ sunbeam_savepoint_prefix }}-osd-{{ n.vmid }}"
+    {% if pve_sunbeam_savepoint_restore_osd | bool %}
+    {% for n in pve_sunbeam_nodes %}
+    lvs --noheadings -o lv_name "{{ pve_sunbeam_storage }}/{{ pve_sunbeam_savepoint_prefix }}-osd-{{ n.vmid }}" >/dev/null 2>&1 \
+      || missing="$missing {{ pve_sunbeam_savepoint_prefix }}-osd-{{ n.vmid }}"
     {% endfor %}
     {% endif %}
     [ -z "$missing" ] || { echo "SAVEPOINT-MISSING:$missing" >&2; exit 1; }
@@ -94,20 +94,20 @@
   ansible.builtin.shell: |
     set -uo pipefail
     missing=""
-    for br in {{ sunbeam_host_expected_bridges | join(' ') }}; do
+    for br in {{ pve_sunbeam_host_expected_bridges | join(' ') }}; do
       ip link show "$br" >/dev/null 2>&1 || missing="$missing bridge:$br"
     done
-    for vnet in {{ sunbeam_host_expected_vnets | join(' ') }}; do
+    for vnet in {{ pve_sunbeam_host_expected_vnets | join(' ') }}; do
       grep -q "^vnet: *$vnet\$" /etc/pve/sdn/vnets.cfg 2>/dev/null || missing="$missing vnet:$vnet"
     done
-    for id in {{ sunbeam_host_expected_subnet_ids | join(' ') }}; do
+    for id in {{ pve_sunbeam_host_expected_subnet_ids | join(' ') }}; do
       grep -q "^subnet: .*$id\$" /etc/pve/sdn/subnets.cfg 2>/dev/null || missing="$missing subnet:$id"
     done
     snat_ip=$(ip -4 -o addr show vmbr0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
     if [ -z "$snat_ip" ]; then
       missing="$missing vmbr0-no-ipv4"
     else
-      for cidr in {{ sunbeam_host_expected_snat_cidrs | join(' ') }}; do
+      for cidr in {{ pve_sunbeam_host_expected_snat_cidrs | join(' ') }}; do
         iptables -t nat -C POSTROUTING -s "$cidr" -o vmbr0 -j SNAT --to-source "$snat_ip" 2>/dev/null \
           || missing="$missing snat:$cidr"
       done
@@ -117,7 +117,7 @@
     [ -z "$missing" ]
   args:
     executable: /bin/bash
-  register: sunbeam_restore_net
+  register: pve_sunbeam_restore_net
   changed_when: false
   failed_when: false
 
@@ -132,7 +132,7 @@
       exit 0
     fi
     added=0
-    for cidr in {{ sunbeam_host_expected_snat_cidrs | join(' ') }}; do
+    for cidr in {{ pve_sunbeam_host_expected_snat_cidrs | join(' ') }}; do
       if ! iptables -t nat -C POSTROUTING -s "$cidr" -o vmbr0 -j SNAT --to-source "$snat_ip" 2>/dev/null; then
         iptables -t nat -A POSTROUTING -s "$cidr" -o vmbr0 -j SNAT --to-source "$snat_ip"
         added=$((added + 1))
@@ -142,29 +142,29 @@
   args:
     executable: /bin/bash
   when:
-    - sunbeam_savepoint_repair_network | bool
-    - sunbeam_restore_net.rc != 0
-  register: sunbeam_restore_net_repair
-  changed_when: "'added=0' not in sunbeam_restore_net_repair.stdout"
+    - pve_sunbeam_savepoint_repair_network | bool
+    - pve_sunbeam_restore_net.rc != 0
+  register: pve_sunbeam_restore_net_repair
+  changed_when: "'added=0' not in pve_sunbeam_restore_net_repair.stdout"
 
 - name: Re-check the host network after the repair
   ansible.builtin.shell: |
     set -uo pipefail
     missing=""
-    for br in {{ sunbeam_host_expected_bridges | join(' ') }}; do
+    for br in {{ pve_sunbeam_host_expected_bridges | join(' ') }}; do
       ip link show "$br" >/dev/null 2>&1 || missing="$missing bridge:$br"
     done
-    for vnet in {{ sunbeam_host_expected_vnets | join(' ') }}; do
+    for vnet in {{ pve_sunbeam_host_expected_vnets | join(' ') }}; do
       grep -q "^vnet: *$vnet\$" /etc/pve/sdn/vnets.cfg 2>/dev/null || missing="$missing vnet:$vnet"
     done
-    for id in {{ sunbeam_host_expected_subnet_ids | join(' ') }}; do
+    for id in {{ pve_sunbeam_host_expected_subnet_ids | join(' ') }}; do
       grep -q "^subnet: .*$id\$" /etc/pve/sdn/subnets.cfg 2>/dev/null || missing="$missing subnet:$id"
     done
     snat_ip=$(ip -4 -o addr show vmbr0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
     if [ -z "$snat_ip" ]; then
       missing="$missing vmbr0-no-ipv4"
     else
-      for cidr in {{ sunbeam_host_expected_snat_cidrs | join(' ') }}; do
+      for cidr in {{ pve_sunbeam_host_expected_snat_cidrs | join(' ') }}; do
         iptables -t nat -C POSTROUTING -s "$cidr" -o vmbr0 -j SNAT --to-source "$snat_ip" 2>/dev/null \
           || missing="$missing snat:$cidr"
       done
@@ -173,25 +173,25 @@
     [ -z "$missing" ]
   args:
     executable: /bin/bash
-  register: sunbeam_restore_net_recheck
+  register: pve_sunbeam_restore_net_recheck
   changed_when: false
   failed_when: false
-  when: sunbeam_restore_net.rc != 0
+  when: pve_sunbeam_restore_net.rc != 0
 
 - name: Decide whether the host network is ready
   ansible.builtin.set_fact:
-    sunbeam_restore_network_ok: >-
-      {{ sunbeam_restore_net.rc == 0
-         or (sunbeam_restore_net_recheck.rc | default(1)) == 0 }}
+    pve_sunbeam_restore_network_ok: >-
+      {{ pve_sunbeam_restore_net.rc == 0
+         or (pve_sunbeam_restore_net_recheck.rc | default(1)) == 0 }}
 
 - name: Refuse to restore while the host network is incomplete
   ansible.builtin.assert:
     that:
-      - sunbeam_restore_network_ok | bool
+      - pve_sunbeam_restore_network_ok | bool
     fail_msg: >-
-      The host network is not ready for the guests: {{ sunbeam_restore_net.stdout }}
-      {% if sunbeam_restore_net_repair is defined %}{{ sunbeam_restore_net_repair.stdout | default('') }}{% endif %}
-      {% if sunbeam_restore_net_recheck is defined %}{{ sunbeam_restore_net_recheck.stdout | default('') }}{% endif %}
+      The host network is not ready for the guests: {{ pve_sunbeam_restore_net.stdout }}
+      {% if pve_sunbeam_restore_net_repair is defined %}{{ pve_sunbeam_restore_net_repair.stdout | default('') }}{% endif %}
+      {% if pve_sunbeam_restore_net_recheck is defined %}{{ pve_sunbeam_restore_net_recheck.stdout | default('') }}{% endif %}
       Restoring the volumes now would produce a cluster that boots without a data
       path. Fix the PVE SDN bridges/subnets (this playbook never rewrites them)
       and the POSTROUTING SNAT rules, then retry.
@@ -199,26 +199,26 @@
 - name: Report the preflight result
   ansible.builtin.debug:
     msg:
-      - "savepoint: {{ sunbeam_savepoint_prefix }}"
-      - "taken: {{ sunbeam_savepoint_meta['taken'] | default('?') }} (fsid {{ sunbeam_savepoint_meta['ceph_fsid'] | default('?') }})"
-      - "OSD volumes included: {{ sunbeam_savepoint_restore_osd }}"
-      - "host network: {{ sunbeam_restore_net.stdout_lines | default([]) }}"
-  when: sunbeam_savepoint_preflight_only | bool
+      - "savepoint: {{ pve_sunbeam_savepoint_prefix }}"
+      - "taken: {{ pve_sunbeam_savepoint_meta['taken'] | default('?') }} (fsid {{ pve_sunbeam_savepoint_meta['ceph_fsid'] | default('?') }})"
+      - "OSD volumes included: {{ pve_sunbeam_savepoint_restore_osd }}"
+      - "host network: {{ pve_sunbeam_restore_net.stdout_lines | default([]) }}"
+  when: pve_sunbeam_savepoint_preflight_only | bool
 
 - name: Stop before touching the guests (preflight only)
   ansible.builtin.meta: end_host
-  when: sunbeam_savepoint_preflight_only | bool
+  when: pve_sunbeam_savepoint_preflight_only | bool
 
 - name: Define the restore order (workers first, primary last)
   ansible.builtin.set_fact:
-    sunbeam_savepoint_stop_order: "{{ sunbeam_worker_nodes + [sunbeam_primary_node] }}"
+    pve_sunbeam_savepoint_stop_order: "{{ pve_sunbeam_worker_nodes + [pve_sunbeam_primary_node] }}"
 
 - name: Stop the worker guests in parallel
   ansible.builtin.shell: |
     set -uo pipefail
-    pct_bin={{ sunbeam_pct_bin | quote }}
+    pct_bin={{ pve_sunbeam_pct_bin | quote }}
     fail=0
-    for vmid in {{ sunbeam_worker_nodes | map(attribute='vmid') | join(' ') }}; do
+    for vmid in {{ pve_sunbeam_worker_nodes | map(attribute='vmid') | join(' ') }}; do
       (
         if "$pct_bin" status "$vmid" | grep -q 'status: running'; then
           "$pct_bin" shutdown "$vmid" --timeout 300 || true
@@ -240,8 +240,8 @@
 - name: Stop the primary guest
   ansible.builtin.shell: |
     set -euo pipefail
-    pct_bin={{ sunbeam_pct_bin | quote }}
-    vmid={{ sunbeam_primary_node.vmid }}
+    pct_bin={{ pve_sunbeam_pct_bin | quote }}
+    vmid={{ pve_sunbeam_primary_node.vmid }}
     if "$pct_bin" status "$vmid" | grep -q 'status: running'; then
       "$pct_bin" shutdown "$vmid" --timeout 300 || true
     fi
@@ -262,11 +262,11 @@
   ansible.builtin.shell: |
     set -uo pipefail
     open=""
-    {% for n in sunbeam_savepoint_stop_order %}
-    origin=$(pct config "{{ n.vmid }}" | sed -n 's/^rootfs: *{{ sunbeam_pve_storage }}:\([^,]*\).*/\1/p')
-    for lv in "$origin"{% if sunbeam_savepoint_restore_osd | bool %} "{{ n.osd_pve_lv | basename }}"{% endif %}; do
+    {% for n in pve_sunbeam_savepoint_stop_order %}
+    origin=$(pct config "{{ n.vmid }}" | sed -n 's/^rootfs: *{{ pve_sunbeam_storage }}:\([^,]*\).*/\1/p')
+    for lv in "$origin"{% if pve_sunbeam_savepoint_restore_osd | bool %} "{{ n.osd_pve_lv | basename }}"{% endif %}; do
       [ -n "$lv" ] || continue
-      attr=$(lvs --noheadings -o attr "{{ sunbeam_pve_storage }}/$lv" 2>/dev/null | tr -d ' ')
+      attr=$(lvs --noheadings -o attr "{{ pve_sunbeam_storage }}/$lv" 2>/dev/null | tr -d ' ')
       [ -n "$attr" ] || continue
       if [ "${attr:4:1}" = "o" ]; then
         open="$open $lv"
@@ -283,81 +283,81 @@
   ansible.builtin.shell: |
     set -euo pipefail
     vmid={{ item.vmid }}
-    base="{{ sunbeam_savepoint_prefix }}-{{ item.hostname }}"
-    origin=$(pct config "$vmid" | sed -n 's/^rootfs: *{{ sunbeam_pve_storage }}:\([^,]*\).*/\1/p')
+    base="{{ pve_sunbeam_savepoint_prefix }}-{{ item.hostname }}"
+    origin=$(pct config "$vmid" | sed -n 's/^rootfs: *{{ pve_sunbeam_storage }}:\([^,]*\).*/\1/p')
     [ -n "$origin" ] || { echo "RESTORE-FAIL $vmid: cannot parse the rootfs volume name" >&2; exit 1; }
-    lvremove --yes "{{ sunbeam_pve_storage }}/$origin"
-    lvcreate --yes --snapshot --name "$origin" "{{ sunbeam_pve_storage }}/$base"
+    lvremove --yes "{{ pve_sunbeam_storage }}/$origin"
+    lvcreate --yes --snapshot --name "$origin" "{{ pve_sunbeam_storage }}/$base"
     echo "RESTORE-SWAPPED $origin from $base"
   args:
     executable: /bin/bash
-  loop: "{{ sunbeam_savepoint_stop_order }}"
+  loop: "{{ pve_sunbeam_savepoint_stop_order }}"
   loop_control:
     label: "{{ item.hostname }} ({{ item.vmid }})"
-  register: sunbeam_restore_swap
-  changed_when: "'RESTORE-SWAPPED' in sunbeam_restore_swap.stdout"
+  register: pve_sunbeam_restore_swap
+  changed_when: "'RESTORE-SWAPPED' in pve_sunbeam_restore_swap.stdout"
 
 - name: Swap each OSD thin LV back to its savepoint and activate it
   ansible.builtin.shell: |
     set -euo pipefail
     origin="{{ item.osd_pve_lv | basename }}"
-    base="{{ sunbeam_savepoint_prefix }}-osd-{{ item.vmid }}"
-    lvremove --yes "{{ sunbeam_pve_storage }}/$origin"
-    lvcreate --yes --snapshot --name "$origin" "{{ sunbeam_pve_storage }}/$base"
-    lvchange -ay -K "{{ sunbeam_pve_storage }}/$origin"
-    test -b "/dev/{{ sunbeam_pve_storage }}/$origin" \
+    base="{{ pve_sunbeam_savepoint_prefix }}-osd-{{ item.vmid }}"
+    lvremove --yes "{{ pve_sunbeam_storage }}/$origin"
+    lvcreate --yes --snapshot --name "$origin" "{{ pve_sunbeam_storage }}/$base"
+    lvchange -ay -K "{{ pve_sunbeam_storage }}/$origin"
+    test -b "/dev/{{ pve_sunbeam_storage }}/$origin" \
       || { echo "RESTORE-FAIL $origin has no device node after activation" >&2; exit 1; }
     echo "RESTORE-OSD-ACTIVE $origin from $base"
   args:
     executable: /bin/bash
-  loop: "{{ sunbeam_nodes }}"
+  loop: "{{ pve_sunbeam_nodes }}"
   loop_control:
     label: "{{ item.hostname }} ({{ item.osd_pve_lv | basename }})"
-  register: sunbeam_restore_osd
-  changed_when: "'RESTORE-OSD-ACTIVE' in sunbeam_restore_osd.stdout"
-  when: sunbeam_savepoint_restore_osd | bool
+  register: pve_sunbeam_restore_osd
+  changed_when: "'RESTORE-OSD-ACTIVE' in pve_sunbeam_restore_osd.stdout"
+  when: pve_sunbeam_savepoint_restore_osd | bool
 
 - name: Regenerate the OSD by-id aliases
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_udevadm_bin }}"
+      - "{{ pve_sunbeam_udevadm_bin }}"
       - trigger
       - --subsystem-match=block
       - --settle
-  when: sunbeam_savepoint_restore_osd | bool
+  when: pve_sunbeam_savepoint_restore_osd | bool
 
 - name: Verify every OSD by-id alias exists again
   ansible.builtin.command:
     argv:
       - test
       - -L
-      - "/dev/disk/by-id/{{ sunbeam_osd_by_id_prefix }}{{ item.vmid }}"
-  loop: "{{ sunbeam_nodes }}"
+      - "/dev/disk/by-id/{{ pve_sunbeam_osd_by_id_prefix }}{{ item.vmid }}"
+  loop: "{{ pve_sunbeam_nodes }}"
   loop_control:
     label: "{{ item.hostname }}"
   changed_when: false
-  when: sunbeam_savepoint_restore_osd | bool
+  when: pve_sunbeam_savepoint_restore_osd | bool
 
 - name: Rebuild and verify the per-CT SMBIOS identity
   ansible.builtin.include_role:
     name: pve-common-ct-uuid
   vars:
-    pve_ct_system_uuid_items: "{{ sunbeam_nodes | map(attribute='vmid') | list }}"
-    pve_ct_system_uuid_verify_running: false
+    pve_common_ct_uuid_items: "{{ pve_sunbeam_nodes | map(attribute='vmid') | list }}"
+    pve_common_ct_uuid_verify_running: false
 
 - name: Ensure the loop device nodes the primary binds exist
   ansible.builtin.include_tasks: _ensure_loop_nodes.yml
 
 - name: Start the primary container
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", start, "{{ sunbeam_primary_node.vmid }}"]
+    argv: ["{{ pve_sunbeam_pct_bin }}", start, "{{ pve_sunbeam_primary_node.vmid }}"]
   changed_when: true
 
 - name: Wait for the primary container to accept commands
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ sunbeam_primary_node.vmid }}", "--", /bin/true]
-  register: sunbeam_restore_primary_exec
-  until: sunbeam_restore_primary_exec.rc == 0
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ pve_sunbeam_primary_node.vmid }}", "--", /bin/true]
+  register: pve_sunbeam_restore_primary_exec
+  until: pve_sunbeam_restore_primary_exec.rc == 0
   retries: 60
   delay: 5
   changed_when: false
@@ -366,19 +366,19 @@
 - name: Assert the primary container came up
   ansible.builtin.assert:
     that:
-      - sunbeam_restore_primary_exec.rc == 0
+      - pve_sunbeam_restore_primary_exec.rc == 0
     fail_msg: >-
-      {{ sunbeam_primary_node.hostname }} ({{ sunbeam_primary_node.vmid }}) did
+      {{ pve_sunbeam_primary_node.hostname }} ({{ pve_sunbeam_primary_node.vmid }}) did
       not accept `pct exec` within 5 minutes after the restore. Check
-      `pct status {{ sunbeam_primary_node.vmid }}` and the container's journal on
-      {{ sunbeam_host }}.
+      `pct status {{ pve_sunbeam_primary_node.vmid }}` and the container's journal on
+      {{ pve_sunbeam_host }}.
 
 - name: Start the worker containers in parallel
   ansible.builtin.shell: |
     set -uo pipefail
-    pct_bin={{ sunbeam_pct_bin | quote }}
+    pct_bin={{ pve_sunbeam_pct_bin | quote }}
     fail=0
-    for vmid in {{ sunbeam_worker_nodes | map(attribute='vmid') | join(' ') }}; do
+    for vmid in {{ pve_sunbeam_worker_nodes | map(attribute='vmid') | join(' ') }}; do
       (
         "$pct_bin" start "$vmid" \
           || { echo "RESTORE-FAIL $vmid did not start" >&2; exit 1; }
@@ -393,12 +393,12 @@
 
 - name: Wait for every worker container to accept commands
   ansible.builtin.command:
-    argv: ["{{ sunbeam_pct_bin }}", exec, "{{ item.vmid }}", "--", /bin/true]
-  loop: "{{ sunbeam_worker_nodes }}"
+    argv: ["{{ pve_sunbeam_pct_bin }}", exec, "{{ item.vmid }}", "--", /bin/true]
+  loop: "{{ pve_sunbeam_worker_nodes }}"
   loop_control:
     label: "{{ item.hostname }} ({{ item.vmid }})"
-  register: sunbeam_restore_worker_exec
-  until: sunbeam_restore_worker_exec.rc == 0
+  register: pve_sunbeam_restore_worker_exec
+  until: pve_sunbeam_restore_worker_exec.rc == 0
   retries: 60
   delay: 5
   changed_when: false
@@ -411,7 +411,7 @@
     fail_msg: >-
       {{ item.item.hostname }} ({{ item.item.vmid }}) did not accept `pct exec`
       within 5 minutes after the restore.
-  loop: "{{ sunbeam_restore_worker_exec.results }}"
+  loop: "{{ pve_sunbeam_restore_worker_exec.results }}"
   loop_control:
     label: "{{ item.item.hostname }}"
 
@@ -424,53 +424,53 @@
 - name: Wait for the first convergence window after the restore
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'check-restore-readiness.sh.j2') }}"
-  register: sunbeam_restore_ready
-  until: "'RESTORE-READY=yes' in sunbeam_restore_ready.stdout"
-  retries: "{{ (sunbeam_restore_first_window | int / sunbeam_poll_interval | int) | int }}"
-  delay: "{{ sunbeam_poll_interval }}"
+  register: pve_sunbeam_restore_ready
+  until: "'RESTORE-READY=yes' in pve_sunbeam_restore_ready.stdout"
+  retries: "{{ (pve_sunbeam_restore_first_window | int / pve_sunbeam_poll_interval | int) | int }}"
+  delay: "{{ pve_sunbeam_poll_interval }}"
   changed_when: false
   failed_when: false
 
 - name: Re-probe and repair the mons when the first window was not enough
   ansible.builtin.include_tasks: _restore_mon_check.yml
-  when: "'RESTORE-READY=yes' not in sunbeam_restore_ready.stdout"
+  when: "'RESTORE-READY=yes' not in pve_sunbeam_restore_ready.stdout"
 
 - name: Re-probe and repair the OSDs when the first window was not enough
   ansible.builtin.include_tasks: _restore_osd_check.yml
-  when: "'RESTORE-READY=yes' not in sunbeam_restore_ready.stdout"
+  when: "'RESTORE-READY=yes' not in pve_sunbeam_restore_ready.stdout"
 
 - name: Wait for Ceph, K8s and Sunbeam to converge after the restore
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'check-restore-readiness.sh.j2') }}"
-  register: sunbeam_restore_ready
-  until: "'RESTORE-READY=yes' in sunbeam_restore_ready.stdout"
-  retries: "{{ ((sunbeam_restore_timeout | int - sunbeam_restore_first_window | int) / sunbeam_poll_interval | int) | int }}"
-  delay: "{{ sunbeam_poll_interval }}"
+  register: pve_sunbeam_restore_ready
+  until: "'RESTORE-READY=yes' in pve_sunbeam_restore_ready.stdout"
+  retries: "{{ ((pve_sunbeam_restore_timeout | int - pve_sunbeam_restore_first_window | int) / pve_sunbeam_poll_interval | int) | int }}"
+  delay: "{{ pve_sunbeam_poll_interval }}"
   changed_when: false
   failed_when: false
 
 - name: Assert the cluster converged
   ansible.builtin.assert:
     that:
-      - "'RESTORE-READY=yes' in sunbeam_restore_ready.stdout"
+      - "'RESTORE-READY=yes' in pve_sunbeam_restore_ready.stdout"
     fail_msg: >-
-      The environment did not converge within {{ sunbeam_restore_timeout }}s after
+      The environment did not converge within {{ pve_sunbeam_restore_timeout }}s after
       the restore. Last probe output:
-      {{ sunbeam_restore_ready.stdout }}
+      {{ pve_sunbeam_restore_ready.stdout }}
 
 - name: Restore snapd's store proxy (rolled back with the rootfs)
   ansible.builtin.include_tasks: _snapd_store_proxy.yml
@@ -480,19 +480,19 @@
 
 - name: Build post-restore Juju and gateway reconciliation inputs
   ansible.builtin.set_fact:
-    sunbeam_restore_reconcile_config:
-      pct_bin: "{{ sunbeam_pct_bin }}"
-      primary_vmid: "{{ sunbeam_primary_node.vmid }}"
-      node_user: "{{ sunbeam_node_user }}"
-      openstack_model: "{{ sunbeam_juju_openstack_model }}"
-      machines_model: "{{ sunbeam_juju_machines_model }}"
-      external_nic: "{{ sunbeam_manifest_external_nic }}"
-      physnet: "{{ sunbeam_external_network.name }}"
-      juju_recovery_rounds: "{{ sunbeam_restore_juju_recovery_rounds | int }}"
-      juju_recovery_delay: "{{ sunbeam_restore_juju_recovery_delay | int }}"
-      gateway_timeout: "{{ sunbeam_restore_gateway_timeout | int }}"
-      gateway_poll_interval: "{{ sunbeam_restore_gateway_poll_interval | int }}"
-      nodes: "{{ sunbeam_nodes }}"
+    pve_sunbeam_restore_reconcile_config:
+      pct_bin: "{{ pve_sunbeam_pct_bin }}"
+      primary_vmid: "{{ pve_sunbeam_primary_node.vmid }}"
+      node_user: "{{ pve_sunbeam_node_user }}"
+      openstack_model: "{{ pve_sunbeam_juju_openstack_model }}"
+      machines_model: "{{ pve_sunbeam_juju_machines_model }}"
+      external_nic: "{{ pve_sunbeam_manifest_external_nic }}"
+      physnet: "{{ pve_sunbeam_external_network.name }}"
+      juju_recovery_rounds: "{{ pve_sunbeam_restore_juju_recovery_rounds | int }}"
+      juju_recovery_delay: "{{ pve_sunbeam_restore_juju_recovery_delay | int }}"
+      gateway_timeout: "{{ pve_sunbeam_restore_gateway_timeout | int }}"
+      gateway_poll_interval: "{{ pve_sunbeam_restore_gateway_poll_interval | int }}"
+      nodes: "{{ pve_sunbeam_nodes }}"
 
 - name: Recover Juju workload errors and ensure every node is an OVN gateway
   ansible.builtin.include_tasks: _restore_reconcile.yml
@@ -500,53 +500,53 @@
 - name: Wait for the Juju applications to settle after the reconciliation
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'check-juju-apps-active.sh.j2') }}"
-  register: sunbeam_restore_settled
-  until: "'SETTLED=yes' in sunbeam_restore_settled.stdout"
-  retries: "{{ (sunbeam_restore_settle_timeout | int / sunbeam_poll_interval | int) | int }}"
-  delay: "{{ sunbeam_poll_interval }}"
+  register: pve_sunbeam_restore_settled
+  until: "'SETTLED=yes' in pve_sunbeam_restore_settled.stdout"
+  retries: "{{ (pve_sunbeam_restore_settle_timeout | int / pve_sunbeam_poll_interval | int) | int }}"
+  delay: "{{ pve_sunbeam_poll_interval }}"
   changed_when: false
   failed_when: false
 
 - name: Assert the Juju applications settled
   ansible.builtin.assert:
     that:
-      - "'SETTLED=yes' in sunbeam_restore_settled.stdout"
+      - "'SETTLED=yes' in pve_sunbeam_restore_settled.stdout"
     fail_msg: >-
       The Juju applications did not all reach the active state within
-      {{ sunbeam_restore_settle_timeout }}s after the reconciliation. Last probe:
-      {{ sunbeam_restore_settled.stdout }}
+      {{ pve_sunbeam_restore_settle_timeout }}s after the reconciliation. Last probe:
+      {{ pve_sunbeam_restore_settled.stdout }}
 
 - name: Re-apply the mysql-router workload logging fix
   ansible.builtin.include_tasks: logging-scope.yml
-  when: sunbeam_obs_logging_tune | bool
+  when: pve_sunbeam_obs_logging_tune | bool
 
 - name: Run the standard health verification
   ansible.builtin.include_tasks: verify.yml
-  when: sunbeam_savepoint_run_verify | bool
+  when: pve_sunbeam_savepoint_run_verify | bool
 
 - name: Enable the end-to-end OpenStack check
   ansible.builtin.set_fact:
-    sunbeam_vm_volume_test: true
-    sunbeam_confirm_external_changes: true
-    sunbeam_vm_test_ping: "{{ sunbeam_savepoint_verify_fip_ping | bool }}"
-  when: sunbeam_savepoint_verify_openstack | bool
+    pve_sunbeam_vm_volume_test: true
+    pve_sunbeam_confirm_external_changes: true
+    pve_sunbeam_vm_test_ping: "{{ pve_sunbeam_savepoint_verify_fip_ping | bool }}"
+  when: pve_sunbeam_savepoint_verify_openstack | bool
 
 - name: Boot a VM from a volume, attach a floating IP and ping it
   ansible.builtin.include_tasks: vm-volume-test.yml
-  when: sunbeam_savepoint_verify_openstack | bool
+  when: pve_sunbeam_savepoint_verify_openstack | bool
 
 - name: Report the restore result
   ansible.builtin.debug:
     msg:
-      - "restored: {{ sunbeam_savepoint_prefix }}-*"
-      - "guests: {{ sunbeam_savepoint_stop_order | map(attribute='hostname') | join(', ') }}"
-      - "OSD volumes restored: {{ sunbeam_savepoint_restore_osd }}"
-      - "health verify: {{ sunbeam_savepoint_run_verify }}"
-      - "openstack end-to-end check: {{ sunbeam_savepoint_verify_openstack }} (floating-ip ping: {{ sunbeam_savepoint_verify_fip_ping }})"
+      - "restored: {{ pve_sunbeam_savepoint_prefix }}-*"
+      - "guests: {{ pve_sunbeam_savepoint_stop_order | map(attribute='hostname') | join(', ') }}"
+      - "OSD volumes restored: {{ pve_sunbeam_savepoint_restore_osd }}"
+      - "health verify: {{ pve_sunbeam_savepoint_run_verify }}"
+      - "openstack end-to-end check: {{ pve_sunbeam_savepoint_verify_openstack }} (floating-ip ping: {{ pve_sunbeam_savepoint_verify_fip_ping }})"

@@ -4,7 +4,7 @@
   hosts: pve
   gather_facts: false
   vars:
-    sunbeam_stage: status
+    pve_sunbeam_stage: status
   tasks:
     - name: Load the stage implementation
       ansible.builtin.include_role:

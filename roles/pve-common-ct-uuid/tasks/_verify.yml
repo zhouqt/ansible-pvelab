@@ -2,10 +2,10 @@
 
 - name: Read every container configuration back
   ansible.builtin.command: "pct config {{ item.vmid }}"
-  loop: "{{ pve_ct_system_uuid_targets }}"
+  loop: "{{ pve_common_ct_uuid_targets }}"
   loop_control:
     label: "vmid {{ item.vmid }}"
-  register: pve_ct_system_uuid_verify_config
+  register: pve_common_ct_uuid_verify_config
   changed_when: false
   check_mode: false
 
@@ -13,18 +13,18 @@
   ansible.builtin.assert:
     that:
       - >-
-        'lxc.mount.entry: ' ~ pve_ct_system_uuid_dir ~ '/' ~ (item.item.vmid | string) ~ '/DMI '
-        ~ (pve_ct_system_uuid_guest_dmi | regex_replace('^/', '')) ~ ' none bind,create=file 0 0' in item.stdout_lines
+        'lxc.mount.entry: ' ~ pve_common_ct_uuid_dir ~ '/' ~ (item.item.vmid | string) ~ '/DMI '
+        ~ (pve_common_ct_uuid_guest_dmi | regex_replace('^/', '')) ~ ' none bind,create=file 0 0' in item.stdout_lines
       - >-
-        'lxc.mount.entry: ' ~ pve_ct_system_uuid_dir ~ '/' ~ (item.item.vmid | string) ~ '/product_uuid '
-        ~ (pve_ct_system_uuid_guest_product_uuid_mount | regex_replace('^/', '')) ~ ' none bind,create=file 0 0' in item.stdout_lines
+        'lxc.mount.entry: ' ~ pve_common_ct_uuid_dir ~ '/' ~ (item.item.vmid | string) ~ '/product_uuid '
+        ~ (pve_common_ct_uuid_guest_product_uuid_mount | regex_replace('^/', '')) ~ ' none bind,create=file 0 0' in item.stdout_lines
     fail_msg: >-
       pve-common-ct-uuid: vmid {{ item.item.vmid }} does not mount its own copies;
-      write them with -e pve_ct_system_uuid_verify_only=false (sunbeam:
-      -e sunbeam_confirm_system_uuid=true) and, for a running container, either
-      restart it or add -e pve_ct_system_uuid_apply_live=true.
+      write them with -e pve_common_ct_uuid_verify_only=false (sunbeam:
+      -e pve_sunbeam_confirm_system_uuid=true) and, for a running container, either
+      restart it or add -e pve_common_ct_uuid_apply_live=true.
     quiet: true
-  loop: "{{ pve_ct_system_uuid_verify_config.results }}"
+  loop: "{{ pve_common_ct_uuid_verify_config.results }}"
   loop_control:
     label: "vmid {{ item.item.vmid }}"
 
@@ -32,15 +32,15 @@
   ansible.builtin.command:
     argv:
       - python3
-      - "{{ pve_ct_system_uuid_helper_dir }}/ct_uuid_registry.py"
+      - "{{ pve_common_ct_uuid_helper_dir }}/ct_uuid_registry.py"
       - --file
-      - "{{ pve_ct_system_uuid_registry_file }}"
+      - "{{ pve_common_ct_uuid_registry_file }}"
       - --get
       - "{{ item.vmid }}"
-  loop: "{{ pve_ct_system_uuid_targets }}"
+  loop: "{{ pve_common_ct_uuid_targets }}"
   loop_control:
     label: "vmid {{ item.vmid }}"
-  register: pve_ct_system_uuid_registry_read
+  register: pve_common_ct_uuid_registry_read
   changed_when: false
   failed_when: false
   check_mode: false
@@ -49,13 +49,13 @@
   ansible.builtin.assert:
     that:
       - item.rc == 0
-      - item.stdout | trim == pve_ct_system_uuid_expected[item.item.vmid | string]
+      - item.stdout | trim == pve_common_ct_uuid_expected[item.item.vmid | string]
     fail_msg: >-
       pve-common-ct-uuid: vmid {{ item.item.vmid }} is not recorded correctly in
-      {{ pve_ct_system_uuid_registry_file }} ({{ item.stderr | default('') | trim }});
-      re-run the role without -e pve_ct_system_uuid_verify_only=true.
+      {{ pve_common_ct_uuid_registry_file }} ({{ item.stderr | default('') | trim }});
+      re-run the role without -e pve_common_ct_uuid_verify_only=true.
     quiet: true
-  loop: "{{ pve_ct_system_uuid_registry_read.results }}"
+  loop: "{{ pve_common_ct_uuid_registry_read.results }}"
   loop_control:
     label: "vmid {{ item.item.vmid }}"
 
@@ -67,54 +67,54 @@
       - "{{ item.vmid }}"
       - --
       - cat
-      - "{{ pve_ct_system_uuid_guest_product_uuid }}"
+      - "{{ pve_common_ct_uuid_guest_product_uuid }}"
   loop: >-
-    {{ pve_ct_system_uuid_targets
-       | selectattr('vmid', 'in', pve_ct_system_uuid_running_map | default({})
+    {{ pve_common_ct_uuid_targets
+       | selectattr('vmid', 'in', pve_common_ct_uuid_running_map | default({})
                                    | dict2items | selectattr('value')
                                    | map(attribute='key') | map('int') | list) | list }}
   loop_control:
     label: "vmid {{ item.vmid }}"
-  register: pve_ct_system_uuid_readback
+  register: pve_common_ct_uuid_readback
   changed_when: false
   check_mode: false
-  when: pve_ct_system_uuid_running_map | default({}) | dict2items | selectattr('value') | list | length > 0
+  when: pve_common_ct_uuid_running_map | default({}) | dict2items | selectattr('value') | list | length > 0
 
 - name: Assert running containers expose their own UUID
   ansible.builtin.assert:
     that:
-      - item.stdout | trim == pve_ct_system_uuid_expected[item.item.vmid | string]
+      - item.stdout | trim == pve_common_ct_uuid_expected[item.item.vmid | string]
     fail_msg: >-
       pve-common-ct-uuid: vmid {{ item.item.vmid }} reads back
       {{ item.stdout | trim | default('nothing') }}, expected
-      {{ pve_ct_system_uuid_expected[item.item.vmid | string] }}. The container is
+      {{ pve_common_ct_uuid_expected[item.item.vmid | string] }}. The container is
       running, so the mount is not active: re-run with
-      -e pve_ct_system_uuid_apply_live=true (hot bind) or restart the container.
+      -e pve_common_ct_uuid_apply_live=true (hot bind) or restart the container.
     quiet: true
-  loop: "{{ pve_ct_system_uuid_readback.results | default([]) | selectattr('stdout', 'defined') | list }}"
+  loop: "{{ pve_common_ct_uuid_readback.results | default([]) | selectattr('stdout', 'defined') | list }}"
   loop_control:
     label: "vmid {{ item.item.vmid }}"
   when:
-    - pve_ct_system_uuid_verify_running | bool
+    - pve_common_ct_uuid_verify_running | bool
 
 - name: Report containers that are running with the configuration not yet applied
   ansible.builtin.debug:
     msg: >-
       vmid {{ item.item.vmid }} will pick up its identity at the next start
-      (pve_ct_system_uuid_verify_running=false).
-  loop: "{{ pve_ct_system_uuid_readback.results | default([]) | selectattr('stdout', 'defined') | list }}"
+      (pve_common_ct_uuid_verify_running=false).
+  loop: "{{ pve_common_ct_uuid_readback.results | default([]) | selectattr('stdout', 'defined') | list }}"
   when:
-    - not (pve_ct_system_uuid_verify_running | bool)
-    - item.stdout | trim != pve_ct_system_uuid_expected[item.item.vmid | string]
+    - not (pve_common_ct_uuid_verify_running | bool)
+    - item.stdout | trim != pve_common_ct_uuid_expected[item.item.vmid | string]
 
 - name: Assert the exposed UUIDs are globally distinct
   ansible.builtin.assert:
     that:
       - >-
-        pve_ct_system_uuid_readback.results | default([]) | selectattr('stdout', 'defined')
+        pve_common_ct_uuid_readback.results | default([]) | selectattr('stdout', 'defined')
         | map(attribute='stdout') | map('trim') | unique | list | length
-        == pve_ct_system_uuid_readback.results | default([]) | selectattr('stdout', 'defined') | list | length
+        == pve_common_ct_uuid_readback.results | default([]) | selectattr('stdout', 'defined') | list | length
     fail_msg: >-
       pve-common-ct-uuid: two containers expose the same UUID:
-      {{ pve_ct_system_uuid_readback.results | default([]) | selectattr('stdout', 'defined') | map(attribute='stdout') | map('trim') | list }}
+      {{ pve_common_ct_uuid_readback.results | default([]) | selectattr('stdout', 'defined') | map(attribute='stdout') | map('trim') | list }}
     quiet: true

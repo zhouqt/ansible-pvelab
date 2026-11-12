@@ -1,20 +1,20 @@
 ---
 
 - name: Check for VMID collision with an existing container
-  ansible.builtin.command: "pct status {{ pve_yoga_kvm_workload.vmid }}"
-  register: pve_yoga_kvm_ct_status
+  ansible.builtin.command: "pct status {{ pve_openstack_kvm_workload.vmid }}"
+  register: pve_openstack_kvm_ct_status
   failed_when: false
   changed_when: false
 
 - name: Refuse to overwrite an existing CT with the KVM workload VMID
   ansible.builtin.assert:
     that:
-      - pve_yoga_kvm_ct_status.rc != 0
-    fail_msg: "VMID {{ pve_yoga_kvm_workload.vmid }} is already an LXC container; refusing to overwrite it."
+      - pve_openstack_kvm_ct_status.rc != 0
+    fail_msg: "VMID {{ pve_openstack_kvm_workload.vmid }} is already an LXC container; refusing to overwrite it."
 
 - name: Check whether the KVM workload VM exists
-  ansible.builtin.command: "qm status {{ pve_yoga_kvm_workload.vmid }}"
-  register: pve_yoga_kvm_status
+  ansible.builtin.command: "qm status {{ pve_openstack_kvm_workload.vmid }}"
+  register: pve_openstack_kvm_status
   failed_when: false
   changed_when: false
 
@@ -22,113 +22,113 @@
   ansible.builtin.shell: |
     set -euo pipefail
     cd /var/tmp
-    image={{ pve_yoga_kvm_image }}
+    image={{ pve_openstack_kvm_image }}
     if [ ! -s "$image" ]; then
-      curl -fsSLo "$image" "{{ pve_yoga_kvm_image_url }}"
+      curl -fsSLo "$image" "{{ pve_openstack_kvm_image_url }}"
     fi
-    qm create {{ pve_yoga_kvm_workload.vmid }} \
-      --name {{ pve_yoga_kvm_workload.hostname }} \
-      --ostype l26 --cores {{ pve_yoga_kvm_workload.cores }} \
-      --memory {{ pve_yoga_kvm_workload.memory }} --balloon 0 \
+    qm create {{ pve_openstack_kvm_workload.vmid }} \
+      --name {{ pve_openstack_kvm_workload.hostname }} \
+      --ostype l26 --cores {{ pve_openstack_kvm_workload.cores }} \
+      --memory {{ pve_openstack_kvm_workload.memory }} --balloon 0 \
       --cpu host --sockets 1 \
-      --net0 virtio,bridge={{ pve_yoga_network_spaces[0].bridge }},firewall=0 \
-      --net1 virtio,bridge={{ pve_yoga_network_spaces[1].bridge }},firewall=0 \
-      --net2 virtio,bridge={{ pve_yoga_network_spaces[2].bridge }},firewall=0 \
-      --net3 virtio,bridge={{ pve_yoga_network_spaces[3].bridge }},firewall=0 \
-      --net4 virtio,bridge={{ pve_yoga_compute_uplink_bridge }},firewall=0 \
+      --net0 virtio,bridge={{ pve_openstack_network_spaces[0].bridge }},firewall=0 \
+      --net1 virtio,bridge={{ pve_openstack_network_spaces[1].bridge }},firewall=0 \
+      --net2 virtio,bridge={{ pve_openstack_network_spaces[2].bridge }},firewall=0 \
+      --net3 virtio,bridge={{ pve_openstack_network_spaces[3].bridge }},firewall=0 \
+      --net4 virtio,bridge={{ pve_openstack_compute_uplink_bridge }},firewall=0 \
       --onboot 1 --startup order=3 --agent 1 --serial0 socket --vga std
-    qm importdisk {{ pve_yoga_kvm_workload.vmid }} "$image" '{{ pve_storage }}'
-    qm set {{ pve_yoga_kvm_workload.vmid }} --scsihw virtio-scsi-pci \
-      --scsi0 '{{ pve_storage }}:vm-{{ pve_yoga_kvm_workload.vmid }}-disk-0,iothread=1,discard=on'
-    qm resize {{ pve_yoga_kvm_workload.vmid }} scsi0 {{ pve_yoga_kvm_workload.disk }}G
-    qm set {{ pve_yoga_kvm_workload.vmid }} --ide2 '{{ pve_storage }}:cloudinit' --boot order=scsi0
-    qm set {{ pve_yoga_kvm_workload.vmid }} \
+    qm importdisk {{ pve_openstack_kvm_workload.vmid }} "$image" '{{ pve_common_storage }}'
+    qm set {{ pve_openstack_kvm_workload.vmid }} --scsihw virtio-scsi-pci \
+      --scsi0 '{{ pve_common_storage }}:vm-{{ pve_openstack_kvm_workload.vmid }}-disk-0,iothread=1,discard=on'
+    qm resize {{ pve_openstack_kvm_workload.vmid }} scsi0 {{ pve_openstack_kvm_workload.disk }}G
+    qm set {{ pve_openstack_kvm_workload.vmid }} --ide2 '{{ pve_common_storage }}:cloudinit' --boot order=scsi0
+    qm set {{ pve_openstack_kvm_workload.vmid }} \
       --ciuser ubuntu --sshkeys /root/juju-yoga-client.pub \
-      --ipconfig0 ip={{ pve_yoga_public_prefix }}.{{ pve_yoga_kvm_workload.vmid - pve_yoga_ip_offset }}/24,gw={{ pve_yoga_public_gateway }} \
-      --ipconfig1 ip={{ pve_yoga_workload_secondary_network_ips[pve_yoga_kvm_workload.vmid | string].oam }}/24 \
-      --ipconfig2 ip={{ pve_yoga_workload_secondary_network_ips[pve_yoga_kvm_workload.vmid | string].internal }}/24 \
-      --ipconfig3 ip={{ pve_yoga_workload_secondary_network_ips[pve_yoga_kvm_workload.vmid | string].storage }}/24 \
+      --ipconfig0 ip={{ pve_openstack_public_prefix }}.{{ pve_openstack_kvm_workload.vmid - pve_openstack_ip_offset }}/24,gw={{ pve_openstack_public_gateway }} \
+      --ipconfig1 ip={{ pve_openstack_workload_secondary_network_ips[pve_openstack_kvm_workload.vmid | string].oam }}/24 \
+      --ipconfig2 ip={{ pve_openstack_workload_secondary_network_ips[pve_openstack_kvm_workload.vmid | string].internal }}/24 \
+      --ipconfig3 ip={{ pve_openstack_workload_secondary_network_ips[pve_openstack_kvm_workload.vmid | string].storage }}/24 \
       --nameserver 8.8.8.8
   args:
     executable: /bin/bash
   environment:
-    HTTP_PROXY: "{{ pve_yoga_http_proxy }}"
-    HTTPS_PROXY: "{{ pve_yoga_https_proxy }}"
-    http_proxy: "{{ pve_yoga_http_proxy }}"
-    https_proxy: "{{ pve_yoga_https_proxy }}"
-  when: pve_yoga_kvm_status.rc != 0
+    HTTP_PROXY: "{{ pve_openstack_http_proxy }}"
+    HTTPS_PROXY: "{{ pve_openstack_https_proxy }}"
+    http_proxy: "{{ pve_openstack_http_proxy }}"
+    https_proxy: "{{ pve_openstack_https_proxy }}"
+  when: pve_openstack_kvm_status.rc != 0
 
 - name: Read configuration of the KVM workload VM
-  ansible.builtin.command: "qm config {{ pve_yoga_kvm_workload.vmid }}"
-  register: pve_yoga_kvm_config
+  ansible.builtin.command: "qm config {{ pve_openstack_kvm_workload.vmid }}"
+  register: pve_openstack_kvm_config
   changed_when: false
 
 - name: Verify KVM workload VM identity, static NICs, and cloud-init user
   ansible.builtin.assert:
     that:
-      - "'name: ' ~ pve_yoga_kvm_workload.hostname in pve_yoga_kvm_config.stdout"
-      - "'ipconfig0: ip=' ~ pve_yoga_public_prefix ~ '.' ~ (pve_yoga_kvm_workload.vmid - pve_yoga_ip_offset) ~ '/24,gw=' ~ pve_yoga_public_gateway in pve_yoga_kvm_config.stdout"
-      - "pve_yoga_kvm_config.stdout is search('(?m)^net0: .*bridge=' ~ pve_yoga_network_spaces[0].bridge ~ '(?:,|$)')"
-      - "pve_yoga_kvm_config.stdout is search('(?m)^net1: .*bridge=' ~ pve_yoga_network_spaces[1].bridge ~ '(?:,|$)')"
-      - "pve_yoga_kvm_config.stdout is search('(?m)^net2: .*bridge=' ~ pve_yoga_network_spaces[2].bridge ~ '(?:,|$)')"
-      - "pve_yoga_kvm_config.stdout is search('(?m)^net3: .*bridge=' ~ pve_yoga_network_spaces[3].bridge ~ '(?:,|$)')"
-      - "pve_yoga_kvm_config.stdout is search('(?m)^net4: .*bridge=' ~ pve_yoga_compute_uplink_bridge ~ '(?:,|$)')"
-      - "pve_yoga_kvm_config.stdout is not search('(?m)^ipconfig4:')"
-      - "('ipconfig1: ip=' ~ pve_yoga_workload_secondary_network_ips[pve_yoga_kvm_workload.vmid | string].oam ~ '/24') in pve_yoga_kvm_config.stdout"
-      - "('ipconfig2: ip=' ~ pve_yoga_workload_secondary_network_ips[pve_yoga_kvm_workload.vmid | string].internal ~ '/24') in pve_yoga_kvm_config.stdout"
-      - "('ipconfig3: ip=' ~ pve_yoga_workload_secondary_network_ips[pve_yoga_kvm_workload.vmid | string].storage ~ '/24') in pve_yoga_kvm_config.stdout"
-      - "'ciuser: ubuntu' in pve_yoga_kvm_config.stdout"
-      - "'sshkeys:' in pve_yoga_kvm_config.stdout"
-    fail_msg: "the name, NICs, addresses or cloud-init user of VMID {{ pve_yoga_kvm_workload.vmid }} do not match the inventory; refusing to change them automatically."
+      - "'name: ' ~ pve_openstack_kvm_workload.hostname in pve_openstack_kvm_config.stdout"
+      - "'ipconfig0: ip=' ~ pve_openstack_public_prefix ~ '.' ~ (pve_openstack_kvm_workload.vmid - pve_openstack_ip_offset) ~ '/24,gw=' ~ pve_openstack_public_gateway in pve_openstack_kvm_config.stdout"
+      - "pve_openstack_kvm_config.stdout is search('(?m)^net0: .*bridge=' ~ pve_openstack_network_spaces[0].bridge ~ '(?:,|$)')"
+      - "pve_openstack_kvm_config.stdout is search('(?m)^net1: .*bridge=' ~ pve_openstack_network_spaces[1].bridge ~ '(?:,|$)')"
+      - "pve_openstack_kvm_config.stdout is search('(?m)^net2: .*bridge=' ~ pve_openstack_network_spaces[2].bridge ~ '(?:,|$)')"
+      - "pve_openstack_kvm_config.stdout is search('(?m)^net3: .*bridge=' ~ pve_openstack_network_spaces[3].bridge ~ '(?:,|$)')"
+      - "pve_openstack_kvm_config.stdout is search('(?m)^net4: .*bridge=' ~ pve_openstack_compute_uplink_bridge ~ '(?:,|$)')"
+      - "pve_openstack_kvm_config.stdout is not search('(?m)^ipconfig4:')"
+      - "('ipconfig1: ip=' ~ pve_openstack_workload_secondary_network_ips[pve_openstack_kvm_workload.vmid | string].oam ~ '/24') in pve_openstack_kvm_config.stdout"
+      - "('ipconfig2: ip=' ~ pve_openstack_workload_secondary_network_ips[pve_openstack_kvm_workload.vmid | string].internal ~ '/24') in pve_openstack_kvm_config.stdout"
+      - "('ipconfig3: ip=' ~ pve_openstack_workload_secondary_network_ips[pve_openstack_kvm_workload.vmid | string].storage ~ '/24') in pve_openstack_kvm_config.stdout"
+      - "'ciuser: ubuntu' in pve_openstack_kvm_config.stdout"
+      - "'sshkeys:' in pve_openstack_kvm_config.stdout"
+    fail_msg: "the name, NICs, addresses or cloud-init user of VMID {{ pve_openstack_kvm_workload.vmid }} do not match the inventory; refusing to change them automatically."
 
 - name: Check whether the KVM workload disk passes discards through to the thin pool
   ansible.builtin.set_fact:
-    pve_yoga_kvm_discard_ok: "{{ pve_yoga_kvm_config.stdout is search('(?m)^scsi0: .*discard=on(?:,|$)') }}"
+    pve_openstack_kvm_discard_ok: "{{ pve_openstack_kvm_config.stdout is search('(?m)^scsi0: .*discard=on(?:,|$)') }}"
   changed_when: false
 
 - name: Read the runtime state of the KVM workload VM before touching its disk
-  ansible.builtin.command: "qm status {{ pve_yoga_kvm_workload.vmid }}"
-  register: pve_yoga_kvm_discard_state
+  ansible.builtin.command: "qm status {{ pve_openstack_kvm_workload.vmid }}"
+  register: pve_openstack_kvm_discard_state
   changed_when: false
-  when: not (pve_yoga_kvm_discard_ok | bool)
+  when: not (pve_openstack_kvm_discard_ok | bool)
 
 - name: Enable discard pass-through on the KVM workload disk
   ansible.builtin.command: >-
-    qm set {{ pve_yoga_kvm_workload.vmid }} --scsi0
-    {{ (pve_yoga_kvm_config.stdout | regex_search('(?m)^scsi0: (.+)$', '\\1') | first)
+    qm set {{ pve_openstack_kvm_workload.vmid }} --scsi0
+    {{ (pve_openstack_kvm_config.stdout | regex_search('(?m)^scsi0: (.+)$', '\\1') | first)
        | regex_replace(',discard=[a-z]+', '') }},discard=on
   when:
-    - not (pve_yoga_kvm_discard_ok | bool)
-    - "'status: stopped' in pve_yoga_kvm_discard_state.stdout"
+    - not (pve_openstack_kvm_discard_ok | bool)
+    - "'status: stopped' in pve_openstack_kvm_discard_state.stdout"
 
 - name: Warn when a running KVM workload VM still drops its discards
   ansible.builtin.debug:
     msg: >-
-      VM {{ pve_yoga_kvm_workload.vmid }} is running, so PVE cannot change the discard flag of scsi0 online:
+      VM {{ pve_openstack_kvm_workload.vmid }} is running, so PVE cannot change the discard flag of scsi0 online:
       the fstrim it issues nowadays is dropped by QEMU (neither the thin pool nor the SSD gets the blocks back). This does **not** affect what a teardown reclaims
       (openstack-pve-teardown blkdiscards the whole volume itself); it only affects hole reclaim at runtime. Re-run it after the next shutdown
       `--tags openstack-pve-machines` adds it automatically, or run by hand:
-      qm set {{ pve_yoga_kvm_workload.vmid }} --scsi0 '<the scsi0 value from qm config>,discard=on'  (shut the VM down first)
+      qm set {{ pve_openstack_kvm_workload.vmid }} --scsi0 '<the scsi0 value from qm config>,discard=on'  (shut the VM down first)
   when:
-    - not (pve_yoga_kvm_discard_ok | bool)
-    - "'status: stopped' not in pve_yoga_kvm_discard_state.stdout"
+    - not (pve_openstack_kvm_discard_ok | bool)
+    - "'status: stopped' not in pve_openstack_kvm_discard_state.stdout"
 
 - name: Read rendered cloud-init user data for the KVM workload VM
-  ansible.builtin.command: "qm cloudinit dump {{ pve_yoga_kvm_workload.vmid }} user"
-  register: pve_yoga_kvm_cloudinit
+  ansible.builtin.command: "qm cloudinit dump {{ pve_openstack_kvm_workload.vmid }} user"
+  register: pve_openstack_kvm_cloudinit
   changed_when: false
 
 - name: Verify the KVM workload VM receives the Juju client key
   ansible.builtin.assert:
     that:
-      - "pve_yoga_machines_client_pubkey.stdout | trim in pve_yoga_kvm_cloudinit.stdout"
-    fail_msg: "the cloud-init data of VMID {{ pve_yoga_kvm_workload.vmid }} does not contain the Juju client public key; refusing to continue."
+      - "pve_openstack_machines_client_pubkey.stdout | trim in pve_openstack_kvm_cloudinit.stdout"
+    fail_msg: "the cloud-init data of VMID {{ pve_openstack_kvm_workload.vmid }} does not carry the Juju client public key; refusing to continue."
 
 - name: Check runtime state of the KVM workload VM
-  ansible.builtin.command: "qm status {{ pve_yoga_kvm_workload.vmid }}"
-  register: pve_yoga_kvm_runtime_status
+  ansible.builtin.command: "qm status {{ pve_openstack_kvm_workload.vmid }}"
+  register: pve_openstack_kvm_runtime_status
   changed_when: false
 
 - name: Start the KVM workload VM if stopped
-  ansible.builtin.command: "qm start {{ pve_yoga_kvm_workload.vmid }}"
-  when: "'status: stopped' in pve_yoga_kvm_runtime_status.stdout"
+  ansible.builtin.command: "qm start {{ pve_openstack_kvm_workload.vmid }}"
+  when: "'status: stopped' in pve_openstack_kvm_runtime_status.stdout"

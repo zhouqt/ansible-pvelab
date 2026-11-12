@@ -5,77 +5,77 @@
 - name: Require explicit authorization for the end-to-end VM test
   ansible.builtin.assert:
     that:
-      - sunbeam_vm_volume_test | bool
-      - sunbeam_confirm_external_changes | bool
+      - pve_sunbeam_vm_volume_test | bool
+      - pve_sunbeam_confirm_external_changes | bool
     fail_msg: >-
       This stage creates and (by default) deletes OpenStack test resources:
-      image {{ sunbeam_vm_test_image_name }} / volume {{ sunbeam_vm_test_volume_name }} / server {{ sunbeam_vm_test_name }}.
-      To confirm, pass -e sunbeam_vm_volume_test=true -e sunbeam_confirm_external_changes=true.
+      image {{ pve_sunbeam_vm_test_image_name }} / volume {{ pve_sunbeam_vm_test_volume_name }} / server {{ pve_sunbeam_vm_test_name }}.
+      To confirm, pass -e pve_sunbeam_vm_volume_test=true -e pve_sunbeam_confirm_external_changes=true.
 
 - name: Run the end-to-end VM + volume test on the primary
   ansible.builtin.command:
     argv:
-      - "{{ sunbeam_pct_bin }}"
+      - "{{ pve_sunbeam_pct_bin }}"
       - exec
-      - "{{ sunbeam_primary_node.vmid }}"
+      - "{{ pve_sunbeam_primary_node.vmid }}"
       - --
       - bash
       - -s
     stdin: "{{ lookup('template', 'run-vm-volume-test.sh.j2') }}"
-  register: sunbeam_vm_test_run
-  async: "{{ sunbeam_configure_timeout }}"
-  poll: "{{ sunbeam_poll_interval }}"
+  register: pve_sunbeam_vm_test_run
+  async: "{{ pve_sunbeam_configure_timeout }}"
+  poll: "{{ pve_sunbeam_poll_interval }}"
 
 - name: Parse the test summary
   ansible.builtin.set_fact:
-    sunbeam_vm_test_summary: >-
-      {{ dict((sunbeam_vm_test_run.stdout
+    pve_sunbeam_vm_test_summary: >-
+      {{ dict((pve_sunbeam_vm_test_run.stdout
               | regex_findall('(?s)=== SUMMARY ===\n(.*?)=== END SUMMARY ===') | join(''))
               | regex_findall('(?m)^([a-z_]+)=(.*)$')) }}
 
 - name: Assert the image uploaded successfully
   ansible.builtin.assert:
     that:
-      - sunbeam_vm_test_summary['image_status'] | default('') == 'active'
-    fail_msg: "cirros image did not become active: {{ sunbeam_vm_test_summary }}"
+      - pve_sunbeam_vm_test_summary['image_status'] | default('') == 'active'
+    fail_msg: "cirros image did not become active: {{ pve_sunbeam_vm_test_summary }}"
 
 - name: Assert the volume is available and landed on the Ceph backend
   ansible.builtin.assert:
     that:
-      - sunbeam_vm_test_summary['volume_status'] | default('') == 'available'
-      - "'cinder-volume-ceph' in (sunbeam_vm_test_summary['volume_host'] | default(''))"
+      - pve_sunbeam_vm_test_summary['volume_status'] | default('') == 'available'
+      - "'cinder-volume-ceph' in (pve_sunbeam_vm_test_summary['volume_host'] | default(''))"
     fail_msg: >-
-      The volume is not available on the ceph backend: {{ sunbeam_vm_test_summary }}.
+      The volume is not available on the ceph backend: {{ pve_sunbeam_vm_test_summary }}.
       Expected os-vol-host-attr:host to contain cinder-volume-ceph.
 
 - name: Assert the server booted from the volume
   ansible.builtin.assert:
     that:
-      - sunbeam_vm_test_summary['server_status'] | default('') == 'ACTIVE'
-      - (sunbeam_vm_test_summary['server_host'] | default('')) | length > 0
+      - pve_sunbeam_vm_test_summary['server_status'] | default('') == 'ACTIVE'
+      - (pve_sunbeam_vm_test_summary['server_host'] | default('')) | length > 0
     fail_msg: >-
-      The boot-from-volume VM did not become ACTIVE: {{ sunbeam_vm_test_summary }}.
-      Check {{ sunbeam_node_log_dir }}/vm-volume-test.log inside {{ sunbeam_primary_node.fqdn }}.
+      The boot-from-volume VM did not become ACTIVE: {{ pve_sunbeam_vm_test_summary }}.
+      Check {{ pve_sunbeam_node_log_dir }}/vm-volume-test.log inside {{ pve_sunbeam_primary_node.fqdn }}.
 
 - name: Assert the floating IP answers ICMP
   ansible.builtin.assert:
     that:
-      - (sunbeam_vm_test_summary['floating_ip'] | default('')) | length > 0
-      - sunbeam_vm_test_summary['ping_ok'] | default('') == 'yes'
+      - (pve_sunbeam_vm_test_summary['floating_ip'] | default('')) | length > 0
+      - pve_sunbeam_vm_test_summary['ping_ok'] | default('') == 'yes'
     fail_msg: >-
       The test server did not answer pings on its floating IP
-      ({{ sunbeam_vm_test_summary['floating_ip'] | default('none') }}):
-      {{ sunbeam_vm_test_summary['ping_output'] | default('') }}.
+      ({{ pve_sunbeam_vm_test_summary['floating_ip'] | default('none') }}):
+      {{ pve_sunbeam_vm_test_summary['ping_output'] | default('') }}.
       Check the OVN gateway chassis (br-ex uplink / patch port), the external
       network's SNAT rules and the security group rules. Full log:
-      {{ sunbeam_node_log_dir }}/vm-volume-test.log inside {{ sunbeam_primary_node.fqdn }}.
-  when: sunbeam_vm_test_ping | bool
+      {{ pve_sunbeam_node_log_dir }}/vm-volume-test.log inside {{ pve_sunbeam_primary_node.fqdn }}.
+  when: pve_sunbeam_vm_test_ping | bool
 
 - name: Report the end-to-end test result
   ansible.builtin.debug:
     msg:
-      - "image: {{ sunbeam_vm_test_image_name }} -> {{ sunbeam_vm_test_summary['image_status'] | default('?') }}"
-      - "volume: {{ sunbeam_vm_test_volume_name }} -> {{ sunbeam_vm_test_summary['volume_status'] | default('?') }} @ {{ sunbeam_vm_test_summary['volume_host'] | default('?') }}"
-      - "server: {{ sunbeam_vm_test_name }} -> {{ sunbeam_vm_test_summary['server_status'] | default('?') }} @ {{ sunbeam_vm_test_summary['server_host'] | default('?') }}"
-      - "floating ip: {{ (sunbeam_vm_test_summary['floating_ip'] | default('')) or '(not requested)' }} ping_ok={{ sunbeam_vm_test_summary['ping_ok'] | default('skipped') }}"
-      - "keep test resources: {{ sunbeam_vm_test_keep }}"
+      - "image: {{ pve_sunbeam_vm_test_image_name }} -> {{ pve_sunbeam_vm_test_summary['image_status'] | default('?') }}"
+      - "volume: {{ pve_sunbeam_vm_test_volume_name }} -> {{ pve_sunbeam_vm_test_summary['volume_status'] | default('?') }} @ {{ pve_sunbeam_vm_test_summary['volume_host'] | default('?') }}"
+      - "server: {{ pve_sunbeam_vm_test_name }} -> {{ pve_sunbeam_vm_test_summary['server_status'] | default('?') }} @ {{ pve_sunbeam_vm_test_summary['server_host'] | default('?') }}"
+      - "floating ip: {{ (pve_sunbeam_vm_test_summary['floating_ip'] | default('')) or '(not requested)' }} ping_ok={{ pve_sunbeam_vm_test_summary['ping_ok'] | default('skipped') }}"
+      - "keep test resources: {{ pve_sunbeam_vm_test_keep }}"

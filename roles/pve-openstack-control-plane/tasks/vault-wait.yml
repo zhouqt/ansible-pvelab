@@ -3,36 +3,36 @@
 - name: Probe the yoga Vault API, clearing the start-rate latch while it is down
   ansible.builtin.shell: |
     set -uo pipefail
-    out=$(curl -sk --max-time 5 "http://{{ pve_yoga_vault_address }}:8200/v1/sys/init") && rc=0 || rc=$?
+    out=$(curl -sk --max-time 5 "http://{{ pve_openstack_vault_address }}:8200/v1/sys/init") && rc=0 || rc=$?
     if [ "$rc" -ne 0 ]; then
-      pct exec {{ pve_yoga_vault_vmid }} -- systemctl reset-failed vault.service >/dev/null 2>&1 || true
-      pct exec {{ pve_yoga_vault_vmid }} -- systemctl start vault.service >/dev/null 2>&1 || true
+      pct exec {{ pve_openstack_vault_vmid }} -- systemctl reset-failed vault.service >/dev/null 2>&1 || true
+      pct exec {{ pve_openstack_vault_vmid }} -- systemctl start vault.service >/dev/null 2>&1 || true
       echo "VAULT-LATCH-CLEARED attempt failed, latch reset and service started" >&2
     fi
     printf '%s' "$out"
     exit "$rc"
   args:
     executable: /bin/bash
-  register: pve_yoga_vault_probe
-  changed_when: "'VAULT-LATCH-CLEARED' in (pve_yoga_vault_probe.stderr | default(''))"
+  register: pve_openstack_vault_probe
+  changed_when: "'VAULT-LATCH-CLEARED' in (pve_openstack_vault_probe.stderr | default(''))"
   failed_when: false
-  retries: "{{ pve_yoga_vault_probe_retries | default(18) }}"
+  retries: "{{ pve_openstack_vault_probe_retries | default(18) }}"
   delay: 10
-  until: pve_yoga_vault_probe.rc == 0
+  until: pve_openstack_vault_probe.rc == 0
 
 - name: Record the latest Vault API probe result
   ansible.builtin.set_fact:
-    pve_yoga_vault_init_state: "{{ pve_yoga_vault_probe }}"
+    pve_openstack_vault_init_state: "{{ pve_openstack_vault_probe }}"
 
 - name: Repair the co-located-leader grants and the vault unit before retrying
   ansible.builtin.include_tasks: vault-unlatch.yml
-  when: pve_yoga_vault_probe.rc != 0
+  when: pve_openstack_vault_probe.rc != 0
 
 - name: Wait again for the Vault API after repairing
   ansible.builtin.include_tasks: vault-wait.yml
   vars:
-    pve_yoga_vault_wait_attempt: "{{ (pve_yoga_vault_wait_attempt | default(1) | int) + 1 }}"
-    pve_yoga_vault_probe_retries: 9
+    pve_openstack_vault_wait_attempt: "{{ (pve_openstack_vault_wait_attempt | default(1) | int) + 1 }}"
+    pve_openstack_vault_probe_retries: 9
   when:
-    - pve_yoga_vault_probe.rc != 0
-    - (pve_yoga_vault_wait_attempt | default(1) | int) < (pve_yoga_vault_wait_attempts | default(4) | int)
+    - pve_openstack_vault_probe.rc != 0
+    - (pve_openstack_vault_wait_attempt | default(1) | int) < (pve_openstack_vault_wait_attempts | default(4) | int)

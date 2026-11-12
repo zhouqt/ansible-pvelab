@@ -1,11 +1,11 @@
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:
-  name: {{ pve_obs_hub_lb_pool_name }}
+  name: {{ pve_obs_cos_hub_lb_pool_name }}
   namespace: metallb-system
 spec:
   addresses:
-{% for address in pve_obs_hub_lb_pool_addresses %}
+{% for address in pve_obs_cos_hub_lb_pool_addresses %}
     - {{ address }}
 {% endfor %}
   autoAssign: true
@@ -13,8 +13,8 @@ spec:
 apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
 metadata:
-  name: {{ pve_obs_hub_lb_pool_name }}
+  name: {{ pve_obs_cos_hub_lb_pool_name }}
   namespace: metallb-system
 spec:
   ipAddressPools:
-    - {{ pve_obs_hub_lb_pool_name }}
+    - {{ pve_obs_cos_hub_lb_pool_name }}

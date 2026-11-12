@@ -3,8 +3,8 @@ set -u
 
 nic=${1:?usage: <nic> <gateway>}
 gateway=${2:?usage: <nic> <gateway>}
-api_host={{ sunbeam_control_plane_api_host }}
-api_port={{ sunbeam_control_plane_api_port }}
+api_host={{ pve_sunbeam_control_plane_api_host }}
+api_port={{ pve_sunbeam_control_plane_api_port }}
 dropin_name=50-sunbeam-control-plane.conf
 
 netfile=""

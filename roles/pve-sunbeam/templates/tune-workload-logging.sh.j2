@@ -1,8 +1,8 @@
 #!/bin/bash
 set -uo pipefail
 
-{% set keep_files = sunbeam_obs_logrotate_keep_files | int %}
-{% set maxage_days = sunbeam_obs_logrotate_maxage_days | int %}
+{% set keep_files = pve_sunbeam_obs_logrotate_keep_files | int %}
+{% set maxage_days = pve_sunbeam_obs_logrotate_maxage_days | int %}
 {% set maxage_minutes = maxage_days * 1440 %}
 
 {% set charm_patch %}

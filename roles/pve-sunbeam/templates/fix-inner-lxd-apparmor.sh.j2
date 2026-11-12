@@ -1,8 +1,8 @@
 #!/bin/bash
 set -uo pipefail
 
-user={{ sunbeam_node_user }}
-required={{ sunbeam_inner_lxd_raw_lxc }}
+user={{ pve_sunbeam_node_user }}
+required={{ pve_sunbeam_inner_lxd_raw_lxc }}
 
 lxc_bin=/snap/bin/lxc
 if [ ! -x "$lxc_bin" ]; then

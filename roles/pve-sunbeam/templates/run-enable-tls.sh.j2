@@ -1,16 +1,16 @@
 #!/bin/bash
 set -uo pipefail
 
-user={{ sunbeam_node_user }}
-log={{ sunbeam_node_log_dir }}/enable-tls.log
-mkdir -p {{ sunbeam_node_log_dir }}
+user={{ pve_sunbeam_node_user }}
+log={{ pve_sunbeam_node_log_dir }}/enable-tls.log
+mkdir -p {{ pve_sunbeam_node_log_dir }}
 
 endpoints=""
-{% for endpoint in sunbeam_tls_endpoints %}
+{% for endpoint in pve_sunbeam_tls_endpoints %}
 endpoints="$endpoints --endpoint {{ endpoint }}"
 {% endfor %}
 
-output="$(su - "$user" -c "sunbeam enable tls {{ sunbeam_tls_provider }}${endpoints}" 2>&1)"
+output="$(su - "$user" -c "sunbeam enable tls {{ pve_sunbeam_tls_provider }}${endpoints}" 2>&1)"
 rc=$?
 printf '%s\n' "$output" | tee "$log"
 echo "enable tls rc=$rc (log: $log)"

@@ -78,7 +78,7 @@ def main():
         if not re.search(pattern, conf):
             errors.append(
                 "the conf of vmid %d no longer references %s (the topology changed after the savepoint;"
-                "align it with -e pve_ussuri_savepoint_restore_conf=true, or handle it by hand)"
+                "align it with -e pve_env1_savepoint_restore_conf=true, or handle it by hand)"
                 % (vol["vmid"], vol["origin"]))
 
     emit({"ok": not errors, "volumes": volumes, "errors": errors, "warnings": warnings},

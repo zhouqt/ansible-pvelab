@@ -4,13 +4,13 @@
   ansible.builtin.shell: |
     set -uo pipefail
     jrun() {
-      {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
-        su - {{ pve_obs_hub_juju_client_user }} -c "$1"
+      {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_juju_client_vmid }} -- \
+        su - {{ pve_obs_cos_hub_juju_client_user }} -c "$1"
     }
     rc=0
-    for model in {{ pve_obs_hub_verify_models | join(' ') }}; do
+    for model in {{ pve_obs_cos_hub_verify_models | join(' ') }}; do
       tmp=$(mktemp)
-      jrun "{{ pve_obs_hub_juju_cmd }} status -m {{ pve_obs_hub_cos_controller }}:admin/$model --format json" >"$tmp"
+      jrun "{{ pve_obs_cos_hub_juju_cmd }} status -m {{ pve_obs_cos_hub_cos_controller }}:admin/$model --format json" >"$tmp"
       python3 - "$model" "$tmp" <<'PY'
     import json, sys
     model, path = sys.argv[1], sys.argv[2]
@@ -36,66 +36,66 @@
     exit "$rc"
   args:
     executable: /bin/bash
-  register: pve_obs_hub_units
-  until: pve_obs_hub_units.rc == 0
-  retries: "{{ (pve_obs_hub_settle_budget_seconds // pve_obs_hub_settle_interval) | int }}"
-  delay: "{{ pve_obs_hub_settle_interval }}"
-  failed_when: pve_obs_hub_units.rc != 0
+  register: pve_obs_cos_hub_units
+  until: pve_obs_cos_hub_units.rc == 0
+  retries: "{{ (pve_obs_cos_hub_settle_budget_seconds // pve_obs_cos_hub_settle_interval) | int }}"
+  delay: "{{ pve_obs_cos_hub_settle_interval }}"
+  failed_when: pve_obs_cos_hub_units.rc != 0
   changed_when: false
 
 - name: Show the hub unit inventory
   ansible.builtin.debug:
-    msg: "{{ pve_obs_hub_units.stdout_lines }}"
+    msg: "{{ pve_obs_cos_hub_units.stdout_lines }}"
 
 - name: Require every COS PVC to use the expected StorageClass
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_k8s_vmid }}"
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - --
-      - "{{ pve_obs_hub_k8s_bin }}"
+      - "{{ pve_obs_cos_hub_k8s_bin }}"
       - kubectl
       - get
       - pvc
       - -n
-      - "{{ pve_obs_hub_cos_model }}"
+      - "{{ pve_obs_cos_hub_cos_model }}"
       - -o
       - jsonpath={range .items[*]}{.metadata.name}={.spec.storageClassName}{"\n"}{end}
-  register: pve_obs_hub_pvc_sc
+  register: pve_obs_cos_hub_pvc_sc
   changed_when: false
 
 - name: Fail when a COS PVC is bound to another StorageClass
   ansible.builtin.assert:
     that: >-
-      pve_obs_hub_pvc_sc.stdout_lines
-      | reject('search', '={{ pve_obs_hub_storage_class }}$') | list | length == 0
+      pve_obs_cos_hub_pvc_sc.stdout_lines
+      | reject('search', '={{ pve_obs_cos_hub_storage_class }}$') | list | length == 0
     fail_msg: >-
-      some PVCs do not use {{ pve_obs_hub_storage_class }}: {{ pve_obs_hub_pvc_sc.stdout_lines }}.
+      some PVCs do not use {{ pve_obs_cos_hub_storage_class }}: {{ pve_obs_cos_hub_pvc_sc.stdout_lines }}.
       the StorageClass baked into the cloud definition is wrong => destroy the cos-lite model and
-      `juju remove-k8s {{ pve_obs_hub_k8s_cloud }} -c {{ pve_obs_hub_cos_controller }}`
-      then re-run this role (add-k8s passes --storage {{ pve_obs_hub_storage_class }}).
+      `juju remove-k8s {{ pve_obs_cos_hub_k8s_cloud }} -c {{ pve_obs_cos_hub_cos_controller }}`
+      then re-run this role (add-k8s passes --storage {{ pve_obs_cos_hub_storage_class }}).
 
 - name: Ask traefik for the proxied endpoint URLs
   ansible.builtin.command:
     argv:
-      - "{{ pve_obs_hub_pct_bin }}"
+      - "{{ pve_obs_cos_hub_pct_bin }}"
       - exec
-      - "{{ pve_obs_hub_juju_client_vmid }}"
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
       - --
       - su
       - "-"
-      - "{{ pve_obs_hub_juju_client_user }}"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
       - -c
       - >-
-        {{ pve_obs_hub_juju_cmd }} run -m {{ pve_obs_hub_cos_model_ref }} traefik/0
+        {{ pve_obs_cos_hub_juju_cmd }} run -m {{ pve_obs_cos_hub_cos_model_ref }} traefik/0
         show-proxied-endpoints --format=json
-  register: pve_obs_hub_proxied_raw
+  register: pve_obs_cos_hub_proxied_raw
   changed_when: false
 
 - name: Extract the proxied endpoint map
   vars:
-    obs_run_raw: "{{ pve_obs_hub_proxied_raw.stdout | from_json }}"
+    obs_run_raw: "{{ pve_obs_cos_hub_proxied_raw.stdout | from_json }}"
     obs_run_entry: >-
       {{ (obs_run_raw.values() | list | first) if (obs_run_raw is mapping)
          else (obs_run_raw | first) }}
@@ -106,35 +106,35 @@
     obs_proxied_raw: >-
       {{ (obs_run_payload_json | from_json)['proxied-endpoints'] | default('{}', true) }}
   ansible.builtin.set_fact:
-    pve_obs_hub_proxied_map: >-
+    pve_obs_cos_hub_proxied_map: >-
       {{ obs_proxied_raw if (obs_proxied_raw is mapping) else (obs_proxied_raw | from_json) }}
 
 - name: Require traefik to publish its own entry point and the Prometheus route
   ansible.builtin.assert:
     that:
-      - pve_obs_hub_proxied_map['traefik'] is defined
-      - pve_obs_hub_proxied_map['traefik']['url'] | length > 0
-      - pve_obs_hub_proxied_map | dict2items | selectattr('key', 'search', 'prometheus') | list | length > 0
+      - pve_obs_cos_hub_proxied_map['traefik'] is defined
+      - pve_obs_cos_hub_proxied_map['traefik']['url'] | length > 0
+      - pve_obs_cos_hub_proxied_map | dict2items | selectattr('key', 'search', 'prometheus') | list | length > 0
     fail_msg: >-
       traefik publishes no ingress URL, or prometheus is not attached (proxied-endpoints =
-      {{ pve_obs_hub_proxied_map }}). Check the ingress relation in the bundle, and
+      {{ pve_obs_cos_hub_proxied_map }}). Check the ingress relation in the bundle, and
       whether `juju config traefik kubernetes-service-type=NodePort` took effect.
 
 - name: Record the Grafana and Prometheus URLs
   ansible.builtin.set_fact:
-    pve_obs_hub_traefik_url: "{{ pve_obs_hub_proxied_map['traefik']['url'] }}"
-    pve_obs_hub_prometheus_url: >-
-      {{ (pve_obs_hub_proxied_map | dict2items | selectattr('key', 'search', 'prometheus') | first).value.url }}
-    pve_obs_hub_grafana_url: >-
-      {{ ((pve_obs_hub_proxied_map | dict2items | selectattr('key', 'search', 'grafana') | first).value.url)
-         if (pve_obs_hub_proxied_map | dict2items | selectattr('key', 'search', 'grafana') | list | length > 0)
-         else (pve_obs_hub_proxied_map['traefik']['url'] ~ '/' ~ pve_obs_hub_cos_model ~ '-grafana') }}
+    pve_obs_cos_hub_traefik_url: "{{ pve_obs_cos_hub_proxied_map['traefik']['url'] }}"
+    pve_obs_cos_hub_prometheus_url: >-
+      {{ (pve_obs_cos_hub_proxied_map | dict2items | selectattr('key', 'search', 'prometheus') | first).value.url }}
+    pve_obs_cos_hub_grafana_url: >-
+      {{ ((pve_obs_cos_hub_proxied_map | dict2items | selectattr('key', 'search', 'grafana') | first).value.url)
+         if (pve_obs_cos_hub_proxied_map | dict2items | selectattr('key', 'search', 'grafana') | list | length > 0)
+         else (pve_obs_cos_hub_proxied_map['traefik']['url'] ~ '/' ~ pve_obs_cos_hub_cos_model ~ '-grafana') }}
 
 - name: Show the hub entry points
   ansible.builtin.debug:
     msg:
-      - "Grafana    : {{ pve_obs_hub_grafana_url }}"
-      - "Prometheus : {{ pve_obs_hub_prometheus_url }}"
+      - "Grafana    : {{ pve_obs_cos_hub_grafana_url }}"
+      - "Prometheus : {{ pve_obs_cos_hub_prometheus_url }}"
 
 - name: Require Grafana to answer over the hub network
   ansible.builtin.command:
@@ -147,10 +147,10 @@
       - "%{http_code}"
       - --max-time
       - "20"
-      - "{{ pve_obs_hub_grafana_url }}"
-  register: pve_obs_hub_grafana_probe
-  until: pve_obs_hub_grafana_probe.stdout | trim in ['200', '302', '303']
-  failed_when: pve_obs_hub_grafana_probe.stdout | trim not in ['200', '302', '303']
+      - "{{ pve_obs_cos_hub_grafana_url }}"
+  register: pve_obs_cos_hub_grafana_probe
+  until: pve_obs_cos_hub_grafana_probe.stdout | trim in ['200', '302', '303']
+  failed_when: pve_obs_cos_hub_grafana_probe.stdout | trim not in ['200', '302', '303']
   retries: 30
   delay: 10
   changed_when: false
@@ -160,13 +160,13 @@
     set -euo pipefail
     curl -s --max-time 20 --get \
       --data-urlencode 'query=count(node_uname_info)' \
-      "{{ pve_obs_hub_prometheus_url }}/api/v1/query" \
+      "{{ pve_obs_cos_hub_prometheus_url }}/api/v1/query" \
       | python3 -c 'import json,sys; d=json.load(sys.stdin); r=d["data"]["result"]; print(int(float(r[0]["value"][1])) if r else 0)'
   args:
     executable: /bin/bash
-  register: pve_obs_hub_node_metric_count
-  until: pve_obs_hub_node_metric_count.stdout | trim | int > 0
-  failed_when: pve_obs_hub_node_metric_count.stdout | trim | int == 0
+  register: pve_obs_cos_hub_node_metric_count
+  until: pve_obs_cos_hub_node_metric_count.stdout | trim | int > 0
+  failed_when: pve_obs_cos_hub_node_metric_count.stdout | trim | int == 0
   retries: 30
   delay: 15
   changed_when: false
@@ -176,13 +176,13 @@
     set -euo pipefail
     curl -s --max-time 20 --get \
       --data-urlencode 'query=count(up{job=~".*cos-proxy.*"})' \
-      "{{ pve_obs_hub_prometheus_url }}/api/v1/query" \
+      "{{ pve_obs_cos_hub_prometheus_url }}/api/v1/query" \
       | python3 -c 'import json,sys; d=json.load(sys.stdin); r=d["data"]["result"]; print(int(float(r[0]["value"][1])) if r else 0)'
   args:
     executable: /bin/bash
-  register: pve_obs_hub_cos_proxy_targets
-  until: pve_obs_hub_cos_proxy_targets.stdout | trim | int > 0
-  failed_when: pve_obs_hub_cos_proxy_targets.stdout | trim | int == 0
+  register: pve_obs_cos_hub_cos_proxy_targets
+  until: pve_obs_cos_hub_cos_proxy_targets.stdout | trim | int > 0
+  failed_when: pve_obs_cos_hub_cos_proxy_targets.stdout | trim | int == 0
   retries: 20
   delay: 15
   changed_when: false
@@ -190,9 +190,9 @@
 - name: Report the P0 acceptance evidence
   ansible.builtin.debug:
     msg:
-      - "COS Lite model : {{ pve_obs_hub_cos_model_ref }}"
-      - "Offers         : {% for o in pve_obs_hub_offers_declared %}{{ o.app }}:{{ o.endpoint }}{% if not loop.last %}, {% endif %}{% endfor %}"
-      - "Grafana        : {{ pve_obs_hub_grafana_url }}"
-      - "Prometheus     : {{ pve_obs_hub_prometheus_url }}"
-      - "node_* series  : {{ pve_obs_hub_node_metric_count.stdout | trim }} (the hub nodes' node_exporter is reporting)"
-      - "cos-proxy targets: {{ pve_obs_hub_cos_proxy_targets.stdout | trim }} up"
+      - "COS Lite model : {{ pve_obs_cos_hub_cos_model_ref }}"
+      - "Offers         : {% for o in pve_obs_cos_hub_offers_declared %}{{ o.app }}:{{ o.endpoint }}{% if not loop.last %}, {% endif %}{% endfor %}"
+      - "Grafana        : {{ pve_obs_cos_hub_grafana_url }}"
+      - "Prometheus     : {{ pve_obs_cos_hub_prometheus_url }}"
+      - "node_* series  : {{ pve_obs_cos_hub_node_metric_count.stdout | trim }} (the hub nodes' node_exporter is reporting)"
+      - "cos-proxy targets: {{ pve_obs_cos_hub_cos_proxy_targets.stdout | trim }} up"

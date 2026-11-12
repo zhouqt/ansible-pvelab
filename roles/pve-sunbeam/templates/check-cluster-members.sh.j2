@@ -1,7 +1,7 @@
 #!/bin/bash
 set -u
 
-user={{ sunbeam_node_user }}
+user={{ pve_sunbeam_node_user }}
 out=$(su - "$user" -c 'sunbeam cluster list --format yaml' 2>&1)
 rc=$?
 
@@ -16,7 +16,7 @@ if [ -z "$out" ]; then
 fi
 echo "membership=ok"
 
-{% for node in sunbeam_nodes %}
+{% for node in pve_sunbeam_nodes %}
 if printf '%s' "$out" | grep -qw '{{ node.hostname }}'; then
     echo "member {{ node.fqdn }}=yes"
 else
@@ -29,7 +29,7 @@ mc=$(curl -s --unix-socket /var/snap/openstack/common/state/control.socket \
 
 if [ -z "$mc" ]; then
     echo "microcluster=unreadable"
-{% for node in sunbeam_nodes %}
+{% for node in pve_sunbeam_nodes %}
     echo "microcluster {{ node.fqdn }}=unknown"
 {% endfor %}
     exit 0
@@ -47,14 +47,14 @@ for member in data.get("metadata") or []:
 
 if [ -z "$mc_names" ]; then
     echo "microcluster=unreadable"
-{% for node in sunbeam_nodes %}
+{% for node in pve_sunbeam_nodes %}
     echo "microcluster {{ node.fqdn }}=unknown"
 {% endfor %}
     exit 0
 fi
 echo "microcluster=ok"
 
-{% for node in sunbeam_nodes %}
+{% for node in pve_sunbeam_nodes %}
 if printf '%s\n' "$mc_names" | grep -qxF '{{ node.fqdn }}'; then
     echo "microcluster {{ node.fqdn }}=yes"
 else

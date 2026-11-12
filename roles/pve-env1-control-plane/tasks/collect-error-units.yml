@@ -2,14 +2,14 @@
 
 - name: Collect the units in the error state and the units to restart
   ansible.builtin.set_fact:
-    pve_ussuri_recover: "{{ pve_ussuri_recover_doc | from_json }}"
+    pve_env1_recover: "{{ pve_env1_recover_doc | from_json }}"
   vars:
-    pve_ussuri_recover_doc: >-
+    pve_env1_recover_doc: >-
       {%- set units = [] -%}
       {%- set restart = [] -%}
       {%- set deferred = [] -%}
-      {%- set deferred_apps = pve_ussuri_recover_deferred_apps | default([]) -%}
-      {%- for app_item in ((pve_ussuri_status_raw | from_json).applications | dict2items) -%}
+      {%- set deferred_apps = pve_env1_recover_deferred_apps | default([]) -%}
+      {%- for app_item in ((pve_env1_status_raw | from_json).applications | dict2items) -%}
       {%- for unit_item in ((app_item.value.units | default({})) | dict2items) -%}
       {%- if ((unit_item.value['workload-status'] | default({})).current | default('')) == 'error' -%}
       {%- if app_item.key in deferred_apps -%}

@@ -4,15 +4,15 @@
   ansible.builtin.shell: |
     set -uo pipefail
     jrun() {
-      {{ pve_obs_hub_pct_bin }} exec {{ pve_obs_hub_juju_client_vmid }} -- \
-        su - {{ pve_obs_hub_juju_client_user }} -c "$1"
+      {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_juju_client_vmid }} -- \
+        su - {{ pve_obs_cos_hub_juju_client_user }} -c "$1"
     }
-    budget={{ obs_wait_budget | default(pve_obs_hub_settle_budget_seconds) }}
-    interval={{ obs_wait_interval | default(pve_obs_hub_settle_interval) }}
+    budget={{ obs_wait_budget | default(pve_obs_cos_hub_settle_budget_seconds) }}
+    interval={{ obs_wait_interval | default(pve_obs_cos_hub_settle_interval) }}
     deadline=$(( $(date +%s) + budget ))
     last="no status yet"
     while :; do
-      out=$(jrun "{{ obs_wait_juju_cmd | default(pve_obs_hub_juju_cmd) }} status -m {{ obs_wait_model_ref }} --format json" 2>/dev/null) || out=""
+      out=$(jrun "{{ obs_wait_juju_cmd | default(pve_obs_cos_hub_juju_cmd) }} status -m {{ obs_wait_model_ref }} --format json" 2>/dev/null) || out=""
       if [ -n "$out" ]; then
         report=$(printf '%s' "$out" | python3 -c "
     import json, sys
