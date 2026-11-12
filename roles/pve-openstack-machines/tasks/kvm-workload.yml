@@ -19,43 +19,61 @@
   changed_when: false
 
 - name: Create KVM workload VM
-  ansible.builtin.shell: |
-    set -euo pipefail
-    cd /var/tmp
-    image={{ pve_openstack_kvm_image }}
-    if [ ! -s "$image" ]; then
-      curl -fsSLo "$image" "{{ pve_openstack_kvm_image_url }}"
-    fi
-    qm create {{ pve_openstack_kvm_workload.vmid }} \
-      --name {{ pve_openstack_kvm_workload.hostname }} \
-      --ostype l26 --cores {{ pve_openstack_kvm_workload.cores }} \
-      --memory {{ pve_openstack_kvm_workload.memory }} --balloon 0 \
-      --cpu host --sockets 1 \
-      --net0 virtio,bridge={{ pve_openstack_network_spaces[0].bridge }},firewall=0 \
-      --net1 virtio,bridge={{ pve_openstack_network_spaces[1].bridge }},firewall=0 \
-      --net2 virtio,bridge={{ pve_openstack_network_spaces[2].bridge }},firewall=0 \
-      --net3 virtio,bridge={{ pve_openstack_network_spaces[3].bridge }},firewall=0 \
-      --net4 virtio,bridge={{ pve_openstack_compute_uplink_bridge }},firewall=0 \
-      --onboot 1 --startup order=3 --agent 1 --serial0 socket --vga std
-    qm importdisk {{ pve_openstack_kvm_workload.vmid }} "$image" '{{ pve_common_storage }}'
-    qm set {{ pve_openstack_kvm_workload.vmid }} --scsihw virtio-scsi-pci \
-      --scsi0 '{{ pve_common_storage }}:vm-{{ pve_openstack_kvm_workload.vmid }}-disk-0,iothread=1,discard=on'
-    qm resize {{ pve_openstack_kvm_workload.vmid }} scsi0 {{ pve_openstack_kvm_workload.disk }}G
-    qm set {{ pve_openstack_kvm_workload.vmid }} --ide2 '{{ pve_common_storage }}:cloudinit' --boot order=scsi0
-    qm set {{ pve_openstack_kvm_workload.vmid }} \
-      --ciuser ubuntu --sshkeys /root/juju-yoga-client.pub \
-      --ipconfig0 ip={{ pve_openstack_public_prefix }}.{{ pve_openstack_kvm_workload.vmid - pve_openstack_ip_offset }}/24,gw={{ pve_openstack_public_gateway }} \
-      --ipconfig1 ip={{ pve_openstack_workload_secondary_network_ips[pve_openstack_kvm_workload.vmid | string].oam }}/24 \
-      --ipconfig2 ip={{ pve_openstack_workload_secondary_network_ips[pve_openstack_kvm_workload.vmid | string].internal }}/24 \
-      --ipconfig3 ip={{ pve_openstack_workload_secondary_network_ips[pve_openstack_kvm_workload.vmid | string].storage }}/24 \
-      --nameserver 8.8.8.8
-  args:
-    executable: /bin/bash
+  ansible.builtin.command:
+    argv:
+      - "{{ repo_root }}/scripts/openstack/create-kvm-workload.sh"
+      - --vmid
+      - "{{ pve_openstack_kvm_workload.vmid }}"
+      - --name
+      - "{{ pve_openstack_kvm_workload.hostname }}"
+      - --cores
+      - "{{ pve_openstack_kvm_workload.cores }}"
+      - --memory
+      - "{{ pve_openstack_kvm_workload.memory }}"
+      - --disk
+      - "{{ pve_openstack_kvm_workload.disk }}"
+      - --storage
+      - "{{ pve_common_storage }}"
+      - --image
+      - "{{ pve_openstack_kvm_image }}"
+      - --image-url
+      - "{{ pve_openstack_kvm_image_url }}"
+      - --bridge0
+      - "{{ pve_openstack_network_spaces[0].bridge }}"
+      - --bridge1
+      - "{{ pve_openstack_network_spaces[1].bridge }}"
+      - --bridge2
+      - "{{ pve_openstack_network_spaces[2].bridge }}"
+      - --bridge3
+      - "{{ pve_openstack_network_spaces[3].bridge }}"
+      - --bridge4
+      - "{{ pve_openstack_compute_uplink_bridge }}"
+      - --ciuser
+      - ubuntu
+      - --sshkeys
+      - /root/juju-yoga-client.pub
+      - --ip0
+      - "{{ pve_openstack_public_prefix }}.{{ pve_openstack_kvm_workload.vmid - pve_openstack_ip_offset }}/24"
+      - --gw0
+      - "{{ pve_openstack_public_gateway }}"
+      - --ip1
+      - "{{ pve_openstack_workload_secondary_network_ips[pve_openstack_kvm_workload.vmid | string].oam }}/24"
+      - --ip2
+      - "{{ pve_openstack_workload_secondary_network_ips[pve_openstack_kvm_workload.vmid | string].internal }}/24"
+      - --ip3
+      - "{{ pve_openstack_workload_secondary_network_ips[pve_openstack_kvm_workload.vmid | string].storage }}/24"
+      - --nameserver
+      - 8.8.8.8
+      - --startup-order
+      - "3"
+      - --apply
   environment:
     HTTP_PROXY: "{{ pve_openstack_http_proxy }}"
     HTTPS_PROXY: "{{ pve_openstack_https_proxy }}"
     http_proxy: "{{ pve_openstack_http_proxy }}"
     https_proxy: "{{ pve_openstack_https_proxy }}"
+  register: pve_openstack_kvm_create
+  changed_when: "'CREATED:' in pve_openstack_kvm_create.stdout"
   when: pve_openstack_kvm_status.rc != 0
 
 - name: Read configuration of the KVM workload VM

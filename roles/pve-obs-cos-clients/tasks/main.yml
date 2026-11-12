@@ -43,62 +43,33 @@
           .get('admin/' ~ pve_openstack_model_name, {})
           .get('uuid', '')) | default('', true) }}
 
+- name: Read the status of the environment model
+  ansible.builtin.command:
+    argv:
+      - "{{ pve_obs_cos_hub_pct_bin }}"
+      - exec
+      - "{{ pve_obs_cos_hub_juju_client_vmid }}"
+      - --
+      - su
+      - "-"
+      - "{{ pve_obs_cos_hub_juju_client_user }}"
+      - -c
+      - "{{ pve_openstack_obs_juju_cmd }} status -m {{ pve_openstack_obs_model }} --format json"
+  register: pve_openstack_obs_status
+  changed_when: false
+
 - name: Plan the COS wiring against the applications actually deployed
-  ansible.builtin.shell: |
-    set -uo pipefail
-    status=$(mktemp)
-    {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_juju_client_vmid }} -- \
-      su - {{ pve_obs_cos_hub_juju_client_user }} -c \
-      "{{ pve_openstack_obs_juju_cmd }} status -m {{ pve_openstack_obs_model }} --format json" > "$status"
-    python3 - "$status" "{{ lma_nrpe_targets | join(',') }}" "{{ pve_openstack_obs_place_on }}" <<'PY'
-    import json, sys
-    doc = json.load(open(sys.argv[1]))
-    targets = [t for t in sys.argv[2].split(',') if t]
-    place_on = sys.argv[3]
-    apps = doc.get('applications') or {}
-    saas = doc.get('application-endpoints') or {}
-
-    def is_principal(name):
-        return 'subordinate-to' not in apps[name]
-
-    def endpoints(name):
-        return set((apps.get(name) or {}).get('endpoint-bindings') or {})
-
-    present = sorted(a for a in targets if a in apps)
-    principals = [a for a in present if is_principal(a)]
-
-    machine_of = {}
-    for name in principals:
-        for unit in ((apps.get(name) or {}).get('units') or {}).values():
-            if unit.get('machine') is not None:
-                machine_of[name] = unit.get('machine')
-                break
-    place_machine = machine_of.get(place_on)
-    if place_machine is None and machine_of:
-        place_on = sorted(machine_of)[0]
-        place_machine = machine_of[place_on]
-
-    print(json.dumps({
-        'app_count': len(apps),
-        'present_targets': present,
-        'general_info': principals,
-        'missing_targets': sorted(a for a in targets if a not in apps),
-        'keystone_machine': machine_of.get('keystone'),
-        'keystone_identity_admin': 'identity-admin' in endpoints('keystone'),
-        'place_on': place_on,
-        'place_machine': place_machine,
-        'has_nrpe': 'nrpe' in apps,
-        'has_cos_proxy': 'cos-proxy' in apps,
-        'has_grafana_agent': 'grafana-agent' in apps,
-        'has_openstack_exporter': 'openstack-exporter' in apps,
-        'consumed': sorted(k for k in saas),
-    }))
-    PY
-    rc=$?
-    rm -f "$status"
-    exit "$rc"
-  args:
-    executable: /bin/bash
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ repo_root }}/scripts/obs/plan-cos-wiring.py"
+      - --status-json
+      - "-"
+      - --targets
+      - "{{ lma_nrpe_targets | join(',') }}"
+      - --place-on
+      - "{{ pve_openstack_obs_place_on }}"
+    stdin: "{{ pve_openstack_obs_status.stdout }}"
   register: pve_openstack_obs_plan_raw
   changed_when: false
 

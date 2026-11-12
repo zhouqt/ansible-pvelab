@@ -185,33 +185,18 @@
 
 - name: Apply the containerd proxy drop-in inside CT {{ pve_obs_cos_hub_k8s_vmid }}
   when: pve_obs_cos_hub_http_proxy | length > 0
-  ansible.builtin.shell: |
-    set -euo pipefail
-    {{ pve_obs_cos_hub_pct_bin }} push {{ pve_obs_cos_hub_k8s_vmid }} \
-      /root/pve-obs-hub-containerd-proxy.conf /root/.pve-obs-hub-containerd-proxy.conf --perms 0644
-    target=/etc/systemd/system/snap.k8s.containerd.service.d/10-proxy.conf
-    if {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_k8s_vmid }} -- \
-         bash -c "cmp -s /root/.pve-obs-hub-containerd-proxy.conf $target"; then
-      echo "PROXY-UNCHANGED"
-      exit 0
-    fi
-    {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_k8s_vmid }} -- bash -c \
-      "install -D -m 0644 /root/.pve-obs-hub-containerd-proxy.conf $target \
-       && systemctl daemon-reload && systemctl restart snap.k8s.containerd"
-    for _ in $(seq 1 30); do
-      if {{ pve_obs_cos_hub_pct_bin }} exec {{ pve_obs_cos_hub_k8s_vmid }} -- \
-           systemctl is-active --quiet snap.k8s.containerd; then
-        echo "PROXY-UPDATED"
-        exit 0
-      fi
-      sleep 2
-    done
-    echo "containerd did not come back after the proxy drop-in" >&2
-    exit 1
-  args:
-    executable: /bin/bash
+  ansible.builtin.command:
+    argv:
+      - "{{ repo_root }}/scripts/obs/ct-containerd-proxy.sh"
+      - --vmid
+      - "{{ pve_obs_cos_hub_k8s_vmid }}"
+      - --dropin
+      - /root/pve-obs-hub-containerd-proxy.conf
+      - --pct
+      - "{{ pve_obs_cos_hub_pct_bin }}"
+      - --apply
   register: pve_obs_cos_hub_containerd_proxy
-  changed_when: "'PROXY-UPDATED' in pve_obs_cos_hub_containerd_proxy.stdout"
+  changed_when: "'CHANGED:containerd' in pve_obs_cos_hub_containerd_proxy.stdout"
 
 - name: Stage the local-path provisioner manifest on the PVE host
   ansible.builtin.copy:

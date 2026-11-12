@@ -457,39 +457,33 @@
     mode: "0700"
 
 - name: Create missing Juju workload LXC containers
-  ansible.builtin.shell: |
-    set -euo pipefail
-    vmid={{ item.vmid }}
-    hostname={{ item.hostname }}
-    ip={{ item.ip }}
-    tags={{ item.tags }}
-    if pct config "$vmid" >/dev/null 2>&1; then
-      echo "EXISTS-SKIP $vmid $hostname"
-      exit 0
-    fi
-    networks=(--net0 "name=eth0,bridge={{ pve_env1_juju_network_spaces[0].bridge }},ip=${ip}/24,gw={{ pve_env1_gateway }}")
-    if [[ "$tags" == *openstack* ]]; then
-      networks+=(
-        --net1 "name=eth1,bridge={{ pve_env1_juju_network_spaces[1].bridge }},ip={{ item.secondary_networks.oam }}/24"
-        --net2 "name=eth2,bridge={{ pve_env1_juju_network_spaces[2].bridge }},ip={{ item.secondary_networks.internal }}/24"
-        --net3 "name=eth3,bridge={{ pve_env1_juju_network_spaces[3].bridge }},ip={{ item.secondary_networks.storage }}/24"
-      )
-      if [[ "{{ item.uplink | bool }}" == "True" ]]; then
-        networks+=(--net4 "name={{ pve_env1_compute_uplink_guest_interface }},bridge={{ pve_env1_compute_uplink_bridge }},ip=manual")
-      fi
-    fi
-    pct create "$vmid" '{{ pve_env1_focal_template }}' \
-      --hostname "$hostname" --ostype ubuntu --cores 2 --memory 4096 --swap 0 \
-      --rootfs '{{ pve_common_storage }}:16' --unprivileged 0 --features nesting=1,fuse=1 \
-      "${networks[@]}" \
-      --nameserver 8.8.8.8 "$tags" --onboot 1 --startup 'order=3' --start 0 \
-      >"/var/tmp/ctcreate-${vmid}.log" 2>&1
-    echo "CREATE-OK $vmid $hostname"
-  args:
-    executable: /bin/bash
+  ansible.builtin.command:
+    argv: >-
+      {{ [repo_root ~ '/scripts/env1/create-workload-ct.sh',
+          '--vmid', (item.vmid | string),
+          '--hostname', item.hostname,
+          '--ip', item.ip,
+          '--gateway', pve_env1_gateway,
+          '--template', pve_env1_focal_template,
+          '--storage', pve_common_storage,
+          '--tags', item.tags,
+          '--bridge0', pve_env1_juju_network_spaces[0].bridge,
+          '--bridge1', pve_env1_juju_network_spaces[1].bridge,
+          '--bridge2', pve_env1_juju_network_spaces[2].bridge,
+          '--bridge3', pve_env1_juju_network_spaces[3].bridge,
+          '--oam-ip', item.secondary_networks.oam,
+          '--internal-ip', item.secondary_networks.internal,
+          '--storage-ip', item.secondary_networks.storage,
+          '--apply']
+         + (['--openstack'] if ('openstack' in item.tags) else [])
+         + (['--uplink', '--uplink-interface', pve_env1_compute_uplink_guest_interface,
+             '--uplink-bridge', pve_env1_compute_uplink_bridge]
+            if (item.uplink | bool) else []) }}
   loop: "{{ pve_env1_workload_containers }}"
   loop_control:
     label: "{{ item.vmid }} {{ item.hostname }} {{ item.ip }}"
+  register: pve_env1_create_ct
+  changed_when: "'CREATED:' in pve_env1_create_ct.stdout"
 
 - name: Read compute CT configurations after optional uplink NIC addition or creation
   ansible.builtin.command: "pct config {{ item }}"

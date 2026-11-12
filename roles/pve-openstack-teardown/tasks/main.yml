@@ -196,77 +196,17 @@
     or 'ISSUE-DISCARDS value=1' not in (pve_openstack_teardown_issue_discards.stdout | default(''))
 
 - name: Tear down the yoga OSD thin volumes on the host
-  ansible.builtin.shell: |
-    set -u
-    vg="{{ pve_openstack_osd_thinpool_vg }}"
-    prefix="{{ pve_openstack_osd_lv_prefix }}"
-    remove_lv={{ 1 if (pve_openstack_teardown_remove_osd_files | bool) else 0 }}
-    discard={{ 1 if (pve_openstack_teardown_discard_lvs | bool) else 0 }}
-    changed=0
-    trimmed=0
-    for idx in {{ pve_openstack_teardown_osd_indices | join(' ') }}; do
-      lv="$prefix-$idx"
-
-      unit="/etc/systemd/system/ceph-osd-lv-$idx.service"
-      if [ -f "$unit" ]; then
-        systemctl disable --now "ceph-osd-lv-$idx.service" >/dev/null 2>&1 || true
-        rm -f "$unit"
-        changed=1
-      fi
-
-      if ! lvs "$vg/$lv" >/dev/null 2>&1; then
-        echo "idx $idx: LV $vg/$lv does not exist (already torn down)"
-        continue
-      fi
-
-      dmpath=""
-      [ -e "/dev/$vg/$lv" ] && dmpath=$(readlink -f "/dev/$vg/$lv" 2>/dev/null || true)
-      [ -n "$dmpath" ] || dmpath=$(lvs --noheadings -o lv_dm_path "$vg/$lv" 2>/dev/null | tr -d ' ')
-      if [ -n "$dmpath" ] && [ -e "$dmpath" ]; then
-        dmb=$(basename "$dmpath")
-        for h in $(ls "/sys/block/$dmb/holders" 2>/dev/null || true); do
-          for h2 in $(ls "/sys/block/$h/holders" 2>/dev/null || true); do
-            n2=$(cat "/sys/block/$h2/dm/name" 2>/dev/null || true)
-            [ -n "$n2" ] && dmsetup remove "$n2" >/dev/null 2>&1 || true
-          done
-          dmname=$(cat "/sys/block/$h/dm/name" 2>/dev/null || true)
-          [ -n "$dmname" ] && dmsetup remove "$dmname" >/dev/null 2>&1 || true
-        done
-      fi
-
-      if [ "$remove_lv" = "1" ]; then
-        if [ "$discard" = "1" ]; then
-          lvchange -ay "$vg/$lv" >/dev/null 2>&1 || true
-          ddev=""
-          [ -b "/dev/$vg/$lv" ] && ddev="/dev/$vg/$lv"
-          if [ -z "$ddev" ]; then
-            ddev=$(lvs --noheadings -o lv_dm_path "$vg/$lv" 2>/dev/null | tr -d ' ')
-            [ -n "$ddev" ] && [ -b "$ddev" ] || ddev=""
-          fi
-          if [ -n "$ddev" ] && blkdiscard -f "$ddev" >/dev/null 2>&1; then
-            echo "idx $idx: LV $vg/$lv blkdiscarded"
-            trimmed=$((trimmed + 1))
-          else
-            echo "idx $idx: LV $vg/$lv not blkdiscarded (no usable block device node, or blkdiscard refused)"
-          fi
-        fi
-        lvchange -an "$vg/$lv" >/dev/null 2>&1 || true
-        if lvremove -f "$vg/$lv" >/dev/null 2>&1; then
-          echo "idx $idx: LV $vg/$lv removed"
-          changed=1
-        else
-          echo "idx $idx: failed to remove LV $vg/$lv ($(lvremove -f "$vg/$lv" 2>&1 | tail -1))"
-        fi
-      else
-        echo "idx $idx: LV $vg/$lv kept (pve_openstack_teardown_remove_osd_files=false)"
-      fi
-    done
-    systemctl daemon-reload
-    echo "YOGA-TEARDOWN-OSD-DONE changed=$changed trimmed=$trimmed"
-  args:
-    executable: /bin/bash
+  ansible.builtin.command:
+    argv: >-
+      {{ [repo_root ~ '/scripts/openstack/teardown-osd-lvs.sh',
+          '--vg', pve_openstack_osd_thinpool_vg,
+          '--prefix', pve_openstack_osd_lv_prefix,
+          '--indices', (pve_openstack_teardown_osd_indices | join(' ')),
+          '--apply']
+         + (['--remove-lvs'] if (pve_openstack_teardown_remove_osd_files | bool) else [])
+         + ([] if (pve_openstack_teardown_discard_lvs | bool) else ['--no-discard']) }}
   register: pve_openstack_teardown_osd
-  changed_when: "'changed=1' in pve_openstack_teardown_osd.stdout"
+  changed_when: "'OSD-TEARDOWN changed=1' in pve_openstack_teardown_osd.stdout"
 
 - name: Remove the legacy loop image directory and its backing LV
   ansible.builtin.shell: |
