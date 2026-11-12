@@ -46,7 +46,7 @@
 - name: Persist the kernel modules across host reboots
   ansible.builtin.copy:
     content: "{{ pve_obs_cos_hub_kernel_modules | join('\n') }}\n"
-    dest: /etc/modules-load.d/pve-obs-hub-k8s.conf
+    dest: /etc/modules-load.d/pve-obs-cos-hub-k8s.conf
     owner: root
     group: root
     mode: "0644"
@@ -173,7 +173,7 @@
 - name: Render the containerd proxy drop-in
   when: pve_obs_cos_hub_http_proxy | length > 0
   ansible.builtin.copy:
-    dest: /root/pve-obs-hub-containerd-proxy.conf
+    dest: /root/pve-obs-cos-hub-containerd-proxy.conf
     owner: root
     group: root
     mode: "0644"
@@ -191,7 +191,7 @@
       - --vmid
       - "{{ pve_obs_cos_hub_k8s_vmid }}"
       - --dropin
-      - /root/pve-obs-hub-containerd-proxy.conf
+      - /root/pve-obs-cos-hub-containerd-proxy.conf
       - --pct
       - "{{ pve_obs_cos_hub_pct_bin }}"
       - --apply
@@ -201,7 +201,7 @@
 - name: Stage the local-path provisioner manifest on the PVE host
   ansible.builtin.copy:
     src: local-path-storage.yaml
-    dest: /root/pve-obs-hub-local-path.yaml
+    dest: /root/pve-obs-cos-hub-local-path.yaml
     owner: root
     group: root
     mode: "0644"
@@ -212,8 +212,8 @@
       - "{{ pve_obs_cos_hub_pct_bin }}"
       - push
       - "{{ pve_obs_cos_hub_k8s_vmid }}"
-      - /root/pve-obs-hub-local-path.yaml
-      - /root/pve-obs-hub-local-path.yaml
+      - /root/pve-obs-cos-hub-local-path.yaml
+      - /root/pve-obs-cos-hub-local-path.yaml
       - --perms
       - "0644"
   changed_when: false
@@ -229,7 +229,7 @@
       - kubectl
       - apply
       - -f
-      - /root/pve-obs-hub-local-path.yaml
+      - /root/pve-obs-cos-hub-local-path.yaml
   register: pve_obs_cos_hub_local_path_apply
   changed_when: "'unchanged' not in pve_obs_cos_hub_local_path_apply.stdout"
 
@@ -355,7 +355,7 @@
   when: pve_obs_cos_hub_lb_enabled | bool
   ansible.builtin.template:
     src: metallb-pool.yaml.j2
-    dest: /root/pve-obs-hub-metallb-pool.yaml
+    dest: /root/pve-obs-cos-hub-metallb-pool.yaml
     owner: root
     group: root
     mode: "0644"
@@ -367,8 +367,8 @@
       - "{{ pve_obs_cos_hub_pct_bin }}"
       - push
       - "{{ pve_obs_cos_hub_k8s_vmid }}"
-      - /root/pve-obs-hub-metallb-pool.yaml
-      - /root/pve-obs-hub-metallb-pool.yaml
+      - /root/pve-obs-cos-hub-metallb-pool.yaml
+      - /root/pve-obs-cos-hub-metallb-pool.yaml
       - --perms
       - "0644"
   changed_when: false
@@ -385,7 +385,7 @@
       - kubectl
       - apply
       - -f
-      - /root/pve-obs-hub-metallb-pool.yaml
+      - /root/pve-obs-cos-hub-metallb-pool.yaml
   register: pve_obs_cos_hub_lb_pool
   until: pve_obs_cos_hub_lb_pool.rc == 0
   failed_when: pve_obs_cos_hub_lb_pool.rc != 0

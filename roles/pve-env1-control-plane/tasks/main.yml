@@ -410,7 +410,7 @@
       - "-"
       - "{{ pve_env1_juju_client_user }}"
       - -c
-      - "printf '%s\\n' '{\"common_name\": \"root-ca\"}' > /tmp/pve-ussuri-vault-ca-params.json"
+      - "printf '%s\\n' '{\"common_name\": \"root-ca\"}' > /tmp/pve-env1-vault-ca-params.json"
   when: pve_env1_vault_root_token | length > 0
 
 - name: Check whether the Vault root CA already exists
@@ -442,7 +442,7 @@
       - "-"
       - "{{ pve_env1_juju_client_user }}"
       - -c
-      - "{{ pve_env1_juju_bin }} run-action vault/0 generate-root-ca --params /tmp/pve-ussuri-vault-ca-params.json --wait=10m -m {{ pve_env1_model }}"
+      - "{{ pve_env1_juju_bin }} run-action vault/0 generate-root-ca --params /tmp/pve-env1-vault-ca-params.json --wait=10m -m {{ pve_env1_model }}"
   when:
     - pve_env1_vault_root_token | length > 0
     - (pve_env1_vault_root_ca_check.rc | default(1)) != 0

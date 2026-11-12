@@ -107,7 +107,7 @@
       and `juju status` only marks that unit blocked, so end-to-end testing never notices.
 
       fixing it (destructive, this role never does it automatically; the full explanation is in
-      see "the sixth pitfall after a restore" in docs/pve-yoga-savepoint-workflow.md section 2.3):
+      see "the sixth pitfall after a restore" in docs/environments/openstack/savepoint-workflow.md section 2.3):
         run this inside the lagging unit ($H = the mon name above, usually the guest hostname):
           H=<mon name>; D=/var/lib/ceph/mon/ceph-$H
           sudo ceph mon getmap -o /tmp/monmap.bin

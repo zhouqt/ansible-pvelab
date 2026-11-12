@@ -119,7 +119,7 @@
       move-to-space {{ item.item.name }} {{ item.item.cidr }} returned rc={{ item.rc }}:
       {{ item.stderr | default('') | trim }}. If Juju refuses to use the machine the bootstrap lives on
       moving {{ pve_openstack_public_cidr }} out of alpha; use the fallback (keep alpha, bind with public=alpha,
-      see docs/pve-yoga-openstack-deploy-runbook.md).
+      see docs/environments/openstack/deploy-runbook.md).
   loop: "{{ pve_openstack_network_move_results.results }}"
   loop_control:
     label: "{{ item.item.name }}"

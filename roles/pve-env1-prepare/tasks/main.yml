@@ -89,5 +89,5 @@
     fail_msg: >-
       {{ pve_env1_focal_template }} is missing. On a first deployment you can explicitly set
       -e pve_env1_run_template_repack=true to download and repack it; otherwise follow
-      handle it by hand as described in docs/pve-juju-openstack-deploy-runbook.md section 2.
+      handle it by hand as described in docs/environments/env1/deploy-runbook.md section 2.
   when: pve_env1_run_template_repack | bool

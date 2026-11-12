@@ -230,7 +230,7 @@
     content: |
       Acquire::http::Proxy "{{ pve_openstack_http_proxy }}";
       Acquire::https::Proxy "{{ pve_openstack_https_proxy }}";
-    dest: /root/pve-yoga-controller-apt-proxy.conf
+    dest: /root/pve-openstack-controller-apt-proxy.conf
     owner: root
     group: root
     mode: "0644"
@@ -242,7 +242,7 @@
       - pct
       - push
       - "{{ pve_openstack_controller_vmid }}"
-      - /root/pve-yoga-controller-apt-proxy.conf
+      - /root/pve-openstack-controller-apt-proxy.conf
       - /etc/apt/apt.conf.d/90pve-proxy
       - --perms
       - "0644"
@@ -255,7 +255,7 @@
       export HTTP_PROXY="{{ pve_openstack_http_proxy }}" HTTPS_PROXY="{{ pve_openstack_https_proxy }}"
       export no_proxy="{{ pve_common_no_proxy }},{{ pve_openstack_no_proxy_cidrs }}"
       export NO_PROXY="{{ pve_common_no_proxy }},{{ pve_openstack_no_proxy_cidrs }}"
-    dest: /root/pve-yoga-controller-proxy-env.sh
+    dest: /root/pve-openstack-controller-proxy-env.sh
     owner: root
     group: root
     mode: "0644"
@@ -267,7 +267,7 @@
       - pct
       - push
       - "{{ pve_openstack_controller_vmid }}"
-      - /root/pve-yoga-controller-proxy-env.sh
+      - /root/pve-openstack-controller-proxy-env.sh
       - /etc/profile.d/90pve-proxy.sh
       - --perms
       - "0644"

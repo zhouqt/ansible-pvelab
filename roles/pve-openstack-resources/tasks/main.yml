@@ -35,7 +35,7 @@
         dev {{ (pve_openstack_resources_route.stdout | from_json | first).dev | default('?') }}
       so it falls back to the default route and Keystone is never reachable (the CLI silently hangs for minutes). Add:
         sudo ip route add {{ pve_openstack_public_cidr }} via {{ pve_openstack_control_route_gateway }} dev <local NIC>
-      that route is **runtime only** and disappears on reboot; for a persistent form see docs/pve-yoga-openstack-deploy-runbook.md section 6.3.
+      that route is **runtime only** and disappears on reboot; for a persistent form see docs/environments/openstack/deploy-runbook.md section 6.3.
 
 - name: Verify the Keystone endpoint is reachable with the client RC
   ansible.builtin.command:

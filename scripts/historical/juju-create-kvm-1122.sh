@@ -1,6 +1,6 @@
 #!/bin/bash
 echo "REFUSED: juju-create-kvm-1122.sh is deprecated (hardcoded vmid/IP, and it unconditionally runs qm destroy 1122 up front)." >&2
-echo "  replacement: roles/pve-env1-machines/tasks/kvm-workload.yml, driven by --tags pve-env1-machines." >&2
+echo "  replacement: roles/pve-env1-machines/tasks/kvm-workload.yml, driven by playbooks/env1/stages/04-machines.yml." >&2
 exit 1
 
 set -euo pipefail

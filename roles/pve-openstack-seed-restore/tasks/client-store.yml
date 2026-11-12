@@ -48,10 +48,10 @@
 - name: Read the donor controller's admin password hash and salt
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_openstack_seed_restore_donor_vmid }} -- tee /root/pve-yoga-seed-restore-probe.py >/dev/null <<'PYEOF'
+    pct exec {{ pve_openstack_seed_restore_donor_vmid }} -- tee /root/pve-openstack-seed-restore-probe.py >/dev/null <<'PYEOF'
     {{ lookup('file', role_path + '/files/controller-mongo.py') }}
     PYEOF
-    pct exec {{ pve_openstack_seed_restore_donor_vmid }} -- python3 /root/pve-yoga-seed-restore-probe.py \
+    pct exec {{ pve_openstack_seed_restore_donor_vmid }} -- python3 /root/pve-openstack-seed-restore-probe.py \
       --action probe --timeout 120
   args:
     executable: /bin/bash
@@ -61,10 +61,10 @@
 - name: Read the restored controller's own identity and model inventory
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_openstack_controller_vmid }} -- tee /root/pve-yoga-seed-restore-probe.py >/dev/null <<'PYEOF'
+    pct exec {{ pve_openstack_controller_vmid }} -- tee /root/pve-openstack-seed-restore-probe.py >/dev/null <<'PYEOF'
     {{ lookup('file', role_path + '/files/controller-mongo.py') }}
     PYEOF
-    pct exec {{ pve_openstack_controller_vmid }} -- python3 /root/pve-yoga-seed-restore-probe.py \
+    pct exec {{ pve_openstack_controller_vmid }} -- python3 /root/pve-openstack-seed-restore-probe.py \
       --action probe --timeout {{ pve_openstack_seed_restore_probe_timeout }}
   args:
     executable: /bin/bash
@@ -90,7 +90,7 @@
 - name: Adopt the donor controller's admin password hash on the restored controller
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_openstack_controller_vmid }} -- python3 /root/pve-yoga-seed-restore-probe.py \
+    pct exec {{ pve_openstack_controller_vmid }} -- python3 /root/pve-openstack-seed-restore-probe.py \
       --action set-admin \
       --hash '{{ pve_openstack_seed_donor_admin.admin.passwordhash }}' \
       --salt '{{ pve_openstack_seed_donor_admin.admin.passwordsalt }}'
@@ -102,7 +102,7 @@
 - name: Merge the controller entry into the client store
   ansible.builtin.shell: |
     set -euo pipefail
-    pct exec {{ pve_openstack_juju_client_vmid }} -- tee /root/pve-yoga-seed-restore-payload.json >/dev/null <<'JSONEOF'
+    pct exec {{ pve_openstack_juju_client_vmid }} -- tee /root/pve-openstack-seed-restore-payload.json >/dev/null <<'JSONEOF'
     {{ {'controller': {
           'name': pve_openstack_controller_name,
           'uuid': pve_openstack_seed_ctrl_state.uuid,
@@ -116,11 +116,11 @@
           'password': (pve_openstack_seed_accounts_raw.stdout | from_yaml).controllers[pve_openstack_seed_restore_admin_donor].password,
         }} | to_json }}
     JSONEOF
-    pct exec {{ pve_openstack_juju_client_vmid }} -- tee /root/pve-yoga-seed-restore-store.py >/dev/null <<'PYEOF'
+    pct exec {{ pve_openstack_juju_client_vmid }} -- tee /root/pve-openstack-seed-restore-store.py >/dev/null <<'PYEOF'
     {{ lookup('file', role_path + '/files/client-store-merge.py') }}
     PYEOF
-    pct exec {{ pve_openstack_juju_client_vmid }} -- python3 /root/pve-yoga-seed-restore-store.py \
-      /root/pve-yoga-seed-restore-payload.json {{ pve_openstack_juju_data }} \
+    pct exec {{ pve_openstack_juju_client_vmid }} -- python3 /root/pve-openstack-seed-restore-store.py \
+      /root/pve-openstack-seed-restore-payload.json {{ pve_openstack_juju_data }} \
       --owner {{ pve_openstack_juju_client_user }}
   args:
     executable: /bin/bash
@@ -158,12 +158,12 @@
 - name: Remove the helper scripts and the payload that carried the password
   ansible.builtin.shell: |
     set -euo pipefail
-    for f in /root/pve-yoga-seed-restore-probe.py; do
+    for f in /root/pve-openstack-seed-restore-probe.py; do
       pct exec {{ pve_openstack_controller_vmid }} -- rm -f "$f"
       pct exec {{ pve_openstack_seed_restore_donor_vmid }} -- rm -f "$f"
     done
     pct exec {{ pve_openstack_juju_client_vmid }} -- rm -f \
-      /root/pve-yoga-seed-restore-payload.json /root/pve-yoga-seed-restore-store.py
+      /root/pve-openstack-seed-restore-payload.json /root/pve-openstack-seed-restore-store.py
     echo "SEED-RESTORE-CLEANUP-OK"
   args:
     executable: /bin/bash
