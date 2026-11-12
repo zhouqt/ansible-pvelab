@@ -1,6 +1,6 @@
 ---
 
-- name: Create and register PVE yoga workload machines
+- name: Create and register PVE OpenStack workload machines
   hosts: pve
   become: false
   roles: [pve-openstack-machines]

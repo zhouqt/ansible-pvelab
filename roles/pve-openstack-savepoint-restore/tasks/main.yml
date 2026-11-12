@@ -150,7 +150,7 @@
   changed_when: "'RESTORE-OSD-ACTIVE' in pve_openstack_restore_osd.stdout"
   when: pve_openstack_savepoint_include_osd | bool
 
-- name: Give every restored yoga CT its own SMBIOS system UUID
+- name: Give every restored OpenStack CT its own SMBIOS system UUID
   ansible.builtin.include_role:
     name: pve-common-ct-uuid
   vars:

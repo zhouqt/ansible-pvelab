@@ -138,7 +138,7 @@
     name: pve-openstack-recovery
     tasks_from: mysql-rebuild.yml
 
-- name: Restore and unseal the yoga Vault if the OSD CT restart broke it
+- name: Restore and unseal the OpenStack Vault if the OSD CT restart broke it
   ansible.builtin.include_role:
     name: pve-openstack-recovery
     tasks_from: vault-unseal.yml

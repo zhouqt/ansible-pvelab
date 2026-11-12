@@ -1,6 +1,6 @@
 ---
 
-- name: Create the OpenStack resources for the PVE yoga environment
+- name: Create the tenant resources for the PVE OpenStack environment
   hosts: localhost
   become: false
   roles: [pve-openstack-resources]

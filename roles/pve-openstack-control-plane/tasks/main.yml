@@ -336,7 +336,7 @@
         (((pve_openstack_vault_status.stdout | from_json).applications.vault.units | default({}, true)) | length) > 0
     fail_msg: "the OpenStack model has no vault unit; check the bundle deploy output."
 
-- name: Derive the yoga Vault unit address and its PVE guest
+- name: Derive the OpenStack Vault unit address and its PVE guest
   ansible.builtin.set_fact:
     pve_openstack_vault_address: >-
       {{ ((pve_openstack_vault_status.stdout | from_json).applications.vault.units
@@ -346,13 +346,13 @@
            ((pve_openstack_vault_status.stdout | from_json).applications.vault.units
             | dict2items | map(attribute='value') | first)['machine'] | int] }}
 
-- name: Wait for the yoga Vault API, repairing the co-located-leader grants on every retry
+- name: Wait for the OpenStack Vault API, repairing the co-located-leader grants on every retry
   ansible.builtin.include_tasks: vault-wait.yml
   vars:
     pve_openstack_vault_wait_attempt: 1
     pve_openstack_vault_probe_retries: 18
 
-- name: Require the yoga Vault API to answer before touching its storage
+- name: Require the OpenStack Vault API to answer before touching its storage
   ansible.builtin.assert:
     that:
       - pve_openstack_vault_init_state.rc == 0
@@ -369,7 +369,7 @@
       `pct exec {{ pve_openstack_vault_vmid }} -- systemctl reset-failed vault.service` then start it.
       Re-run this playbook once confirmed (it is idempotent).
 
-- name: Initialize the yoga Vault when it is not yet initialized
+- name: Initialize the OpenStack Vault when it is not yet initialized
   ansible.builtin.command:
     argv:
       - curl
@@ -387,7 +387,7 @@
     not ((pve_openstack_vault_init_state.stdout | default('{}', true) | from_json).initialized | default(false))
   no_log: true
 
-- name: Persist the yoga Vault init material to the credentials directory
+- name: Persist the OpenStack Vault init material to the credentials directory
   ansible.builtin.copy:
     content: "{{ pve_openstack_vault_init_response.stdout }}\n"
     dest: "{{ pve_openstack_vault_init_file }}"
@@ -397,13 +397,13 @@
   when: pve_openstack_vault_init_response is changed
   no_log: true
 
-- name: Expose the freshly initialized yoga Vault root token for this run
+- name: Expose the freshly initialized OpenStack Vault root token for this run
   ansible.builtin.set_fact:
     pve_openstack_vault_root_token: "{{ (pve_openstack_vault_init_response.stdout | from_json).root_token }}"
   when: pve_openstack_vault_init_response is changed
   no_log: true
 
-- name: Load the yoga Vault unseal keys and root token from the credentials file
+- name: Load the OpenStack Vault unseal keys and root token from the credentials file
   ansible.builtin.set_fact:
     pve_openstack_vault_keys: >-
       {{ (lookup('ansible.builtin.file', pve_openstack_vault_init_file, errors='ignore')
@@ -413,7 +413,7 @@
           | default('{}', true) | from_json)['root_token'] | default('', true) }}
   no_log: true
 
-- name: Read the yoga Vault seal status
+- name: Read the OpenStack Vault seal status
   ansible.builtin.command:
     argv:
       - curl
@@ -423,7 +423,7 @@
   changed_when: false
   failed_when: false
 
-- name: Unseal the yoga Vault with the first three keys when sealed
+- name: Unseal the OpenStack Vault with the first three keys when sealed
   ansible.builtin.command:
     argv:
       - curl
@@ -439,7 +439,7 @@
     - (pve_openstack_vault_seal_status.stdout | default('{}') | from_json).sealed | default(true)
   no_log: true
 
-- name: Require the yoga Vault to be unsealed before authorizing the charm
+- name: Require the OpenStack Vault to be unsealed before authorizing the charm
   ansible.builtin.command:
     argv:
       - curl

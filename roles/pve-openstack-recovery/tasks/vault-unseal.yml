@@ -5,7 +5,7 @@
     pve_openstack_juju_cmd: "JUJU_DATA={{ pve_openstack_juju_data }} {{ pve_openstack_juju_bin }}"
     pve_openstack_model: "{{ pve_openstack_controller_name }}:{{ pve_openstack_model_name }}"
 
-- name: Read OpenStack Juju status to locate the yoga Vault unit
+- name: Read OpenStack Juju status to locate the Vault unit
   ansible.builtin.command:
     argv:
       - pct
@@ -20,7 +20,7 @@
   register: pve_openstack_unseal_status
   changed_when: false
 
-- name: Derive the yoga Vault unit address
+- name: Derive the Vault unit address
   ansible.builtin.set_fact:
     pve_openstack_unseal_vault_address: >-
       {{ ((pve_openstack_unseal_status.stdout | from_json).applications.vault.units
@@ -28,7 +28,7 @@
           | default({}, true))['public-address'] | default('') }}
   when: "'vault' in (pve_openstack_unseal_status.stdout | from_json).applications"
 
-- name: Derive the yoga Vault unit CT vmid
+- name: Derive the Vault unit CT vmid
   ansible.builtin.set_fact:
     pve_openstack_unseal_vault_vmid: >-
       {{ (pve_openstack_unseal_vault_address.split('.') | last | int) + (pve_openstack_ip_offset | int) }}
@@ -36,7 +36,7 @@
     - "'vault' in (pve_openstack_unseal_status.stdout | from_json).applications"
     - pve_openstack_unseal_vault_address | default('') | length > 0
 
-- name: Ensure the yoga Vault service is running on its machine
+- name: Ensure the OpenStack Vault service is running on its machine
   ansible.builtin.shell: |
     set -euo pipefail
     vmid={{ pve_openstack_unseal_vault_vmid | default(0) | int }}
@@ -53,14 +53,14 @@
   changed_when: "'VAULT-SERVICE-STARTED' in pve_openstack_unseal_service.stdout"
   when: pve_openstack_unseal_vault_vmid | default(0) | int > 0
 
-- name: Load the yoga Vault unseal keys from the credentials file
+- name: Load the OpenStack Vault unseal keys from the credentials file
   ansible.builtin.set_fact:
     pve_openstack_unseal_vault_keys: >-
       {{ (lookup('ansible.builtin.file', pve_openstack_vault_init_file, errors='ignore')
           | default('{}', true) | from_json)['keys'] | default([], true) }}
   no_log: true
 
-- name: Read the yoga Vault seal status
+- name: Read the OpenStack Vault seal status
   ansible.builtin.command:
     argv:
       - curl
@@ -74,7 +74,7 @@
   delay: 5
   when: pve_openstack_unseal_vault_address | default('') | length > 0
 
-- name: Unseal the yoga Vault with the first three keys when sealed
+- name: Unseal the OpenStack Vault with the first three keys when sealed
   ansible.builtin.command:
     argv:
       - curl
@@ -92,7 +92,7 @@
     - (pve_openstack_unseal_seal_status.stdout | from_json).sealed | default(true)
   no_log: true
 
-- name: Require the yoga Vault to be unsealed
+- name: Require the OpenStack Vault to be unsealed
   ansible.builtin.command:
     argv:
       - curl

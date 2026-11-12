@@ -1,6 +1,6 @@
 ---
 
-- name: Register the PVE yoga SDN vnets and apply
+- name: Register the PVE OpenStack SDN vnets and apply
   hosts: pve
   become: false
   roles: [pve-openstack-sdn]

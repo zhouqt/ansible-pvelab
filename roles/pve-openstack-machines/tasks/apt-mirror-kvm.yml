@@ -1,6 +1,6 @@
 ---
 
-- name: Point the yoga KVM guest at the APT mirror
+- name: Point the OpenStack KVM guest at the APT mirror
   ansible.builtin.shell: |
     set -euo pipefail
     pct push {{ pve_openstack_juju_client_vmid }} /root/yoga-apt-mirror.sh {{ pve_openstack_juju_stage_dir }}/yoga-apt-mirror.sh --perms 0700

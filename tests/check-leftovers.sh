@@ -8,7 +8,8 @@ fail=0
 check() {
     local label="$1" pattern="$2" exclude="${3:-}"
     local hits
-    hits=$(grep -RIn --exclude-dir=.git --exclude-dir=__pycache__ --exclude=check-leftovers.sh \
+    hits=$(grep -RIn --exclude-dir=.git --exclude-dir=__pycache__ \
+        --exclude=check-leftovers.sh --exclude=migration-rename-map.md \
         -E -- "$pattern" . 2>/dev/null || true)
     if [ -n "$exclude" ] && [ -n "$hits" ]; then
         hits=$(printf '%s\n' "$hits" | grep -vE -- "$exclude" || true)

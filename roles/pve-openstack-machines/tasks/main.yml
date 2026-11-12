@@ -1,6 +1,6 @@
 ---
 
-- name: Validate the yoga workload inventory is self-consistent
+- name: Validate the OpenStack workload inventory is self-consistent
   ansible.builtin.assert:
     that:
       - (pve_openstack_workload_cts | map(attribute='vmid') | list | sort)
@@ -33,7 +33,7 @@
       - pve_openstack_machines_client_pubkey.stdout is match('^ssh-ed25519 [A-Za-z0-9+/]+={0,3}( .*)?$')
     fail_msg: "cannot read the Juju client ed25519 public key; run openstack-pve-juju-ctrl first."
 
-- name: Check whether each yoga workload CT exists
+- name: Check whether each OpenStack workload CT exists
   ansible.builtin.command: "pct status {{ item.vmid }}"
   loop: "{{ pve_openstack_workload_cts }}"
   loop_control:
@@ -42,7 +42,7 @@
   failed_when: false
   changed_when: false
 
-- name: Create yoga workload CTs
+- name: Create OpenStack workload CTs
   ansible.builtin.command:
     argv:
       - pct
@@ -84,7 +84,7 @@
     label: "CT {{ item.item.vmid }}"
   when: item.rc != 0
 
-- name: Read each yoga workload CT configuration
+- name: Read each OpenStack workload CT configuration
   ansible.builtin.command: "pct config {{ item.vmid }}"
   loop: "{{ pve_openstack_workload_cts }}"
   loop_control:
@@ -92,7 +92,7 @@
   register: pve_openstack_ct_configs
   changed_when: false
 
-- name: Require each yoga workload CT to match the declared identity and static NICs
+- name: Require each OpenStack workload CT to match the declared identity and static NICs
   ansible.builtin.assert:
     that:
       - "'hostname: ' ~ item.item.hostname in item.stdout"
@@ -108,7 +108,7 @@
   loop_control:
     label: "CT {{ item.item.vmid }}"
 
-- name: Push the yoga cap.drop helper to the PVE host
+- name: Push the OpenStack cap.drop helper to the PVE host
   ansible.builtin.copy:
     src: "{{ repo_root }}/scripts/openstack/set-capdrop.py"
     dest: /root/yoga-set-capdrop.py
@@ -116,7 +116,7 @@
     group: root
     mode: "0700"
 
-- name: Configure privileged capability baseline on yoga workload CTs
+- name: Configure privileged capability baseline on OpenStack workload CTs
   ansible.builtin.shell: |
     set -euo pipefail
     python3 /root/yoga-set-capdrop.py {{ item.vmid }} "YOGA WORKLOAD SETTINGS"
@@ -249,14 +249,14 @@
   register: pve_openstack_compute_ct_kvm_dev
   changed_when: "'KVM-DEV-ADDED' in pve_openstack_compute_ct_kvm_dev.stdout"
 
-- name: Give every yoga workload CT its own SMBIOS system UUID
+- name: Give every OpenStack workload CT its own SMBIOS system UUID
   ansible.builtin.include_role:
     name: pve-common-ct-uuid
   vars:
     pve_common_ct_uuid_items: "{{ pve_openstack_workload_cts | map(attribute='vmid') | list }}"
     pve_common_ct_uuid_apply_live: true
 
-- name: Check runtime state of yoga workload CTs
+- name: Check runtime state of OpenStack workload CTs
   ansible.builtin.command: "pct status {{ item.vmid }}"
   loop: "{{ pve_openstack_workload_cts }}"
   loop_control:
@@ -264,14 +264,14 @@
   register: pve_openstack_ct_runtime
   changed_when: false
 
-- name: Start stopped yoga workload CTs
+- name: Start stopped OpenStack workload CTs
   ansible.builtin.command: "pct start {{ item.item.vmid }}"
   loop: "{{ pve_openstack_ct_runtime.results }}"
   loop_control:
     label: "CT {{ item.item.vmid }}"
   when: "'status: stopped' in item.stdout"
 
-- name: Wait for yoga workload CT systemd
+- name: Wait for OpenStack workload CT systemd
   ansible.builtin.command: "pct exec {{ item.vmid }} -- systemctl is-system-running"
   loop: "{{ pve_openstack_workload_cts }}"
   loop_control:
@@ -300,7 +300,7 @@
   changed_when: false
   failed_when: "'KVM-OPEN-OK' not in pve_openstack_compute_ct_kvm_open.stdout"
 
-- name: Restore sys-kernel-config.mount inside the yoga workload CTs
+- name: Restore sys-kernel-config.mount inside the OpenStack workload CTs
   ansible.builtin.shell: |
     set -euo pipefail
     unmasked=""
@@ -317,7 +317,7 @@
   register: pve_openstack_ct_unmask_kernel_config
   changed_when: "'UNMASKED: none' not in pve_openstack_ct_unmask_kernel_config.stdout"
 
-- name: Push yoga CT init script to PVE host
+- name: Push OpenStack CT init script to PVE host
   ansible.builtin.copy:
     src: "{{ repo_root }}/scripts/common/juju-ct-init.sh"
     dest: /root/juju-yoga-ct-init.sh
@@ -325,7 +325,7 @@
     group: root
     mode: "0700"
 
-- name: Initialize yoga workload CTs (ubuntu user, NOPASSWD sudo, client key, snapd)
+- name: Initialize OpenStack workload CTs (ubuntu user, NOPASSWD sudo, client key, snapd)
   ansible.builtin.shell: |
     set -euo pipefail
     for vmid in {{ pve_openstack_workload_cts | map(attribute='vmid') | join(' ') }}; do
@@ -344,10 +344,10 @@
 - name: Install the python3 modules the OpenStack charms expect (containers)
   ansible.builtin.import_tasks: unit-python3-deps.yml
 
-- name: Create and configure the yoga KVM workload VM
+- name: Create and configure the OpenStack KVM workload VM
   ansible.builtin.include_tasks: kvm-workload.yml
 
-- name: Copy yoga machine-registration helper to PVE host
+- name: Copy OpenStack machine-registration helper to PVE host
   ansible.builtin.copy:
     src: "{{ repo_root }}/scripts/openstack/add-juju-machine.sh"
     dest: /root/yoga-add-juju-machine.sh
@@ -355,7 +355,7 @@
     group: root
     mode: "0700"
 
-- name: Install yoga machine-registration helper in Juju client CT
+- name: Install OpenStack machine-registration helper in Juju client CT
   ansible.builtin.command:
     argv:
       - pct
@@ -366,7 +366,7 @@
       - --perms
       - "0755"
 
-- name: Seed Juju client known_hosts for every yoga workload guest
+- name: Seed Juju client known_hosts for every OpenStack workload guest
   ansible.builtin.shell: |
     set -euo pipefail
     for vmid in {{ pve_openstack_workload_vmids | join(' ') }}; do
@@ -384,7 +384,7 @@
     executable: /bin/bash
   changed_when: false
 
-- name: Register yoga workload guests as Juju machines 0-5
+- name: Register OpenStack workload guests as Juju machines 0-5
   ansible.builtin.command:
     argv:
       - pct
@@ -404,7 +404,7 @@
     label: "vmid {{ item }} → machine {{ pve_openstack_workload_vmids.index(item) }}"
   changed_when: false
 
-- name: Compute the expected yoga machine primary addresses
+- name: Compute the expected OpenStack machine primary addresses
   ansible.builtin.set_fact:
     pve_openstack_expected_machine_ips: >-
       {{ pve_openstack_expected_machine_ips | default([])
@@ -438,7 +438,7 @@
   retries: 30
   delay: 5
 
-- name: Require yoga machines 0-5 to be registered with the expected primary address
+- name: Require OpenStack machines 0-5 to be registered with the expected primary address
   ansible.builtin.assert:
     that:
       - pve_openstack_machines_status.rc == 0
@@ -459,7 +459,7 @@
   loop_control:
     label: "vmid {{ item }} → machine {{ pve_openstack_workload_vmids.index(item) }}"
 
-- name: Assemble the yoga guest name map (vmid -> hostname)
+- name: Assemble the OpenStack guest name map (vmid -> hostname)
   ansible.builtin.set_fact:
     pve_openstack_guest_names: >-
       {{ ({pve_openstack_controller_vmid: pve_openstack_controller_name})
@@ -469,7 +469,7 @@
       {{ [pve_openstack_controller_vmid]
          + (pve_openstack_workload_vmids | difference([pve_openstack_workload_kvm_vmid])) }}
 
-- name: Build the managed yoga /etc/hosts block
+- name: Build the managed OpenStack /etc/hosts block
   ansible.builtin.set_fact:
     pve_openstack_hosts_block: |
       {% for vmid, name in pve_openstack_guest_names.items() | sort %}
@@ -478,7 +478,7 @@
       {% endfor %}
       {% endfor %}
 
-- name: Write the managed yoga /etc/hosts block on the PVE host
+- name: Write the managed OpenStack /etc/hosts block on the PVE host
   ansible.builtin.copy:
     content: "{{ pve_openstack_hosts_block }}"
     dest: /root/yoga-hosts.block
@@ -486,7 +486,7 @@
     group: root
     mode: "0644"
 
-- name: Push the yoga hosts-sync helper to the PVE host
+- name: Push the OpenStack hosts-sync helper to the PVE host
   ansible.builtin.copy:
     src: "{{ repo_root }}/scripts/openstack/hosts-sync.sh"
     dest: /root/yoga-hosts-sync.sh
@@ -494,7 +494,7 @@
     group: root
     mode: "0700"
 
-- name: Install the static name map into every yoga container guest
+- name: Install the static name map into every OpenStack container guest
   ansible.builtin.shell: |
     set -euo pipefail
     for vmid in {{ pve_openstack_hosts_ct_vmids | join(' ') }}; do
@@ -525,7 +525,7 @@
       - "{{ pve_openstack_juju_stage_dir }}"
   changed_when: false
 
-- name: Install the static name map into the yoga KVM guest
+- name: Install the static name map into the OpenStack KVM guest
   ansible.builtin.shell: |
     set -euo pipefail
     pct push {{ pve_openstack_juju_client_vmid }} /root/yoga-hosts.block {{ pve_openstack_juju_stage_dir }}/yoga-hosts.block

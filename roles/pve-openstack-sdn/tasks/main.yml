@@ -1,11 +1,11 @@
 ---
 
-- name: Require the yoga SDN registration to be explicitly requested
+- name: Require the SDN registration to be explicitly requested
   ansible.builtin.assert:
     that:
       - pve_openstack_run_sdn | bool
     fail_msg: >-
-      openstack-pve-sdn changes the host's SDN config. Once you confirm you want yoga's 4 bridges registered as SDN vnets,
+      this playbook changes the host's SDN config. Once you confirm you want OpenStack's 4 bridges registered as SDN vnets,
       run it explicitly with -e pve_openstack_run_sdn=true.
 
 - name: Require the network space inventory to declare zones
@@ -26,7 +26,7 @@
   register: pve_openstack_sdn_vnets
   changed_when: false
 
-- name: Read existing SDN subnets for every yoga vnet
+- name: Read existing SDN subnets for every OpenStack vnet
   ansible.builtin.command: "pvesh get /cluster/sdn/vnets/{{ item.bridge }}/subnets --output-format json"
   loop: "{{ pve_openstack_network_spaces }}"
   loop_control:
@@ -72,7 +72,7 @@
       missing vnet={{ pve_openstack_sdn_missing_vnets }}, missing subnet={{ pve_openstack_sdn_missing_subnets }}
       (needs_change={{ pve_openstack_sdn_needs_change }}).
 
-- name: Collect yoga guest runtime states
+- name: Collect OpenStack guest runtime states
   ansible.builtin.shell: |
     set -uo pipefail
     running=""
@@ -91,14 +91,14 @@
   changed_when: false
   when: pve_openstack_sdn_needs_change
 
-- name: Determine which yoga guests are running
+- name: Determine which OpenStack guests are running
   ansible.builtin.set_fact:
     pve_openstack_sdn_running_guests: >-
       {{ (pve_openstack_sdn_guests.stdout | default('') | regex_replace('^RUNNING:', '') | trim).split()
          | select('match', '^[0-9]+$') | list }}
   when: pve_openstack_sdn_needs_change
 
-- name: Stop yoga guests before SDN changes when explicitly permitted
+- name: Stop OpenStack guests before SDN changes when explicitly permitted
   ansible.builtin.shell: |
     set -euo pipefail
     for vmid in {{ pve_openstack_sdn_running_guests | join(' ') }}; do
@@ -115,12 +115,12 @@
     - pve_openstack_sdn_running_guests | length > 0
     - pve_openstack_sdn_stop_guests | bool
 
-- name: Require yoga guests to be stopped before SDN changes
+- name: Require the OpenStack guests to be stopped before SDN changes
   ansible.builtin.assert:
     that:
       - pve_openstack_sdn_running_guests | length == 0
     fail_msg: >-
-      yoga guests are still running (vmid {{ pve_openstack_sdn_running_guests | join(', ') }}).
+      OpenStack guests are still running (vmid {{ pve_openstack_sdn_running_guests | join(', ') }}).
       SDN vnets can only be registered/applied while every guest is stopped, otherwise ifupdown2 removes the veths in use on the bridge.
       stop these guests first, or let this role stop them with -e pve_openstack_sdn_stop_guests=true.
   when:
@@ -187,7 +187,7 @@
   register: pve_openstack_sdn_vnets_after
   changed_when: false
 
-- name: Require every yoga vnet to be registered in its declared zone
+- name: Require every OpenStack vnet to be registered in its declared zone
   ansible.builtin.assert:
     that:
       - >-
@@ -201,7 +201,7 @@
   loop_control:
     label: "{{ item.bridge }}"
 
-- name: Read final SDN subnets for every yoga vnet
+- name: Read final SDN subnets for every OpenStack vnet
   ansible.builtin.command: "pvesh get /cluster/sdn/vnets/{{ item.bridge }}/subnets --output-format json"
   loop: "{{ pve_openstack_network_spaces }}"
   loop_control:
@@ -209,7 +209,7 @@
   register: pve_openstack_sdn_subnets_after
   changed_when: false
 
-- name: Require every yoga subnet to exist with the expected gateway and snat
+- name: Require every OpenStack subnet to exist with the expected gateway and snat
   ansible.builtin.assert:
     that:
       - >-
@@ -229,7 +229,7 @@
   loop_control:
     label: "{{ item.item.bridge }}"
 
-- name: Require the yoga bridges to exist on the PVE host
+- name: Require the OpenStack bridges to exist on the PVE host
   ansible.builtin.command: "ip -o link show {{ item.bridge }}"
   loop: "{{ pve_openstack_network_spaces }}"
   loop_control:

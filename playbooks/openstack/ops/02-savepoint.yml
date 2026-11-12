@@ -1,6 +1,6 @@
 ---
 
-- name: Take a savepoint of the PVE yoga environment
+- name: Take a savepoint of the PVE OpenStack environment
   hosts: pve
   become: false
   roles: [pve-openstack-savepoint]

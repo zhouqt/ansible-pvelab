@@ -1,6 +1,6 @@
 ---
 
-- name: Deploy OpenStack Yoga control plane on PVE
+- name: Deploy the OpenStack control plane on PVE
   hosts: pve
   become: false
   roles: [pve-openstack-control-plane]

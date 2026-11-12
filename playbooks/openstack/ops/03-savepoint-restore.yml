@@ -1,6 +1,6 @@
 ---
 
-- name: Restore the PVE yoga environment from a savepoint
+- name: Restore the PVE OpenStack environment from a savepoint
   hosts: pve
   become: false
   roles: [pve-openstack-savepoint-restore]

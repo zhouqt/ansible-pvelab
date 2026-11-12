@@ -1,6 +1,6 @@
 ---
 
-- name: Require the yoga host baseline check to be explicitly requested
+- name: Require the host baseline check to be explicitly requested
   ansible.builtin.assert:
     that:
       - pve_openstack_run_host_baseline | bool
@@ -18,7 +18,7 @@
   failed_when: false
   changed_when: false
 
-- name: Require all yoga bridges to exist on the PVE host
+- name: Require all OpenStack bridges to exist on the PVE host
   ansible.builtin.assert:
     that:
       - pve_openstack_prepare_bridges.results | selectattr('rc', 'ne', 0) | list | length == 0

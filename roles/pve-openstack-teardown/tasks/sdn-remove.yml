@@ -31,7 +31,7 @@
   register: pve_openstack_teardown_sdn_vnets
   changed_when: false
 
-- name: Compute the yoga vnets to remove
+- name: Compute the OpenStack vnets to remove
   ansible.builtin.set_fact:
     pve_openstack_teardown_sdn_to_remove: >-
       {{ pve_openstack_network_spaces | map(attribute='bridge') | list
@@ -41,7 +41,7 @@
   ansible.builtin.debug:
     msg: "SDN vnets to deregister: {{ pve_openstack_teardown_sdn_to_remove | default([]) }} (ones that no longer exist are skipped)"
 
-- name: Delete the yoga SDN subnets
+- name: Delete the OpenStack SDN subnets
   ansible.builtin.command:
     argv:
       - pvesh
@@ -53,7 +53,7 @@
   when: item.bridge in (pve_openstack_teardown_sdn_to_remove | default([]))
   failed_when: false
 
-- name: Delete the yoga SDN vnets
+- name: Delete the OpenStack SDN vnets
   ansible.builtin.command:
     argv:
       - pvesh
@@ -73,7 +73,7 @@
   register: pve_openstack_teardown_sdn_vnets_after
   changed_when: false
 
-- name: Require every yoga vnet to be gone
+- name: Require every OpenStack vnet to be gone
   ansible.builtin.assert:
     that:
       - item not in (pve_openstack_teardown_sdn_vnets_after.stdout | from_json | map(attribute='vnet') | list)

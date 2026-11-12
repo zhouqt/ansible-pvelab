@@ -1,6 +1,6 @@
 ---
 
-- name: Probe the yoga Vault API, clearing the start-rate latch while it is down
+- name: Probe the OpenStack Vault API, clearing the start-rate latch while it is down
   ansible.builtin.shell: |
     set -uo pipefail
     out=$(curl -sk --max-time 5 "http://{{ pve_openstack_vault_address }}:8200/v1/sys/init") && rc=0 || rc=$?

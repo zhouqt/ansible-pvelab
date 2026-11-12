@@ -15,7 +15,7 @@
       - pve_openstack_compute_uplink_vmids | length == pve_openstack_compute_machine_indices | length
       - pve_openstack_compute_uplink_vmids | difference(pve_openstack_workload_vmids) | length == 0
       - pve_openstack_workload_kvm_vmid in pve_openstack_compute_uplink_vmids
-    fail_msg: "the yoga OVN uplink NIC/bridge variables disagree; refusing to configure OVN."
+    fail_msg: "the OpenStack OVN uplink NIC/bridge variables disagree; refusing to configure OVN."
 
 - name: Read OpenStack Juju application and machine inventory
   ansible.builtin.command:

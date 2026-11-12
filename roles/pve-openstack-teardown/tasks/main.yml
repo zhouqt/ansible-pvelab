@@ -1,11 +1,11 @@
 ---
 
-- name: Require the yoga teardown to be explicitly requested
+- name: Require the OpenStack teardown to be explicitly requested
   ansible.builtin.assert:
     that:
       - pve_openstack_run_teardown | bool
     fail_msg: >-
-      openstack-pve-teardown **destroys** the whole yoga environment (Juju controller/model + every guest + the host OSD thin LVs).
+      this playbook **destroys** the whole OpenStack environment (Juju controller/model + every guest + the host OSD thin LVs).
       once the target env is confirmed, run it explicitly with -e pve_openstack_run_teardown=true.
 
 - name: Forbid tearing down the default environment without an explicit extra confirmation
@@ -36,7 +36,7 @@
       (KVM = {{ pve_openstack_workload_kvm_vmid }}),OSD thin LV
       {{ pve_openstack_teardown_osd_indices | map('regex_replace', '^', pve_openstack_osd_lv_prefix ~ '-') | join(', ') }}.
 
-- name: Probe whether the yoga OpenStack model still exists
+- name: Probe whether the OpenStack OpenStack model still exists
   ansible.builtin.command:
     argv:
       - pct
@@ -52,7 +52,7 @@
   changed_when: false
   failed_when: false
 
-- name: Destroy the yoga OpenStack model
+- name: Destroy the OpenStack OpenStack model
   ansible.builtin.command:
     argv:
       - pct
@@ -73,7 +73,7 @@
     msg: "model {{ pve_openstack_model }} does not exist (the controller may be gone already), skipping destroy-model."
   when: (pve_openstack_teardown_model_probe.rc | default(1)) != 0
 
-- name: Probe whether the yoga Juju controller still exists
+- name: Probe whether the OpenStack Juju controller still exists
   ansible.builtin.command:
     argv:
       - pct
@@ -89,7 +89,7 @@
   changed_when: false
   failed_when: false
 
-- name: Destroy the yoga Juju controller
+- name: Destroy the OpenStack Juju controller
   ansible.builtin.command:
     argv:
       - pct
@@ -136,7 +136,7 @@
   loop: "{{ pve_openstack_teardown_savepoint_bases.stdout_lines | default([]) }}"
   when: (pve_openstack_teardown_savepoint_bases.stdout_lines | default([])) | length > 0
 
-- name: Stop and destroy every yoga guest
+- name: Stop and destroy every OpenStack guest
   ansible.builtin.shell: |
     set -u
     vg="{{ pve_openstack_osd_thinpool_vg }}"
@@ -195,7 +195,7 @@
     (pve_openstack_teardown_issue_discards.rc | default(1)) != 0
     or 'ISSUE-DISCARDS value=1' not in (pve_openstack_teardown_issue_discards.stdout | default(''))
 
-- name: Tear down the yoga OSD thin volumes on the host
+- name: Tear down the OpenStack OSD thin volumes on the host
   ansible.builtin.command:
     argv: >-
       {{ [repo_root ~ '/scripts/openstack/teardown-osd-lvs.sh',
@@ -295,7 +295,7 @@
   ansible.builtin.include_tasks: legacy-client-cleanup.yml
   when: pve_openstack_teardown_remove_legacy_client | bool
 
-- name: Require every yoga guest to be gone
+- name: Require every OpenStack guest to be gone
   ansible.builtin.shell: |
     set -u
     left=""
@@ -314,7 +314,7 @@
   when: not ansible_check_mode
   failed_when: "'LEFT: none' not in (pve_openstack_teardown_left.stdout | default(''))"
 
-- name: Require every yoga OSD thin volume to be released
+- name: Require every OpenStack OSD thin volume to be released
   ansible.builtin.shell: |
     set -u
     vg="{{ pve_openstack_osd_thinpool_vg }}"

@@ -1,6 +1,6 @@
 ---
 
-- name: Configure the PVE yoga compute uplink for OVN br-ex
+- name: Configure the PVE OpenStack compute uplink for OVN br-ex
   hosts: pve
   become: false
   roles: [pve-openstack-ovn-uplink]

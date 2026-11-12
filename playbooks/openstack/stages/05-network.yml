@@ -1,6 +1,6 @@
 ---
 
-- name: Configure Juju spaces for the yoga environment
+- name: Configure Juju spaces for the OpenStack environment
   hosts: pve
   become: false
   roles: [pve-openstack-network]

@@ -30,7 +30,7 @@
 - name: Rebuild the MySQL InnoDB cluster after a complete outage
   ansible.builtin.include_tasks: mysql-rebuild.yml
 
-- name: Restore and unseal the yoga Vault when it restarted
+- name: Restore and unseal the OpenStack Vault when it restarted
   ansible.builtin.include_tasks: vault-unseal.yml
 
 - name: Resolve units left in error state by the outage

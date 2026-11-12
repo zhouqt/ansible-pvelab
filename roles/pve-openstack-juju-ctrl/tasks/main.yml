@@ -16,7 +16,7 @@
       - pve_openstack_juju_snap_check.rc == 0
     fail_msg: >-
       the juju snap is not installed on CT {{ pve_openstack_juju_client_vmid }}. First, as in the reference environment,
-      (playbooks/env1/stages/03-juju-ctrl.yml) to install the juju 2.9 client; yoga 3.x coexists as a parallel instance.
+      (playbooks/env1/stages/03-juju-ctrl.yml) to install the juju 2.9 client; the OpenStack env keeps juju 3.x as a parallel instance.
 
 - name: Enable snapd parallel instances on Juju client CT
   ansible.builtin.command:
@@ -67,7 +67,7 @@
     fail_msg: >-
       there is no user {{ pve_openstack_juju_client_user }} on CT {{ pve_openstack_juju_client_vmid }}. First, as in the reference environment,
       (playbooks/env1/stages/03-juju-ctrl.yml) to initialise that CT (scripts/common/juju-ct-init.sh creates the ubuntu user
-      and NOPASSWD sudo); the yoga juju 3.x client lives under that user.
+      and NOPASSWD sudo); the OpenStack env's juju 3.x client lives under that user.
 
 - name: Ensure the Juju client SSH key exists
   ansible.builtin.shell: |
@@ -177,7 +177,7 @@
       - "'ip={{ pve_openstack_controller_ip }}/24' in pve_openstack_controller_config.stdout"
     fail_msg: "CT {{ pve_openstack_controller_vmid }} is taken by a different config; refusing to rewrite it."
 
-- name: Push the yoga cap.drop helper to the PVE host
+- name: Push the OpenStack cap.drop helper to the PVE host
   ansible.builtin.copy:
     src: "{{ repo_root }}/scripts/openstack/set-capdrop.py"
     dest: /root/yoga-set-capdrop.py

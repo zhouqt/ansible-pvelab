@@ -1,6 +1,6 @@
 ---
 
-- name: Push the yoga APT-mirror helper to the PVE host
+- name: Push the OpenStack APT-mirror helper to the PVE host
   ansible.builtin.copy:
     src: "{{ repo_root }}/scripts/common/apt-mirror.sh"
     dest: /root/yoga-apt-mirror.sh
@@ -9,7 +9,7 @@
     mode: "0700"
   when: pve_openstack_apt_mirror | length > 0
 
-- name: Point the yoga workload CTs at the APT mirror
+- name: Point the OpenStack workload CTs at the APT mirror
   ansible.builtin.shell: |
     set -euo pipefail
     for vmid in {{ pve_openstack_workload_cts | map(attribute='vmid') | join(' ') }}; do
