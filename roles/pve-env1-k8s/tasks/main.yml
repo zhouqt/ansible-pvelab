@@ -2,34 +2,27 @@
 
 - name: Create and validate the dedicated k8s compute container
   ansible.builtin.import_tasks: ct.yml
-  tags: [pve-ussuri-k8s-ct]
   when: pve_env1_k8s_run_ct | bool
 
 - name: Register the container with the env's Juju and pin it in the k8s AZ
   ansible.builtin.import_tasks: compute.yml
-  tags: [pve-ussuri-k8s-compute]
   when: pve_env1_k8s_run_compute | bool
 
 - name: Patch the OVN metadata agent inside the compute container
   ansible.builtin.import_tasks: metadata-patch.yml
-  tags: [pve-ussuri-k8s-metadata-patch]
   when: pve_env1_k8s_run_metadata_patch | bool
 
 - name: Register the env cloud and credential for the Juju 3.6 client
   ansible.builtin.import_tasks: client-cloud.yml
-  tags: [pve-ussuri-k8s-client-cloud]
   when: pve_env1_k8s_run_client_cloud | bool
 
 - name: Bootstrap the Juju 3.6 controller on the env cloud
   ansible.builtin.import_tasks: bootstrap.yml
-  tags: [pve-ussuri-k8s-bootstrap]
   when: pve_env1_k8s_run_bootstrap | bool
 
 - name: Create the k8s model and deploy Charmed Kubernetes
   ansible.builtin.import_tasks: model.yml
-  tags: [pve-ussuri-k8s-model]
   when: pve_env1_k8s_run_deploy | bool
 
 - name: Verify the cluster
   ansible.builtin.import_tasks: verify.yml
-  tags: [pve-ussuri-k8s-verify]

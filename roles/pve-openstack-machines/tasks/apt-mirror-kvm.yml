@@ -1,0 +1,19 @@
+---
+
+- name: Point the yoga KVM guest at the APT mirror
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct push {{ pve_openstack_juju_client_vmid }} /root/yoga-apt-mirror.sh {{ pve_openstack_juju_stage_dir }}/yoga-apt-mirror.sh --perms 0700
+    pct exec {{ pve_openstack_juju_client_vmid }} -- chown {{ pve_openstack_juju_client_user }}:{{ pve_openstack_juju_client_user }} {{ pve_openstack_juju_stage_dir }}/yoga-apt-mirror.sh
+    pct exec {{ pve_openstack_juju_client_vmid }} -- su - {{ pve_openstack_juju_client_user }} -c '
+      set -e
+      ip={{ pve_openstack_public_prefix }}.{{ pve_openstack_workload_kvm_vmid - pve_openstack_ip_offset }}
+      scp -o StrictHostKeyChecking=no -q {{ pve_openstack_juju_stage_dir }}/yoga-apt-mirror.sh ubuntu@$ip:/tmp/
+      ssh -o StrictHostKeyChecking=no -q ubuntu@$ip "sudo bash /tmp/yoga-apt-mirror.sh {{ pve_openstack_apt_mirror }}"
+      rm -f {{ pve_openstack_juju_stage_dir }}/yoga-apt-mirror.sh
+    '
+  args:
+    executable: /bin/bash
+  register: pve_openstack_kvm_apt_mirror
+  changed_when: "'changed=1' in pve_openstack_kvm_apt_mirror.stdout"
+  when: pve_openstack_apt_mirror | length > 0

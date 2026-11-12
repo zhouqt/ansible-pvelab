@@ -121,5 +121,5 @@
       savepoint taken: {{ pve_openstack_savepoint_prefix }}-*
       ({{ pve_openstack_savepoint_guests | length }} guest volumes
       {% if pve_openstack_savepoint_include_osd | bool %}+ {{ pve_openstack_savepoint_osd_lvs | length }} OSD volumes{% endif %}).
-      restore: --tags openstack-pve-savepoint-restore -e pve_openstack_savepoint_restore=true
+      restore: playbooks/openstack/ops/03-savepoint-restore.yml -e pve_openstack_savepoint_restore=true
       -e pve_openstack_savepoint_name={{ pve_openstack_savepoint_name }}

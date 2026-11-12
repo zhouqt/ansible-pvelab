@@ -76,7 +76,7 @@
 - name: Install the Juju status query helper on the PVE host
   ansible.builtin.copy:
     src: juju_status_query.py
-    dest: /root/pve-ussuri-k8s-juju-status-query.py
+    dest: /root/pve-env1-k8s-juju-status-query.py
     owner: root
     group: root
     mode: "0700"
@@ -86,8 +86,8 @@
     set -euo pipefail
     pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
       "{{ pve_env1_k8s_juju29_bin }} status -m {{ pve_env1_k8s_openstack_controller }}:{{ pve_env1_k8s_openstack_model }} --format json 2>&1 | cat" \
-      > /tmp/pve-ussuri-k8s-env-status.json
-    grep -q "\"{{ pve_env1_k8s_compute_app }}\": {" /tmp/pve-ussuri-k8s-env-status.json \
+      > /tmp/pve-env1-k8s-env-status.json
+    grep -q "\"{{ pve_env1_k8s_compute_app }}\": {" /tmp/pve-env1-k8s-env-status.json \
       && echo APP-OK || echo APP-MISSING
   args:
     executable: /bin/bash
@@ -106,8 +106,8 @@
 - name: Find the Juju machine that already is {{ pve_env1_k8s_ip }}
   ansible.builtin.shell: |
     set -euo pipefail
-    python3 /root/pve-ussuri-k8s-juju-status-query.py machine-ip --ip {{ pve_env1_k8s_ip }} \
-      < /tmp/pve-ussuri-k8s-env-status.json
+    python3 /root/pve-env1-k8s-juju-status-query.py machine-ip --ip {{ pve_env1_k8s_ip }} \
+      < /tmp/pve-env1-k8s-env-status.json
   args:
     executable: /bin/bash
   register: pve_env1_k8s_machine_probe
@@ -151,9 +151,9 @@
     for attempt in $(seq 1 30); do
       pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
         "{{ pve_env1_k8s_juju29_bin }} status -m {{ pve_env1_k8s_openstack_controller }}:{{ pve_env1_k8s_openstack_model }} --format json 2>&1 | cat" \
-        > /tmp/pve-ussuri-k8s-env-status.json
-      verdict="$(python3 /root/pve-ussuri-k8s-juju-status-query.py machine-ip --ip {{ pve_env1_k8s_ip }} \
-        < /tmp/pve-ussuri-k8s-env-status.json)"
+        > /tmp/pve-env1-k8s-env-status.json
+      verdict="$(python3 /root/pve-env1-k8s-juju-status-query.py machine-ip --ip {{ pve_env1_k8s_ip }} \
+        < /tmp/pve-env1-k8s-env-status.json)"
       case "$verdict" in
         MACHINE\ NONE) sleep 10 ;;
         *) echo "$verdict"; exit 0 ;;
@@ -186,10 +186,10 @@
     set -euo pipefail
     pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
       "{{ pve_env1_k8s_juju29_bin }} status -m {{ pve_env1_k8s_openstack_controller }}:{{ pve_env1_k8s_openstack_model }} --format json 2>&1 | cat" \
-      > /tmp/pve-ussuri-k8s-env-status.json
-    python3 /root/pve-ussuri-k8s-juju-status-query.py unit-on \
+      > /tmp/pve-env1-k8s-env-status.json
+    python3 /root/pve-env1-k8s-juju-status-query.py unit-on \
       --app {{ pve_env1_k8s_compute_app }} --machine {{ pve_env1_k8s_machine_id }} \
-      < /tmp/pve-ussuri-k8s-env-status.json
+      < /tmp/pve-env1-k8s-env-status.json
   args:
     executable: /bin/bash
   register: pve_env1_k8s_unit_probe
@@ -210,10 +210,10 @@
     set -euo pipefail
     pct exec {{ pve_env1_k8s_juju_client_vmid }} -- su - {{ pve_env1_k8s_juju_client_user }} -c \
       "{{ pve_env1_k8s_juju29_bin }} status -m {{ pve_env1_k8s_openstack_controller }}:{{ pve_env1_k8s_openstack_model }} --format json 2>&1 | cat" \
-      > /tmp/pve-ussuri-k8s-env-status.json
-    python3 /root/pve-ussuri-k8s-juju-status-query.py unit-on \
+      > /tmp/pve-env1-k8s-env-status.json
+    python3 /root/pve-env1-k8s-juju-status-query.py unit-on \
       --app {{ pve_env1_k8s_compute_app }} --machine {{ pve_env1_k8s_machine_id }} \
-      < /tmp/pve-ussuri-k8s-env-status.json
+      < /tmp/pve-env1-k8s-env-status.json
   args:
     executable: /bin/bash
   register: pve_env1_k8s_unit_state
@@ -235,7 +235,7 @@
       (the app and its `ovn-chassis` subordinate) and
       `juju debug-log --include {{ pve_env1_k8s_compute_app }}`. A compute that
       cannot open /dev/kvm is the most common cause; re-run
-      --tags pve-ussuri-k8s-ct to re-verify the device pass-through.
+      playbooks/env1/k8s/stages/01-ct.yml to re-verify the device pass-through.
 
 - name: Check the hypervisor registered by the new compute
   ansible.builtin.command:

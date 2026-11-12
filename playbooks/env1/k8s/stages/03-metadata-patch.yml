@@ -1,0 +1,10 @@
+---
+- name: env1 k8s — 3/7 patch the OVN metadata agent
+  hosts: pve
+  become: false
+  tasks:
+    - name: Run the metadata patch stage
+      ansible.builtin.include_role:
+        name: pve-env1-k8s
+        tasks_from: metadata-patch
+      when: pve_env1_k8s_run_metadata_patch | bool

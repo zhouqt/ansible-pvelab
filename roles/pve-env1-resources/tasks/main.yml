@@ -26,7 +26,7 @@
     that: pve_env1_resources_token.rc == 0
     fail_msg: |
       authentication against Keystone {{ pve_env1_keystone_address }} failed. Common causes:
-        1. the control plane is not deployed yet -- run --tags pve-env1-control-plane and confirm the keystone unit is active;
+        1. the control plane is not deployed yet -- run playbooks/env1/stages/06-control-plane.yml and confirm the keystone unit is active;
         2. Vault is sealed or the CA does not match -- check {{ pve_env1_vault_ca_file }};
         3. the password in the RC differs from the one configured on the charm -- pve-env1-control-plane will
            `juju config keystone admin-password=...`, then re-run this stage to realign it.

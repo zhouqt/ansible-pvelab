@@ -3,5 +3,4 @@
 - name: Rebuild a torn-down PVE yoga environment from seed snapshots
   hosts: pve
   become: false
-  tags: [never, openstack-pve-seed-restore]
   roles: [pve-openstack-seed-restore]

@@ -17,7 +17,7 @@
       - pve_openstack_series in pve_openstack_obs_series
     fail_msg: >-
       this role only serves jammy / noble environments (currently pve_openstack_series={{
-      pve_openstack_series }}). For focal use --tags openstack-pve-lma-clients (the LMA route).
+      pve_openstack_series }}). For focal use playbooks/observability/lma-clients.yml (the LMA route).
 
 - name: Read the model uuid of this environment from the shared Juju store
   ansible.builtin.command:
@@ -125,7 +125,7 @@
     fail_msg: >-
       the model {{ pve_openstack_obs_model }} has no principal to attach nrpe to, or keystone does not provide the
       the `identity-admin` endpoint (openstack-exporter needs it), or no machine to place it on --
-      this env may not be fully deployed. Run `--tags openstack-pve-control-plane` first, then come back.
+      this env may not be fully deployed. Run `playbooks/openstack/stages/06-control-plane.yml` first, then come back.
 
 - name: Deploy nrpe in the environment model
   ansible.builtin.command:

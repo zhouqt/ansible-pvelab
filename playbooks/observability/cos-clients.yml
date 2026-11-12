@@ -3,5 +3,4 @@
 - name: Wire a jammy or noble environment into the PVE COS hub
   hosts: pve
   become: false
-  tags: [never, openstack-pve-observability]
   roles: [pve-obs-cos-clients]

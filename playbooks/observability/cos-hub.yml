@@ -3,5 +3,4 @@
 - name: Deploy the PVE observability hub (COS Lite on k8s snap)
   hosts: pve
   become: false
-  tags: [never, pve-obs-cos-hub]
   roles: [pve-obs-cos-hub]

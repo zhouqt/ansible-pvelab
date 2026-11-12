@@ -31,7 +31,7 @@
       the control plane is still incomplete (missing: {{
         pve_env1_core_applications
         | difference((pve_env1_ceph_stage_status.stdout | from_json).applications.keys() | list)
-        | join(', ') }}). Run --tags pve-env1-control-plane first and wait for it to settle.
+        | join(', ') }}). Run playbooks/env1/stages/06-control-plane.yml first and wait for it to settle.
 
 - name: Read the host thin pool utilisation before creating OSD volumes
   ansible.builtin.command:
@@ -61,7 +61,6 @@
 
 - name: Patch the OVN metadata agent so it works inside LXC containers
   ansible.builtin.include_tasks: patch-metadata-agent.yml
-  tags: pve-ussuri-metadata-agent-patch
 
 - name: Create the Ceph OSDs on the passthrough devices
   ansible.builtin.include_tasks: osd.yml

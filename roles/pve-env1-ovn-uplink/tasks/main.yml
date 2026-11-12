@@ -63,8 +63,8 @@
       - "'nova-compute' in (pve_env1_ovn_uplink_status.stdout | from_json).applications"
       - "'nova-compute-kvm' in (pve_env1_ovn_uplink_status.stdout | from_json).applications"
     fail_msg: >-
-      Phase 2 must deploy ovn-chassis and both nova-compute applications before --tags
-      pve-env1-ovn-uplink. This role does not deploy charms or modify machine registration.
+      Phase 2 must deploy ovn-chassis and both nova-compute applications before the
+      ovn-uplink stage (playbooks/env1/stages/08-ovn-uplink.yml). This role does not deploy charms or modify machine registration.
 
 - name: Require compute machine IDs and placements to match the topology
   ansible.builtin.assert:

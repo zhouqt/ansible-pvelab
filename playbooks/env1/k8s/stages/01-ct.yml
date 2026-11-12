@@ -1,0 +1,10 @@
+---
+- name: env1 k8s — 1/7 create and validate the compute container
+  hosts: pve
+  become: false
+  tasks:
+    - name: Run the k8s container stage
+      ansible.builtin.include_role:
+        name: pve-env1-k8s
+        tasks_from: ct
+      when: pve_env1_k8s_run_ct | bool

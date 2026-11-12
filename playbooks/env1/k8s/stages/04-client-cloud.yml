@@ -1,0 +1,10 @@
+---
+- name: env1 k8s — 4/7 register the cloud for the Juju 3.6 client
+  hosts: pve
+  become: false
+  tasks:
+    - name: Run the client cloud stage
+      ansible.builtin.include_role:
+        name: pve-env1-k8s
+        tasks_from: client-cloud
+      when: pve_env1_k8s_run_client_cloud | bool

@@ -15,7 +15,7 @@
     that:
       - "pve_common_storage in pve_env1_storage_inventory.stdout"
       - pve_env1_maas_status.rc == 0
-    fail_msg: "run --tags pve-env1-maas first and confirm {{ pve_common_storage }} is usable."
+    fail_msg: "run playbooks/env1/stages/02-maas.yml first and confirm {{ pve_common_storage }} is usable."
 
 - name: Check PVE local focal template inventory
   ansible.builtin.command: pveam list local
@@ -109,7 +109,7 @@
       - >-
         ((pve_env1_workload_juju_models.stdout | from_json).models
          | selectattr('short-name', 'equalto', 'openstack') | list | length) == 1
-    fail_msg: "run --tags pve-env1-juju-ctrl first to create the Juju controller and the openstack model."
+    fail_msg: "run playbooks/env1/stages/03-juju-ctrl.yml first to create the Juju controller and the openstack model."
 
 - name: Validate the topology table shape
   ansible.builtin.assert:
@@ -482,7 +482,7 @@
       --hostname "$hostname" --ostype ubuntu --cores 2 --memory 4096 --swap 0 \
       --rootfs '{{ pve_common_storage }}:16' --unprivileged 0 --features nesting=1,fuse=1 \
       "${networks[@]}" \
-      --nameserver 8.8.8.8 --tags "$tags" --onboot 1 --startup 'order=3' --start 0 \
+      --nameserver 8.8.8.8 "$tags" --onboot 1 --startup 'order=3' --start 0 \
       >"/var/tmp/ctcreate-${vmid}.log" 2>&1
     echo "CREATE-OK $vmid $hostname"
   args:
@@ -579,7 +579,6 @@
     label: "CT {{ item }}"
   register: pve_env1_ct_vm_devices
   changed_when: "'ADDED' in pve_env1_ct_vm_devices.stdout"
-  tags: pve-ussuri-ct-vm-devices
 
 - name: Start workload LXC containers
   ansible.builtin.shell: |

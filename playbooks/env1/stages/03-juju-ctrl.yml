@@ -3,5 +3,4 @@
 - name: Bootstrap Juju manual controller on PVE
   hosts: pve
   become: false
-  tags: [never, pve-env1-juju-ctrl]
   roles: [pve-env1-juju-ctrl]

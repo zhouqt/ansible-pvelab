@@ -3,5 +3,4 @@
 - name: Create the OpenStack resources for the focal/ussuri environment (env1)
   hosts: localhost
   become: false
-  tags: [never, pve-env1-resources]
   roles: [pve-env1-resources]

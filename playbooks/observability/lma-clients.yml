@@ -3,5 +3,4 @@
 - name: Wire a focal environment into the PVE LMA hub
   hosts: pve
   become: false
-  tags: [never, openstack-pve-lma-clients]
   roles: [pve-obs-lma-clients]

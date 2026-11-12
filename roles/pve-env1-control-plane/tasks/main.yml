@@ -76,7 +76,7 @@
       - pve_env1_control_default_space.stdout | trim == pve_env1_juju_default_space
     fail_msg: >-
       OpenStack model default-space must be {{ pve_env1_juju_default_space }}. Run
-      --tags pve-env1-juju-network after registering workload machines and before this stage.
+      playbooks/env1/stages/05-juju-network.yml after registering workload machines and before this stage.
 
 - name: Read existing application inventory before OpenStack deployment
   ansible.builtin.command:
@@ -633,7 +633,7 @@
       after {{ pve_env1_wait_retries }} x {{ pve_env1_wait_delay }}s these core applications are still not
       active: {{ pve_env1_gate_unsettled | join(', ') }}. Check each of them with
       `juju status -m {{ pve_env1_model }}` and /var/log/juju/unit-*.log of the unit in question;
-      if it is the shared-leader MySQL grant problem, just re-run --tags pve-env1-control-plane (it is idempotent).
+      if it is the shared-leader MySQL grant problem, just re-run playbooks/env1/stages/06-control-plane.yml (it is idempotent).
   vars:
     pve_env1_gate_unsettled: >-
       {%- set ns = namespace(out=[]) -%}

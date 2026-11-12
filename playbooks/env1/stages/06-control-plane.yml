@@ -3,14 +3,10 @@
 - name: Deploy OpenStack control plane on PVE Juju
   hosts: pve
   become: false
-  tags: [never, pve-env1-control-plane]
   pre_tasks:
     - name: Validate PVE Juju network spaces before deploying OpenStack charms
       ansible.builtin.include_role:
         name: pve-env1-juju-network
-        apply:
-          tags: [pve-env1-control-plane]
       vars:
         pve_env1_juju_network_validate_only: true
-      tags: [pve-env1-control-plane]
   roles: [pve-env1-control-plane]

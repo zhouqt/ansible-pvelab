@@ -1,7 +1,9 @@
 ---
 
-- name: Deploy Charmed Kubernetes 1.32 on the env1 (focal/ussuri) PVE cloud
-  hosts: pve
-  become: false
-  tags: [never, pve-env1-k8s]
-  roles: [pve-env1-k8s]
+- import_playbook: stages/01-ct.yml
+- import_playbook: stages/02-compute.yml
+- import_playbook: stages/03-metadata-patch.yml
+- import_playbook: stages/04-client-cloud.yml
+- import_playbook: stages/05-bootstrap.yml
+- import_playbook: stages/06-model.yml
+- import_playbook: stages/07-verify.yml

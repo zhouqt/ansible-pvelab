@@ -1,0 +1,22 @@
+---
+
+- name: Push the yoga APT-mirror helper to the PVE host
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/pve/scripts/yoga-apt-mirror.sh"
+    dest: /root/yoga-apt-mirror.sh
+    owner: root
+    group: root
+    mode: "0700"
+  when: pve_openstack_apt_mirror | length > 0
+
+- name: Point the Juju controller CT at the APT mirror
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct push {{ pve_openstack_controller_vmid }} /root/yoga-apt-mirror.sh /root/yoga-apt-mirror.sh --perms 0700
+    pct exec {{ pve_openstack_controller_vmid }} -- bash /root/yoga-apt-mirror.sh '{{ pve_openstack_apt_mirror }}'
+    pct exec {{ pve_openstack_controller_vmid }} -- rm -f /root/yoga-apt-mirror.sh
+  args:
+    executable: /bin/bash
+  register: pve_openstack_controller_apt_mirror
+  changed_when: "'changed=1' in pve_openstack_controller_apt_mirror.stdout"
+  when: pve_openstack_apt_mirror | length > 0

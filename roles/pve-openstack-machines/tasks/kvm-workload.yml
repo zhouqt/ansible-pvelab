@@ -107,7 +107,7 @@
       VM {{ pve_openstack_kvm_workload.vmid }} is running, so PVE cannot change the discard flag of scsi0 online:
       the fstrim it issues nowadays is dropped by QEMU (neither the thin pool nor the SSD gets the blocks back). This does **not** affect what a teardown reclaims
       (openstack-pve-teardown blkdiscards the whole volume itself); it only affects hole reclaim at runtime. Re-run it after the next shutdown
-      `--tags openstack-pve-machines` adds it automatically, or run by hand:
+      `playbooks/openstack/stages/04-machines.yml` adds it automatically, or run by hand:
       qm set {{ pve_openstack_kvm_workload.vmid }} --scsi0 '<the scsi0 value from qm config>,discard=on'  (shut the VM down first)
   when:
     - not (pve_openstack_kvm_discard_ok | bool)

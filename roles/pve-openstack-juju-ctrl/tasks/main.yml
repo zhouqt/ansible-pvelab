@@ -16,7 +16,7 @@
       - pve_openstack_juju_snap_check.rc == 0
     fail_msg: >-
       the juju snap is not installed on CT {{ pve_openstack_juju_client_vmid }}. First, as in the reference environment,
-      (--tags pve-env1-juju-ctrl) to install the juju 2.9 client; yoga 3.x coexists as a parallel instance.
+      (playbooks/env1/stages/03-juju-ctrl.yml) to install the juju 2.9 client; yoga 3.x coexists as a parallel instance.
 
 - name: Enable snapd parallel instances on Juju client CT
   ansible.builtin.command:
@@ -66,7 +66,7 @@
       - pve_openstack_juju_client_uid.rc == 0
     fail_msg: >-
       there is no user {{ pve_openstack_juju_client_user }} on CT {{ pve_openstack_juju_client_vmid }}. First, as in the reference environment,
-      (--tags pve-env1-juju-ctrl) to initialise that CT (pve/scripts/juju-ct-init.sh creates the ubuntu user
+      (playbooks/env1/stages/03-juju-ctrl.yml) to initialise that CT (pve/scripts/juju-ct-init.sh creates the ubuntu user
       and NOPASSWD sudo); the yoga juju 3.x client lives under that user.
 
 - name: Ensure the Juju client SSH key exists
@@ -290,28 +290,8 @@
   changed_when: "'removed=1' in pve_openstack_proxy_cleanup.stdout"
   when: pve_openstack_http_proxy | length == 0
 
-- name: Push the yoga APT-mirror helper to the PVE host
-  ansible.builtin.copy:
-    src: "{{ repo_root }}/pve/scripts/yoga-apt-mirror.sh"
-    dest: /root/yoga-apt-mirror.sh
-    owner: root
-    group: root
-    mode: "0700"
-  tags: [openstack-pve-apt-mirror]
-  when: pve_openstack_apt_mirror | length > 0
-
-- name: Point the Juju controller CT at the APT mirror
-  ansible.builtin.shell: |
-    set -euo pipefail
-    pct push {{ pve_openstack_controller_vmid }} /root/yoga-apt-mirror.sh /root/yoga-apt-mirror.sh --perms 0700
-    pct exec {{ pve_openstack_controller_vmid }} -- bash /root/yoga-apt-mirror.sh '{{ pve_openstack_apt_mirror }}'
-    pct exec {{ pve_openstack_controller_vmid }} -- rm -f /root/yoga-apt-mirror.sh
-  args:
-    executable: /bin/bash
-  register: pve_openstack_controller_apt_mirror
-  changed_when: "'changed=1' in pve_openstack_controller_apt_mirror.stdout"
-  tags: [openstack-pve-apt-mirror]
-  when: pve_openstack_apt_mirror | length > 0
+- name: Point the Juju controller container at the APT mirror
+  ansible.builtin.import_tasks: apt-mirror.yml
 
 - name: Initialize Juju controller CT account, SSH, and snapd
   ansible.builtin.shell: |

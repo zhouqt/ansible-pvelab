@@ -21,7 +21,7 @@
     fail_msg: >-
       /usr/lib/python3/dist-packages/neutron/agent/ovn/metadata/agent.py does not
       exist in CT {{ pve_env1_k8s_vmid }}. The patch targets the package of the
-      nova-compute-kvm unit, so run --tags pve-ussuri-k8s-compute first.
+      nova-compute-kvm unit, so run playbooks/env1/k8s/stages/02-compute.yml first.
 
 - name: Install the patch script on the PVE host
   ansible.builtin.copy:

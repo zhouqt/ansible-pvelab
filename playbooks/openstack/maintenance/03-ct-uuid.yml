@@ -3,7 +3,6 @@
 - name: Give every openstack container its own SMBIOS system UUID
   hosts: pve
   become: false
-  tags: [never, openstack-pve-ct-system-uuid]
   tasks:
     - name: Apply the per-container SMBIOS system UUIDs
       ansible.builtin.include_role:

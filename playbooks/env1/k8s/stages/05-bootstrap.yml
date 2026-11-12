@@ -1,0 +1,10 @@
+---
+- name: env1 k8s — 5/7 bootstrap the Juju 3.6 controller
+  hosts: pve
+  become: false
+  tasks:
+    - name: Run the bootstrap stage
+      ansible.builtin.include_role:
+        name: pve-env1-k8s
+        tasks_from: bootstrap
+      when: pve_env1_k8s_run_bootstrap | bool

@@ -338,60 +338,11 @@
     executable: /bin/bash
   changed_when: false
 
-- name: Push the yoga APT-mirror helper to the PVE host
-  ansible.builtin.copy:
-    src: "{{ repo_root }}/pve/scripts/yoga-apt-mirror.sh"
-    dest: /root/yoga-apt-mirror.sh
-    owner: root
-    group: root
-    mode: "0700"
-  tags: [openstack-pve-apt-mirror]
-  when: pve_openstack_apt_mirror | length > 0
+- name: Point the workload containers at the APT mirror
+  ansible.builtin.import_tasks: apt-mirror.yml
 
-- name: Point the yoga workload CTs at the APT mirror
-  ansible.builtin.shell: |
-    set -euo pipefail
-    for vmid in {{ pve_openstack_workload_cts | map(attribute='vmid') | join(' ') }}; do
-      pct push "$vmid" /root/yoga-apt-mirror.sh /root/yoga-apt-mirror.sh --perms 0700
-      pct exec "$vmid" -- bash /root/yoga-apt-mirror.sh '{{ pve_openstack_apt_mirror }}'
-      pct exec "$vmid" -- rm -f /root/yoga-apt-mirror.sh
-    done
-  args:
-    executable: /bin/bash
-  register: pve_openstack_workload_ct_apt_mirror
-  changed_when: "'changed=1' in pve_openstack_workload_ct_apt_mirror.stdout"
-  tags: [openstack-pve-apt-mirror]
-  when: pve_openstack_apt_mirror | length > 0
-
-- name: Install the python3 modules the OpenStack charms expect from the OS
-  ansible.builtin.shell: |
-    set -euo pipefail
-    pkgs="{{ pve_openstack_unit_python3_packages | join(' ') }}"
-    if [ -z "$pkgs" ]; then
-      echo "PY3DEPS: none (profile {{ pve_openstack_profile }})"
-      exit 0
-    fi
-    installed=""
-    for vmid in {{ pve_openstack_workload_cts | map(attribute='vmid') | join(' ') }}; do
-      missing=""
-      for pkg in $pkgs; do
-        pct exec "$vmid" -- dpkg -s "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
-      done
-      if [ -z "$missing" ]; then
-        continue
-      fi
-      pct exec "$vmid" -- env DEBIAN_FRONTEND=noninteractive apt-get update -qq
-      for pkg in $missing; do
-        pct exec "$vmid" -- env DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" >/dev/null
-        installed="$installed $vmid:$pkg"
-      done
-    done
-    echo "PY3DEPS:${installed:- none}"
-  args:
-    executable: /bin/bash
-  register: pve_openstack_ct_python3_deps
-  changed_when: "'PY3DEPS: none' not in pve_openstack_ct_python3_deps.stdout"
-  tags: [openstack-pve-unit-python3-deps]
+- name: Install the python3 modules the OpenStack charms expect (containers)
+  ansible.builtin.import_tasks: unit-python3-deps.yml
 
 - name: Create and configure the yoga KVM workload VM
   ansible.builtin.include_tasks: kvm-workload.yml
@@ -591,57 +542,9 @@
     executable: /bin/bash
   changed_when: false
 
-- name: Point the yoga KVM guest at the APT mirror
-  ansible.builtin.shell: |
-    set -euo pipefail
-    pct push {{ pve_openstack_juju_client_vmid }} /root/yoga-apt-mirror.sh {{ pve_openstack_juju_stage_dir }}/yoga-apt-mirror.sh --perms 0700
-    pct exec {{ pve_openstack_juju_client_vmid }} -- chown {{ pve_openstack_juju_client_user }}:{{ pve_openstack_juju_client_user }} {{ pve_openstack_juju_stage_dir }}/yoga-apt-mirror.sh
-    pct exec {{ pve_openstack_juju_client_vmid }} -- su - {{ pve_openstack_juju_client_user }} -c '
-      set -e
-      ip={{ pve_openstack_public_prefix }}.{{ pve_openstack_workload_kvm_vmid - pve_openstack_ip_offset }}
-      scp -o StrictHostKeyChecking=no -q {{ pve_openstack_juju_stage_dir }}/yoga-apt-mirror.sh ubuntu@$ip:/tmp/
-      ssh -o StrictHostKeyChecking=no -q ubuntu@$ip "sudo bash /tmp/yoga-apt-mirror.sh {{ pve_openstack_apt_mirror }}"
-      rm -f {{ pve_openstack_juju_stage_dir }}/yoga-apt-mirror.sh
-    '
-  args:
-    executable: /bin/bash
-  register: pve_openstack_kvm_apt_mirror
-  changed_when: "'changed=1' in pve_openstack_kvm_apt_mirror.stdout"
-  tags: [openstack-pve-apt-mirror]
-  when: pve_openstack_apt_mirror | length > 0
+- name: Point the KVM workload guest at the APT mirror
+  ansible.builtin.import_tasks: apt-mirror-kvm.yml
 
-- name: Install the python3 modules the OpenStack charms expect from the OS (KVM workload)
-  ansible.builtin.shell: |
-    set -euo pipefail
-    pkgs="{{ pve_openstack_unit_python3_packages | join(' ') }}"
-    if [ -z "$pkgs" ]; then
-      echo "PY3DEPS: none (profile {{ pve_openstack_profile }})"
-      exit 0
-    fi
-    out="$(pct exec {{ pve_openstack_juju_client_vmid }} -- su - {{ pve_openstack_juju_client_user }} -c '
-      set -e
-      ip={{ pve_openstack_public_prefix }}.{{ pve_openstack_workload_kvm_vmid - pve_openstack_ip_offset }}
-      ssh -o StrictHostKeyChecking=no -q ubuntu@$ip "
-        miss=\"\"
-        for p in {{ pve_openstack_unit_python3_packages | join(' ') }}; do
-          dpkg -s \"\$p\" >/dev/null 2>&1 || miss=\"\$miss \$p\"
-        done
-        if [ -z \"\$miss\" ]; then
-          echo PY3DEPS-KVM: none
-          exit 0
-        fi
-        sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
-        sudo DEBIAN_FRONTEND=noninteractive apt-get -y install \$miss
-      "
-    ' 2>&1)"
-    echo "$out" | tail -3
-    if echo "$out" | grep -q "PY3DEPS-KVM: none"; then
-      echo "PY3DEPS: none"
-    else
-      echo "PY3DEPS: kvm {{ pve_openstack_unit_python3_packages | join(' ') }}"
-    fi
-  args:
-    executable: /bin/bash
-  register: pve_openstack_kvm_python3_deps
-  changed_when: "'PY3DEPS: none' not in pve_openstack_kvm_python3_deps.stdout"
-  tags: [openstack-pve-unit-python3-deps]
+- name: Install the python3 modules the OpenStack charms expect (KVM workload)
+  ansible.builtin.import_tasks: unit-python3-deps-kvm.yml
+

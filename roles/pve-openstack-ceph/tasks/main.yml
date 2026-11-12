@@ -26,7 +26,7 @@
       - pve_openstack_ceph_status.rc == 0
       - "'ceph-mon' in (pve_openstack_ceph_status.stdout | from_json).applications"
       - "'ceph-osd' in (pve_openstack_ceph_status.stdout | from_json).applications"
-    fail_msg: "run --tags openstack-pve-control-plane to deploy ceph-mon / ceph-osd first, then run the Ceph role."
+    fail_msg: "deploy ceph-mon / ceph-osd with playbooks/openstack/stages/06-control-plane.yml first, then run the Ceph role."
 
 - name: Copy OSD helper scripts to PVE host
   ansible.builtin.copy:
@@ -84,7 +84,7 @@
       thin pool {{ pve_openstack_osd_thinpool }} usage
       {{ pve_openstack_ceph_pool_usage.stdout.split()[1] }}% has reached the cap
       {{ pve_openstack_osd_thinpool_max_data_percent }}%({{ pve_openstack_ceph_pool_usage.stdout | trim }}).
-      tear down unused envs first (--tags openstack-pve-teardown) to free pool space, or raise
+      tear down unused envs first (playbooks/openstack/ops/05-teardown.yml) to free pool space, or raise
       pve_openstack_osd_thinpool_max_data_percent.
 
 - name: Build the vmid:osdindex mapping

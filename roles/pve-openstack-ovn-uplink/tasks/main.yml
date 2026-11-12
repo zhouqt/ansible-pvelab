@@ -43,7 +43,7 @@
         (((pve_openstack_ovn_status.stdout | from_json).applications['ovn-chassis'].get('subordinate-to')) or [])
     fail_msg: >-
       ovn-chassis is not a subordinate of nova-compute (or the application is missing). Finish
-      --tags openstack-pve-control-plane.
+      playbooks/openstack/stages/06-control-plane.yml.
 
 - name: Require nova-compute units on the compute machines and every one carrying an ovn-chassis subordinate
   ansible.builtin.command:

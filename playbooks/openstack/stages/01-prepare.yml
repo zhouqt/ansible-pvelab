@@ -3,5 +3,4 @@
 - name: Validate the PVE yoga host baseline (bridges, pub31 SNAT, jammy template)
   hosts: pve
   become: false
-  tags: [never, openstack-pve-prepare]
   roles: [pve-openstack-prepare]

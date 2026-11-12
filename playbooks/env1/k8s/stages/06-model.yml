@@ -1,0 +1,10 @@
+---
+- name: env1 k8s — 6/7 deploy Charmed Kubernetes
+  hosts: pve
+  become: false
+  tasks:
+    - name: Run the model and bundle stage
+      ansible.builtin.include_role:
+        name: pve-env1-k8s
+        tasks_from: model
+      when: pve_env1_k8s_run_deploy | bool

@@ -1,0 +1,36 @@
+---
+
+- name: Install the python3 modules the OpenStack charms expect from the OS (KVM workload)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pkgs="{{ pve_openstack_unit_python3_packages | join(' ') }}"
+    if [ -z "$pkgs" ]; then
+      echo "PY3DEPS: none (profile {{ pve_openstack_profile }})"
+      exit 0
+    fi
+    out="$(pct exec {{ pve_openstack_juju_client_vmid }} -- su - {{ pve_openstack_juju_client_user }} -c '
+      set -e
+      ip={{ pve_openstack_public_prefix }}.{{ pve_openstack_workload_kvm_vmid - pve_openstack_ip_offset }}
+      ssh -o StrictHostKeyChecking=no -q ubuntu@$ip "
+        miss=\"\"
+        for p in {{ pve_openstack_unit_python3_packages | join(' ') }}; do
+          dpkg -s \"\$p\" >/dev/null 2>&1 || miss=\"\$miss \$p\"
+        done
+        if [ -z \"\$miss\" ]; then
+          echo PY3DEPS-KVM: none
+          exit 0
+        fi
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+        sudo DEBIAN_FRONTEND=noninteractive apt-get -y install \$miss
+      "
+    ' 2>&1)"
+    echo "$out" | tail -3
+    if echo "$out" | grep -q "PY3DEPS-KVM: none"; then
+      echo "PY3DEPS: none"
+    else
+      echo "PY3DEPS: kvm {{ pve_openstack_unit_python3_packages | join(' ') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: pve_openstack_kvm_python3_deps
+  changed_when: "'PY3DEPS: none' not in pve_openstack_kvm_python3_deps.stdout"

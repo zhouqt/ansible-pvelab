@@ -1,0 +1,15 @@
+---
+
+- name: Install the python3 modules the OpenStack charms expect
+  hosts: pve
+  become: false
+  tasks:
+    - name: Workload containers
+      ansible.builtin.include_role:
+        name: pve-openstack-machines
+        tasks_from: unit-python3-deps
+
+    - name: KVM workload guest
+      ansible.builtin.include_role:
+        name: pve-openstack-machines
+        tasks_from: unit-python3-deps-kvm

@@ -12,7 +12,7 @@
     that: pve_obs_cos_hub_bridge_link.rc == 0
     fail_msg: >-
       {{ pve_obs_cos_hub_bridge }} does not exist on the host. The hub deliberately **reuses** env1's public bridge instead of creating one;
-      first make sure the reference environment (--tags pve-env1-prepare) has created that bridge.
+      first make sure the reference environment (playbooks/env1/stages/01-prepare.yml) has created that bridge.
 
 - name: Read the shared bridge addresses
   ansible.builtin.command:

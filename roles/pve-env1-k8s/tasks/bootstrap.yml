@@ -19,7 +19,7 @@
       CT {{ pve_env1_k8s_vmid }} still runs the stock OVN metadata agent. The
       bootstrap VM would get no metadata, no sshd, and the bootstrap would hang
       on "Attempting to connect to <fip>:22". Run
-      --tags pve-ussuri-k8s-metadata-patch first.
+      playbooks/env1/k8s/stages/03-metadata-patch.yml first.
 
 - name: Look up the jammy image id in Glance
   ansible.builtin.command:

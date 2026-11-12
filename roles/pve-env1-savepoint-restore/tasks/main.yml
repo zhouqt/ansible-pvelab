@@ -1,14 +1,12 @@
 ---
 
 - name: Require an explicit opt-in before restoring a savepoint
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.assert:
     that:
       - pve_env1_savepoint_restore | bool
     fail_msg: "restoring from a snapshot is refused by default. Confirm and add -e pve_env1_savepoint_restore=true."
 
 - name: Require a savepoint name
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.assert:
     that:
       - pve_env1_savepoint_name | length > 0
@@ -16,30 +14,26 @@
     fail_msg: "pve_env1_savepoint_name is required and may only contain letters, digits and . _ -."
 
 - name: Define the savepoint prefix and the metadata path
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.set_fact:
     pve_env1_savepoint_prefix: "sp-{{ pve_env1_savepoint_env_short }}-{{ pve_env1_savepoint_name }}"
     pve_env1_savepoint_metadata: >-
       /root/ussuri-savepoint-{{ pve_env1_savepoint_env_short }}-{{ pve_env1_savepoint_name }}.txt
 
 - name: Require the savepoint metadata to exist
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.stat:
     path: "{{ pve_env1_savepoint_metadata }}"
   register: pve_env1_meta_stat
 
 - name: Fail when the savepoint metadata is missing
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.assert:
     that:
       - pve_env1_meta_stat.stat.exists
     fail_msg: >-
       {{ pve_env1_savepoint_metadata }} does not exist.
-      take a savepoint first: --tags openstack-ussuri-savepoint -e pve_env1_savepoint_take=true
+      take a savepoint first: playbooks/env1/ops/01-savepoint.yml -e pve_env1_savepoint_take=true
       -e pve_env1_savepoint_name={{ pve_env1_savepoint_name }}
 
 - name: Install the restore helpers on the PVE host
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.copy:
     src: "{{ item.src }}"
     dest: "{{ item.dest }}"
@@ -53,7 +47,6 @@
     label: "{{ item.dest }}"
 
 - name: Preflight the restore before stopping anything
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.command: >-
     python3 /root/.ansible-ussuri-preflight-restore.py
     {% if pve_env1_savepoint_restore_conf | bool %}--ignore-conf-check{% endif %}
@@ -63,7 +56,6 @@
   failed_when: false
 
 - name: Fail when the preflight rejects the restore
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.assert:
     that:
       - pve_env1_preflight.rc == 0
@@ -73,7 +65,6 @@
          | default([pve_env1_preflight.stderr]) }}
 
 - name: Define the volume and guest lists from the metadata
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.set_fact:
     pve_env1_savepoint_volumes: "{{ (pve_env1_preflight.stdout | from_json).volumes }}"
     pve_env1_savepoint_guests: >-
@@ -88,7 +79,6 @@
       {{ out }}
 
 - name: Show the restore plan
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.debug:
     msg: >-
       will restore from {{ pve_env1_savepoint_prefix }}-*
@@ -98,14 +88,12 @@
       restore guest conf: {{ pve_env1_savepoint_restore_conf | bool }}.
 
 - name: Define the workload guest list (everything except the controller)
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.set_fact:
     pve_env1_savepoint_workers: >-
       {{ pve_env1_savepoint_guests
          | rejectattr('vmid', 'equalto', pve_env1_savepoint_controller_vmid | int) | list }}
 
 - name: Stop the workload guests in parallel
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.command: >-
     /root/.ansible-ussuri-guest-control.sh stop {{ pve_env1_savepoint_restore_parallel }}
     {% for g in pve_env1_savepoint_workers %}{{ g.vmid }}:{{ g.kind }} {% endfor %}
@@ -113,7 +101,6 @@
   changed_when: "'GUEST-STOPPED' in pve_env1_stop_workers.stdout"
 
 - name: Stop the Juju controller last
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.shell: |
     set -uo pipefail
     vmid={{ pve_env1_savepoint_controller_vmid }}
@@ -128,7 +115,6 @@
   changed_when: "'GUEST-STOPPED' in pve_env1_stop_ctrl.stdout"
 
 - name: Swap each volume back to its savepoint and activate it
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.shell: |
     set -euo pipefail
     origin="{{ item.origin }}"
@@ -151,7 +137,6 @@
   changed_when: "'RESTORE-SWAPPED' in pve_env1_swap.stdout"
 
 - name: Restore the guest configuration files from the savepoint archive
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.shell: |
     set -euo pipefail
     archive="/root/ussuri-savepoint-{{ pve_env1_savepoint_env_short }}-{{ pve_env1_savepoint_name }}-conf.tar.gz"
@@ -165,7 +150,6 @@
   when: pve_env1_savepoint_restore_conf | bool
 
 - name: Give every restored CT its own SMBIOS system UUID
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.include_role:
     name: pve-common-ct-uuid
   vars:
@@ -175,12 +159,10 @@
     pve_common_ct_uuid_apply_live: true
 
 - name: Start the Juju controller first
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.command: "pct start {{ pve_env1_savepoint_controller_vmid }}"
   changed_when: true
 
 - name: Wait for the controller to accept pct exec
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.command: "pct exec {{ pve_env1_savepoint_controller_vmid }} -- true"
   register: pve_env1_ctrl_up
   retries: 36
@@ -189,7 +171,6 @@
   changed_when: false
 
 - name: Start the workload guests in parallel
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.command: >-
     /root/.ansible-ussuri-guest-control.sh start {{ pve_env1_savepoint_restore_parallel }}
     {% for g in pve_env1_savepoint_workers %}{{ g.vmid }}:{{ g.kind }} {% endfor %}
@@ -197,7 +178,6 @@
   changed_when: "'GUEST-STARTED' in pve_env1_start_workers.stdout"
 
 - name: Bring br-ex up on every compute node
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.shell: |
     set -uo pipefail
     vmid={{ item.vmid }}
@@ -219,5 +199,4 @@
   failed_when: false
 
 - name: Hand off to the ussuri convergence chain
-  tags: [openstack-ussuri-savepoint-restore]
   ansible.builtin.include_tasks: converge.yml

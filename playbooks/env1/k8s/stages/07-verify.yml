@@ -1,0 +1,9 @@
+---
+- name: env1 k8s — 7/7 verify the cluster
+  hosts: pve
+  become: false
+  tasks:
+    - name: Run the verify stage
+      ansible.builtin.include_role:
+        name: pve-env1-k8s
+        tasks_from: verify

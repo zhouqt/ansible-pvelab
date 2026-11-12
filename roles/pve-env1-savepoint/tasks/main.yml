@@ -1,14 +1,12 @@
 ---
 
 - name: Require an explicit opt-in before taking a savepoint
-  tags: [openstack-ussuri-savepoint]
   ansible.builtin.assert:
     that:
       - pve_env1_savepoint_take | bool
     fail_msg: "taking a savepoint is refused by default. Once env1 is confirmed healthy, add -e pve_env1_savepoint_take=true."
 
 - name: Require a savepoint name
-  tags: [openstack-ussuri-savepoint]
   ansible.builtin.assert:
     that:
       - pve_env1_savepoint_name | length > 0
@@ -16,7 +14,6 @@
     fail_msg: "pve_env1_savepoint_name is required and may only contain letters, digits and . _ - (e.g. baseline, 20261024-1)."
 
 - name: Refuse to snapshot when the thin pool is too full
-  tags: [openstack-ussuri-savepoint]
   ansible.builtin.shell: |
     set -euo pipefail
     pct=$(lvs --noheadings -o data_percent pve-thin-pool/pve-thin-pool | tr -d ' ')
@@ -30,7 +27,6 @@
   failed_when: pve_env1_savepoint_pool.rc != 0
 
 - name: Install the volume discovery helper on the PVE host
-  tags: [openstack-ussuri-savepoint]
   ansible.builtin.copy:
     src: discover-volumes.py
     dest: /root/.ansible-ussuri-discover-volumes.py
@@ -39,7 +35,6 @@
     mode: "0700"
 
 - name: Discover every pve-thin-pool volume backing this environment
-  tags: [openstack-ussuri-savepoint]
   ansible.builtin.command:
     argv:
       - python3
@@ -59,7 +54,6 @@
   changed_when: false
 
 - name: Define the savepoint prefix and the selected volume set
-  tags: [openstack-ussuri-savepoint]
   ansible.builtin.set_fact:
     pve_env1_savepoint_prefix: "sp-{{ pve_env1_savepoint_env_short }}-{{ pve_env1_savepoint_name }}"
     pve_env1_savepoint_all_volumes: "{{ pve_env1_savepoint_discover.stdout | from_json }}"
@@ -68,7 +62,6 @@
          | rejectattr('skip') | list }}
 
 - name: Show what will be snapshotted and what is excluded
-  tags: [openstack-ussuri-savepoint]
   ansible.builtin.debug:
     msg: >-
       {{ ['will snapshot %d volumes (%d guests):' | format(pve_env1_savepoint_volumes | length,
@@ -82,7 +75,6 @@
          + (pve_env1_savepoint_all_volumes.warnings | default([])) }}
 
 - name: Snapshot each selected volume
-  tags: [openstack-ussuri-savepoint]
   ansible.builtin.shell: |
     set -euo pipefail
     base="{{ pve_env1_savepoint_prefix }}-{{ item.role }}-{{ item.key }}"
@@ -101,7 +93,6 @@
   changed_when: "'SAVEPOINT-TAKEN' in pve_env1_savepoint_taken.stdout"
 
 - name: Back up the guest configuration files
-  tags: [openstack-ussuri-savepoint]
   ansible.builtin.shell: |
     set -euo pipefail
     out="/root/ussuri-savepoint-{{ pve_env1_savepoint_env_short }}-{{ pve_env1_savepoint_name }}-conf.tar.gz"
@@ -124,7 +115,6 @@
   changed_when: "'CONF-BACKED-UP' in pve_env1_savepoint_conf.stdout"
 
 - name: Record the savepoint metadata on the PVE host
-  tags: [openstack-ussuri-savepoint]
   ansible.builtin.copy:
     dest: "/root/ussuri-savepoint-{{ pve_env1_savepoint_env_short }}-{{ pve_env1_savepoint_name }}.txt"
     owner: root
@@ -143,12 +133,11 @@
       {% endfor %}
 
 - name: Report the savepoint result
-  tags: [openstack-ussuri-savepoint]
   ansible.builtin.debug:
     msg: >-
       savepoint taken: {{ pve_env1_savepoint_prefix }}-*
       ({{ pve_env1_savepoint_volumes | length }} volumes /
        {{ pve_env1_savepoint_volumes | map(attribute='vmid') | unique | length }} guests),
       conf backup: {{ pve_env1_savepoint_conf.stdout | regex_search('/root/\\S+') | default('already present, unchanged') }}.
-      restore: --tags openstack-ussuri-savepoint-restore -e pve_env1_savepoint_restore=true
+      restore: playbooks/env1/ops/02-savepoint-restore.yml -e pve_env1_savepoint_restore=true
       -e pve_env1_savepoint_name={{ pve_env1_savepoint_name }}

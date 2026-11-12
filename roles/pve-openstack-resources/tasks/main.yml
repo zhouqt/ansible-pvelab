@@ -52,7 +52,7 @@
       authentication against Keystone {{ pve_openstack_keystone_address }} failed. Common causes:
         1. the controller machine has no route to {{ pve_openstack_public_cidr }} -- add one:
            sudo ip route add {{ pve_openstack_public_cidr }} via {{ pve_openstack_control_route_gateway }} dev <local NIC>
-        2. this env's control plane is not deployed yet (run --tags openstack-pve-control-plane first and confirm the keystone unit is active)
+        2. this env's control plane is not deployed yet (run playbooks/openstack/stages/06-control-plane.yml first and confirm the keystone unit is active)
       --- stderr ---
       {{ pve_openstack_resources_token.stderr | default('') }}
       --- stdout ---

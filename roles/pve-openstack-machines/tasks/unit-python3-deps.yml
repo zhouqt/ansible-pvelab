@@ -1,0 +1,30 @@
+---
+
+- name: Install the python3 modules the OpenStack charms expect from the OS
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pkgs="{{ pve_openstack_unit_python3_packages | join(' ') }}"
+    if [ -z "$pkgs" ]; then
+      echo "PY3DEPS: none (profile {{ pve_openstack_profile }})"
+      exit 0
+    fi
+    installed=""
+    for vmid in {{ pve_openstack_workload_cts | map(attribute='vmid') | join(' ') }}; do
+      missing=""
+      for pkg in $pkgs; do
+        pct exec "$vmid" -- dpkg -s "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+      done
+      if [ -z "$missing" ]; then
+        continue
+      fi
+      pct exec "$vmid" -- env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+      for pkg in $missing; do
+        pct exec "$vmid" -- env DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" >/dev/null
+        installed="$installed $vmid:$pkg"
+      done
+    done
+    echo "PY3DEPS:${installed:- none}"
+  args:
+    executable: /bin/bash
+  register: pve_openstack_ct_python3_deps
+  changed_when: "'PY3DEPS: none' not in pve_openstack_ct_python3_deps.stdout"

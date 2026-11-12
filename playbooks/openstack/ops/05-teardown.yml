@@ -3,5 +3,4 @@
 - name: Tear down the PVE yoga environment
   hosts: pve
   become: false
-  tags: [never, openstack-pve-teardown]
   roles: [pve-openstack-teardown]

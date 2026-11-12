@@ -38,8 +38,8 @@
       the OSD devices / CT conf are still incomplete and need creating or rewriting (see the dry-run output below). This stage refuses to
       on a running CT -- that would restart the OSD CT that hosts MySQL.
       {{ pve_env1_osd_lv_dry.stdout_lines | join(' | ') }}
-      how to handle: make sure --tags pve-env1-machines ran to completion (it writes the devices before pct start),
-      tear it down and start over if need be (--tags pve-env1-teardown).
+      how to handle: make sure playbooks/env1/stages/04-machines.yml ran to completion (it writes the devices before pct start),
+      tear it down and start over if need be (playbooks/env1/ops/03-teardown.yml).
 
 - name: Build the ceph-osd unit to guest mapping from the topology
   ansible.builtin.set_fact:

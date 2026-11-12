@@ -21,7 +21,7 @@
       - pve_obs_cos_hub_client_pubkey.stdout is match('^ssh-ed25519 [A-Za-z0-9+/]+={0,3}( .*)?$')
     fail_msg: >-
       the ubuntu user on CT {{ pve_obs_cos_hub_juju_client_vmid }} has no usable ed25519 public key;
-      initialise that CT the way the reference environment does (--tags pve-env1-juju-ctrl).
+      initialise that CT the way the reference environment does (playbooks/env1/stages/03-juju-ctrl.yml).
 
 - name: Create the missing hub CTs
   ansible.builtin.command:

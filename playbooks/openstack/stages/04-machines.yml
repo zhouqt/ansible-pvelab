@@ -3,5 +3,4 @@
 - name: Create and register PVE yoga workload machines
   hosts: pve
   become: false
-  tags: [never, openstack-pve-machines]
   roles: [pve-openstack-machines]

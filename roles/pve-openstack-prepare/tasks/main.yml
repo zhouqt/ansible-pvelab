@@ -25,7 +25,7 @@
     fail_msg: >-
       missing on the host: bridge {{ pve_openstack_prepare_bridges.results | selectattr('rc', 'ne', 0)
       | map(attribute='item.bridge') | join('/') }}. Run
-      `--tags openstack-pve-sdn -e pve_openstack_run_sdn=true -e @env/yoga-env<N>.yml` register this env's
+      `playbooks/openstack/stages/02-sdn.yml -e pve_openstack_run_sdn=true -e @playbooks/openstack/envs/env<N>.yml` registers this env's
       the 4 SDN vnets (registering/applying them requires every guest of this env to be stopped), then re-run this stage.
 
 - name: Define this environment's SNAT network list

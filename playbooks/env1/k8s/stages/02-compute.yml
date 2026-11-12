@@ -1,0 +1,10 @@
+---
+- name: env1 k8s — 2/7 register the machine and its compute unit
+  hosts: pve
+  become: false
+  tasks:
+    - name: Run the compute stage
+      ansible.builtin.include_role:
+        name: pve-env1-k8s
+        tasks_from: compute
+      when: pve_env1_k8s_run_compute | bool

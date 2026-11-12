@@ -59,7 +59,7 @@
       --unprivileged 0 --features '{{ pve_env1_k8s_features }}' \
       "${nets[@]}" \
       --nameserver {{ pve_env1_k8s_nameserver }} \
-      --tags '{{ pve_env1_k8s_tags }}' \
+      '{{ pve_env1_k8s_tags }}' \
       --onboot 1 --startup 'order=3'
     echo "CREATE-OK $vmid {{ pve_env1_k8s_hostname }}"
   args:
@@ -91,7 +91,7 @@
 - name: Install the container-config helper on the PVE host
   ansible.builtin.copy:
     src: k8s_ct_conf.py
-    dest: /root/pve-ussuri-k8s-ct-conf.py
+    dest: /root/pve-env1-k8s-ct-conf.py
     owner: root
     group: root
     mode: "0700"
@@ -100,7 +100,7 @@
   ansible.builtin.command:
     argv:
       - python3
-      - /root/pve-ussuri-k8s-ct-conf.py
+      - /root/pve-env1-k8s-ct-conf.py
       - "/etc/pve/lxc/{{ pve_env1_k8s_vmid }}.conf"
       - --dev
       - /dev/net/tun
@@ -156,12 +156,12 @@
     fail_msg: >-
       CT {{ pve_env1_k8s_juju_client_vmid }} has no usable ed25519 key for
       {{ pve_env1_k8s_juju_client_user }}; initialise that CT first
-      (--tags pve-env1-juju-ctrl).
+      (playbooks/env1/stages/03-juju-ctrl.yml).
 
 - name: Push the CT init script to the PVE host
   ansible.builtin.copy:
     src: "{{ repo_root }}/pve/scripts/juju-ct-init.sh"
-    dest: /root/pve-ussuri-k8s-ct-init.sh
+    dest: /root/pve-env1-k8s-ct-init.sh
     owner: root
     group: root
     mode: "0700"
@@ -170,7 +170,7 @@
   ansible.builtin.shell: |
     set -euo pipefail
     vmid={{ pve_env1_k8s_vmid }}
-    pct push "$vmid" /root/pve-ussuri-k8s-ct-init.sh /root/juju-ct-init.sh --perms 0700
+    pct push "$vmid" /root/pve-env1-k8s-ct-init.sh /root/juju-ct-init.sh --perms 0700
     for attempt in $(seq 1 15); do
       if out="$(pct exec "$vmid" -- env JUJU_CLIENT_PUBKEY='{{ pve_env1_k8s_client_pubkey.stdout | trim }}' \
                  bash /root/juju-ct-init.sh 2>/dev/null)"; then
@@ -191,7 +191,7 @@
 - name: Push the APT-mirror helper to the PVE host
   ansible.builtin.copy:
     src: "{{ repo_root }}/pve/scripts/yoga-apt-mirror.sh"
-    dest: /root/pve-ussuri-k8s-apt-mirror.sh
+    dest: /root/pve-env1-k8s-apt-mirror.sh
     owner: root
     group: root
     mode: "0700"
@@ -201,7 +201,7 @@
   ansible.builtin.shell: |
     set -euo pipefail
     vmid={{ pve_env1_k8s_vmid }}
-    pct push "$vmid" /root/pve-ussuri-k8s-apt-mirror.sh /root/apt-mirror.sh --perms 0700
+    pct push "$vmid" /root/pve-env1-k8s-apt-mirror.sh /root/apt-mirror.sh --perms 0700
     pct exec "$vmid" -- bash /root/apt-mirror.sh '{{ pve_env1_k8s_apt_mirror }}'
     pct exec "$vmid" -- rm -f /root/apt-mirror.sh
   args:

@@ -15,7 +15,7 @@
       - pve_openstack_series == 'focal' or (pve_obs_lma_clients_allow_any_series | bool)
     fail_msg: >-
       this role only serves focal environments (currently pve_openstack_series={{ pve_openstack_series }}).
-      for jammy/noble use --tags openstack-pve-observability (the COS route).
+      for jammy/noble use playbooks/observability/cos-clients.yml (the COS route).
 
 - name: Plan the LMA wiring against the applications actually deployed
   ansible.builtin.shell: |

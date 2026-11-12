@@ -33,7 +33,7 @@
 - name: Render the cloud definition
   ansible.builtin.copy:
     content: "{{ lookup('template', 'openstack-cloud-env1.yaml.j2') }}"
-    dest: /root/pve-ussuri-k8s-openstack-cloud.yaml
+    dest: /root/pve-env1-k8s-openstack-cloud.yaml
     owner: root
     group: root
     mode: "0600"
@@ -43,7 +43,7 @@
 - name: Render the credential
   ansible.builtin.copy:
     content: "{{ lookup('template', 'openstack-creds-env1.yaml.j2') }}"
-    dest: /root/pve-ussuri-k8s-openstack-creds.yaml
+    dest: /root/pve-env1-k8s-openstack-creds.yaml
     owner: root
     group: root
     mode: "0600"
@@ -56,8 +56,8 @@
     set -euo pipefail
     vmid={{ pve_env1_k8s_juju_client_vmid }}
     user={{ pve_env1_k8s_juju_client_user }}
-    pct push "$vmid" /root/pve-ussuri-k8s-openstack-cloud.yaml /home/$user/.ussuri-k8s-cloud.yaml --perms 0600
-    pct push "$vmid" /root/pve-ussuri-k8s-openstack-creds.yaml /home/$user/.ussuri-k8s-creds.yaml --perms 0600
+    pct push "$vmid" /root/pve-env1-k8s-openstack-cloud.yaml /home/$user/.ussuri-k8s-cloud.yaml --perms 0600
+    pct push "$vmid" /root/pve-env1-k8s-openstack-creds.yaml /home/$user/.ussuri-k8s-creds.yaml --perms 0600
   args:
     executable: /bin/bash
   changed_when: false
@@ -124,7 +124,7 @@
     pct exec {{ pve_env1_k8s_juju_client_vmid }} -- rm -f \
       /home/{{ pve_env1_k8s_juju_client_user }}/.ussuri-k8s-cloud.yaml \
       /home/{{ pve_env1_k8s_juju_client_user }}/.ussuri-k8s-creds.yaml
-    rm -f /root/pve-ussuri-k8s-openstack-cloud.yaml /root/pve-ussuri-k8s-openstack-creds.yaml
+    rm -f /root/pve-env1-k8s-openstack-cloud.yaml /root/pve-env1-k8s-openstack-creds.yaml
   args:
     executable: /bin/bash
   changed_when: false

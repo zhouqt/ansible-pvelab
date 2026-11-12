@@ -1,0 +1,20 @@
+---
+
+- name: Point every openstack guest at the APT mirror
+  hosts: pve
+  become: false
+  tasks:
+    - name: Workload containers
+      ansible.builtin.include_role:
+        name: pve-openstack-machines
+        tasks_from: apt-mirror
+
+    - name: KVM workload guest
+      ansible.builtin.include_role:
+        name: pve-openstack-machines
+        tasks_from: apt-mirror-kvm
+
+    - name: Juju controller container
+      ansible.builtin.include_role:
+        name: pve-openstack-juju-ctrl
+        tasks_from: apt-mirror

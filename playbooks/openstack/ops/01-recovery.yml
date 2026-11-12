@@ -3,5 +3,4 @@
 - name: Recover the PVE yoga environment after a host or guest reboot
   hosts: pve
   become: false
-  tags: [never, openstack-pve-recovery]
   roles: [pve-openstack-recovery]
