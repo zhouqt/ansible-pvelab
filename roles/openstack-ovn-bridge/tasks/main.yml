@@ -1,0 +1,98 @@
+---
+- name: Switch to openstack model
+  shell: "{{ juju_openstack_cmd }} switch {{ juju_controller_name }}:admin/{{ juju_model_name }}"
+  changed_when: false
+
+- name: Get compute VM management IPs
+  shell: |
+    for vm in {{ compute_vms | join(' ') }}; do
+      ip=$(lxc list $vm --project {{ lxd_project }} --format json 2>/dev/null | \
+           jq -r '[.[].state.network | to_entries[] | select(.key != "lo") | .value.addresses[] | select(.family=="inet" and (.address | startswith("192.168.165.")))] | .[0].address' 2>/dev/null)
+      echo "$vm:$ip"
+    done
+  register: compute_ips
+  changed_when: false
+
+- name: Discover virbr0 NIC name on first compute node
+  shell: |
+    vm_ip=$(echo "{{ compute_ips.stdout_lines[0] }}" | cut -d: -f2)
+    ssh -o StrictHostKeyChecking=no ubuntu@$vm_ip bash -s << 'SCRIPT'
+    MGMT_IFACE=$(ip -4 -o addr show | grep '192\.168\.165\.' | awk '{print $2}' | head -1)
+    VIRBR0_IFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -v "^lo$" | grep -v "^$MGMT_IFACE$" | grep -v "^br-" | grep -v "^ovs-" | head -1)
+    echo "$VIRBR0_IFACE"
+    SCRIPT
+  register: virbr0_nic_name
+  changed_when: false
+
+- name: Display discovered virbr0 NIC name
+  debug:
+    msg: "virbr0 NIC on compute nodes: {{ virbr0_nic_name.stdout }}"
+
+- name: Set OVN chassis bridge-interface-mappings
+  shell: |
+    {{ juju_openstack_cmd }} config ovn-chassis bridge-interface-mappings="br-ex:{{ virbr0_nic_name.stdout }}"
+    echo "Set bridge-interface-mappings to br-ex:{{ virbr0_nic_name.stdout }}"
+  register: set_bridge_config
+  changed_when: true
+
+- name: Wait for OVN chassis to reconfigure
+  pause:
+    seconds: 30
+
+- name: Migrate IP from virbr0 NIC to br-ex on compute nodes
+  shell: |
+    vm_ip=$(echo "{{ item }}" | cut -d: -f2)
+    [ -z "$vm_ip" ] && exit 0
+    ssh -o StrictHostKeyChecking=no ubuntu@$vm_ip bash -s << 'SCRIPT'
+    MGMT_IFACE=$(ip -4 -o addr show | grep '192\.168\.165\.' | awk '{print $2}' | head -1)
+    VIRBR0_IFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -v "^lo$" | grep -v "^$MGMT_IFACE$" | grep -v "^br-" | grep -v "^ovs-" | head -1)
+    echo "Management NIC: $MGMT_IFACE, virbr0 NIC: $VIRBR0_IFACE"
+
+    CURRENT_IP=$(ip -4 -o addr show $VIRBR0_IFACE 2>/dev/null | awk '{print $4}' | head -1)
+    if [ -n "$CURRENT_IP" ]; then
+      echo "Moving $CURRENT_IP from $VIRBR0_IFACE to br-ex"
+      sudo ip addr del $CURRENT_IP dev $VIRBR0_IFACE 2>/dev/null || true
+      sudo ip addr add $CURRENT_IP dev br-ex 2>/dev/null || true
+      sudo ip route replace default via 192.168.122.1 dev br-ex 2>/dev/null || true
+    else
+      echo "No IP on $VIRBR0_IFACE, checking br-ex..."
+      ip addr show br-ex 2>/dev/null | grep "inet " || echo "br-ex has no IP yet"
+    fi
+
+    sudo rm -f /etc/netplan/60-virbr0-nic.yaml 2>/dev/null || true
+    sudo tee /etc/netplan/60-br-ex.yaml << EOF
+    network:
+      version: 2
+      ethernets:
+        $VIRBR0_IFACE:
+          dhcp4: false
+      bridges:
+        br-ex:
+          interfaces: [$VIRBR0_IFACE]
+          dhcp4: true
+          dhcp4-overrides:
+            use-routes: false
+          routes:
+            - to: default
+              via: 192.168.122.1
+              metric: 100
+    EOF
+    sudo chmod 600 /etc/netplan/60-br-ex.yaml
+    echo "Netplan updated for br-ex over $VIRBR0_IFACE on $(hostname)"
+    SCRIPT
+  loop: "{{ compute_ips.stdout_lines }}"
+  changed_when: true
+  ignore_errors: true
+
+- name: Verify ovn-chassis status
+  shell: |
+    {{ juju_openstack_cmd }} status ovn-chassis --format json 2>/dev/null | \
+    jq -r '.applications["ovn-chassis"]["units"] | to_entries[] | "\(.key): \(.value["workload-status"].current)"'
+  register: ovn_status
+  changed_when: false
+  ignore_errors: true
+
+- name: Display OVN chassis status
+  debug:
+    msg: "OVN Chassis Status: {{ ovn_status.stdout }}"
+

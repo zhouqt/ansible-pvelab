@@ -1,0 +1,49 @@
+defaults
+    mode    {{ haproxy_mode }}
+    timeout connect {{ haproxy_connect_timeout }}
+    timeout client  {{ haproxy_client_timeout }}
+    timeout server  {{ haproxy_server_timeout }}
+    timeout tunnel  1h
+    option  httplog
+
+frontend maas
+    bind    *:80
+    retries {{ haproxy_retries }}
+    option  redispatch
+
+    acl is_ws hdr(Upgrade) -i websocket
+    acl is_ws_path path_beg /MAAS/ws
+
+    option  http-keep-alive
+    http-request set-header Connection keep-alive if is_ws
+
+    default_backend maas
+
+backend maas
+    timeout server {{ haproxy_server_timeout }}
+    balance {{ haproxy_balance_algorithm }}
+    hash-type {{ haproxy_hash_type }}
+{% for host in groups['maas_ha'] %}
+    server maas-api-{{ loop.index0 }} {{ hostvars[host]['ansible_host'] }}:5240 check
+{% endfor %}
+
+frontend maas_tls
+    bind    *:443
+    retries {{ haproxy_retries }}
+    option  redispatch
+
+    acl is_ws hdr(Upgrade) -i websocket
+    acl is_ws_path path_beg /MAAS/ws
+
+    option  http-keep-alive
+    http-request set-header Connection keep-alive if is_ws
+
+    default_backend maas_tls
+
+backend maas_tls
+    timeout server {{ haproxy_server_timeout }}
+    balance {{ haproxy_balance_algorithm }}
+    hash-type {{ haproxy_hash_type }}
+{% for host in groups['maas_ha'] %}
+    server maas-api-{{ loop.index0 }} {{ hostvars[host]['ansible_host'] }}:5443 check
+{% endfor %}

@@ -1,0 +1,95 @@
+---
+- name: Check if bundle already deployed
+  shell: juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --format json 2>/dev/null | jq '.applications | length'
+  register: app_count
+  changed_when: false
+
+- name: Deploy OpenStack bundle with LXD overlay (includes space bindings)
+  shell: |
+    cd {{ project_dir }}
+    juju-29 deploy ./bundles/openstack-bundle.yaml \
+      --overlay ./bundles/openstack-lxd-overlay.yaml \
+      --map-machines=existing,0=0,1=1,2=2,3=3,4=4,5=5,6=6,7=7,8=8,9=9,10=10,11=11,12=12,13=13,14=14,15=15 \
+      -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }}
+  when: app_count.stdout | int < 5
+  register: deploy_result
+  retries: 3
+  until: deploy_result.rc == 0
+  delay: 30
+
+- name: Wait for containers to be created (2 minutes)
+  pause:
+    minutes: 2
+  when: deploy_result is changed
+
+- name: Fix DNS resolution in all model containers
+  shell: |
+    for container in $(lxc list --project {{ os_lxd_project }} -f csv -c n | grep "juju-"); do
+      lxc exec "$container" --project {{ os_lxd_project }} -- bash -c "
+        mkdir -p /etc/systemd/resolved.conf.d
+        printf '[Resolve]\nDNS=8.8.8.8 8.8.4.4\n' > /etc/systemd/resolved.conf.d/dns.conf
+        systemctl restart systemd-resolved 2>/dev/null || true
+      " 2>/dev/null || true
+    done
+  changed_when: true
+
+- name: Fix APT mirror in all model containers
+  shell: |
+    for container in $(lxc list --project {{ os_lxd_project }} -f csv -c n | grep "juju-"); do
+      lxc exec "$container" --project {{ os_lxd_project }} -- bash -c "
+        sed -i 's|archive.ubuntu.com|{{ apt_mirror }}|g' /etc/apt/sources.list 2>/dev/null || true
+        sed -i 's|security.ubuntu.com|{{ apt_mirror }}|g' /etc/apt/sources.list 2>/dev/null || true
+      " 2>/dev/null || true
+    done
+    for container in os-compute-0 os-compute-1; do
+      lxc exec "$container" --project {{ os_lxd_project }} -- bash -c "
+        sed -i 's|archive.ubuntu.com|{{ apt_mirror }}|g' /etc/apt/sources.list 2>/dev/null || true
+        sed -i 's|security.ubuntu.com|{{ apt_mirror }}|g' /etc/apt/sources.list 2>/dev/null || true
+      " 2>/dev/null || true
+    done
+  changed_when: true
+
+- name: Resolve any failed Juju units after DNS/apt fixes
+  shell: |
+    ERRORS=$(juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --format json 2>/dev/null | \
+      jq -r '.applications[].units // {} | to_entries[] | select(.value["workload-status"].current == "error") | .key')
+    for unit in $ERRORS; do
+      juju-29 resolved -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} "$unit" 2>/dev/null || true
+    done
+    echo "Resolved: $ERRORS"
+  changed_when: true
+  register: resolved_units
+
+- name: Wait for resolved units to retry hooks (2 minutes)
+  pause:
+    minutes: 2
+  when: resolved_units.stdout is search("Resolved:") and resolved_units.stdout | regex_search("[a-z]+-[a-z]+/[0-9]+")
+
+- name: Apply static IPs to any new containers from bundle deployment
+  shell: |
+    {% raw %}
+    for container in $(lxc list --project {{ os_lxd_project }} -f csv -c n | grep "juju-"); do
+      lxc exec "$container" --project {{ os_lxd_project }} -- test -f /etc/netplan/150-static.yaml 2>/dev/null && continue
+
+      ETH0_IP=$(lxc exec "$container" --project {{ os_lxd_project }} -- ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+      ETH1_IP=$(lxc exec "$container" --project {{ os_lxd_project }} -- ip -4 -o addr show eth1 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+      ETH0_MAC=$(lxc exec "$container" --project {{ os_lxd_project }} -- ip link show eth0 2>/dev/null | grep ether | awk '{print $2}')
+      ETH1_MAC=$(lxc exec "$container" --project {{ os_lxd_project }} -- ip link show eth1 2>/dev/null | grep ether | awk '{print $2}')
+      [ -z "$ETH0_IP" ] || [ -z "$ETH0_MAC" ] && continue
+
+      if [ -n "$ETH1_IP" ] && [ -n "$ETH1_MAC" ]; then
+        ETH1_BLOCK="    eth1:\n      match:\n        macaddress: ${ETH1_MAC}\n      addresses: [${ETH1_IP}/24]\n      routes:\n        - to: 192.168.165.0/24\n          via: 192.168.165.1\n          metric: 200\n      dhcp4: false\n"
+      else
+        ETH1_BLOCK=""
+      fi
+
+      lxc exec "$container" --project {{ os_lxd_project }} -- bash -c "
+        printf 'network:\n  version: 2\n  ethernets:\n    eth0:\n      match:\n        macaddress: ${ETH0_MAC}\n      addresses: [${ETH0_IP}/24]\n      routes:\n        - to: default\n          via: 192.168.122.1\n          metric: 100\n      nameservers:\n        addresses: [8.8.8.8, 8.8.4.4]\n      dhcp4: false\n${ETH1_BLOCK}' > /etc/netplan/150-static.yaml
+        chmod 600 /etc/netplan/150-static.yaml
+        netplan apply 2>/dev/null || true
+      " 2>/dev/null || true
+      echo "NEW $container: eth0=$ETH0_IP eth1=$ETH1_IP"
+    done
+    {% endraw %}
+  changed_when: true
+

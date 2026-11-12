@@ -1,0 +1,63 @@
+---
+- name: Check whether MAAS controller CT already exists
+  ansible.builtin.command: "pct status {{ pve_maas_vmid }}"
+  register: pve_maas_status
+  failed_when: false
+  changed_when: false
+
+- name: Read existing MAAS controller CT configuration
+  ansible.builtin.command: "pct config {{ pve_maas_vmid }}"
+  register: pve_maas_config
+  changed_when: false
+  when: pve_maas_status.rc == 0
+
+- name: Check existing MAAS controller data volume
+  ansible.builtin.command: "pvesm path {{ pve_maas_data_mount }}"
+  register: pve_maas_data_volume
+  failed_when: false
+  changed_when: false
+  when: pve_maas_status.rc == 0
+
+- name: Refuse to provision over a mismatched existing MAAS CT
+  ansible.builtin.assert:
+    that:
+      - "'hostname: maas3' in pve_maas_config.stdout"
+      - "'ip=' ~ pve_maas_ip ~ '/24' in pve_maas_config.stdout"
+      - "'mp0: ' ~ pve_maas_data_mount ~ ',mp=/var/snap/maas/common/maas' in pve_maas_config.stdout"
+      - pve_maas_data_volume.rc == 0
+    fail_msg: "VMID {{ pve_maas_vmid }} already exists, but its hostname, IP, MAAS data disk config or backing volume differ from what is expected; refusing to rewrite it."
+  when: pve_maas_status.rc == 0
+
+- name: Assert MAAS provisioning credentials are available for a new controller
+  ansible.builtin.assert:
+    that:
+      - pve_maas_admin_password | length > 0
+    fail_msg: "set vault_pve_maas_admin_password through Ansible Vault."
+  when: pve_maas_status.rc != 0
+  no_log: true
+
+- name: Copy MAAS provisioning script to PVE host
+  ansible.builtin.copy:
+    src: "{{ pve_maas_script }}"
+    dest: /root/setup-maas-ct.sh
+    mode: "0700"
+
+- name: Run idempotent MAAS controller provisioning on PVE
+  ansible.builtin.command: /root/setup-maas-ct.sh
+  environment:
+    VMID: "{{ pve_maas_vmid }}"
+    HOSTNAME: maas3
+    TEMPLATE: local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst
+    PUB_IP: "{{ pve_maas_ip }}"
+    ADMIN_USER: admin
+    ADMIN_EMAIL: admin@example.com
+    ADMIN_PASSWORD: "{{ pve_maas_admin_password }}"
+    CT_ROOT_PASSWORD: "{{ pve_maas_root_password }}"
+    SSH_PUBKEY: "{{ pve_maas_ssh_pubkey }}"
+    HTTP_PROXY: "{{ pve_maas_http_proxy }}"
+    HTTPS_PROXY: "{{ pve_maas_https_proxy }}"
+    NO_PROXY: "{{ pve_maas_no_proxy }}"
+    REFRESH_SNAPD: "0"
+  register: pve_maas_provision
+  changed_when: "'creating container' in pve_maas_provision.stdout or 'downloading template' in pve_maas_provision.stdout or 'running init' in pve_maas_provision.stdout"
+  no_log: true

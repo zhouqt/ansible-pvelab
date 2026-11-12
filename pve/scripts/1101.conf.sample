@@ -1,0 +1,6 @@
+features: nesting=1,fuse=1
+net0: name=eth0,bridge=pub11,gw=192.168.11.1,hwaddr=BC:24:11:D3:B7:2D,ip=192.168.11.101/24,type=veth
+lxc.mount.entry: /dev/loop0 dev/osd-block none bind,optional,create=file
+lxc.cgroup2.devices.allow: b 7:0 rwm
+lxc.cgroup2.devices.allow: b 7:1 rwm
+lxc.cgroup2.devices.allow: b 252:* rwm

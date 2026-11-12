@@ -1,0 +1,194 @@
+---
+
+- name: Install MAAS snap
+  snap:
+    name: maas
+    channel: "{{ maas_snap_channel }}"
+    state: present
+  tags: maas
+
+- name: Hold MAAS snap version to prevent auto-upgrade (newer snapd)
+  command: snap hold maas
+  changed_when: false
+  ignore_errors: yes
+  register: snap_hold_result
+  tags: maas
+
+- name: Hold MAAS snap version to prevent auto-upgrade (older snapd fallback)
+  command: snap set maas refresh.held=true
+  changed_when: false
+  when: snap_hold_result is failed
+  ignore_errors: yes
+  tags: maas
+
+- name: Verify MAAS snap status
+  command: snap info maas
+  register: snap_info
+  changed_when: false
+  tags: maas
+
+- name: Display MAAS snap status
+  debug:
+    msg: "{{ snap_info.stdout_lines | select('search', 'held|refresh') | list | join(', ') | default('MAAS snap info not available') }}"
+  tags: maas
+
+- name: Wait for PostgreSQL VIP to be available
+  wait_for:
+    host: "{{ pgsql_vip }}"
+    port: 5432
+    delay: 5
+    timeout: 120
+  run_once: true
+  tags: maas
+
+- name: Test PostgreSQL connection via VIP
+  become_user: postgres
+  postgresql_ping:
+    db: postgres
+    login_host: "{{ pgsql_vip }}"
+  run_once: true
+  tags: maas
+
+- name: Create MAAS database user
+  become_user: postgres
+  postgresql_user:
+    name: maas
+    role_attr_flags: CREATEROLE
+    login_host: "{{ pgsql_vip }}"
+    state: present
+  run_once: true
+  tags: maas
+
+- name: Create MAAS database with correct owner
+  become_user: postgres
+  postgresql_db:
+    name: "{{ maas_database_name }}"
+    owner: maas
+    login_host: "{{ pgsql_vip }}"
+    state: present
+  run_once: true
+  tags: maas
+
+- name: Grant privileges to MAAS database user
+  become_user: postgres
+  postgresql_query:
+    db: "{{ maas_database_name }}"
+    login_host: "{{ pgsql_vip }}"
+    query: |
+      GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO maas;
+      GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO maas;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO maas;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO maas;
+  run_once: true
+  tags: maas
+
+- name: Grant temporal schema privileges to MAAS database user
+  become_user: postgres
+  postgresql_query:
+    db: "{{ maas_database_name }}"
+    login_host: "{{ pgsql_vip }}"
+    query: |
+      GRANT ALL PRIVILEGES ON SCHEMA temporal TO maas;
+      GRANT ALL PRIVILEGES ON SCHEMA temporal_visibility TO maas;
+      GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA temporal TO maas;
+      GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA temporal_visibility TO maas;
+      GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA temporal TO maas;
+      GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA temporal_visibility TO maas;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA temporal GRANT ALL ON TABLES TO maas;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA temporal GRANT ALL ON SEQUENCES TO maas;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA temporal_visibility GRANT ALL ON TABLES TO maas;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA temporal_visibility GRANT ALL ON SEQUENCES TO maas;
+  run_once: true
+  ignore_errors: yes
+  tags: maas
+
+- name: Check if MAAS is already initialized
+  command: maas status
+  register: maas_status_check
+  changed_when: false
+  failed_when: false
+  tags: maas
+
+- name: Check if rack controller is running
+  shell: maas status | grep -q "rackd.*active"
+  register: rackd_check
+  changed_when: false
+  failed_when: false
+  tags: maas
+
+- name: Check if MAAS mode matches desired configuration
+  set_fact:
+    needs_maas_reinit: "{{ maas_status_check.rc == 0 and maas_region_mode == 'region+rack' and rackd_check.rc != 0 }}"
+  tags: maas
+
+- name: Re-initialize MAAS with correct mode (region+rack for DHCP support)
+  command: >
+    maas init {{ maas_region_mode }}
+    --database-uri postgres://maas@{{ pgsql_vip }}/{{ maas_database_name }}
+    --maas-url http://{{ maas_vip }}:5240/MAAS
+    --force
+  when: needs_maas_reinit | default(false)
+  register: maas_reinit
+  tags: maas
+
+- name: Display re-initialization result
+  debug:
+    msg: "MAAS re-initialized with {{ maas_region_mode }} mode"
+  when: needs_maas_reinit | default(false) and maas_reinit.changed
+  tags: maas
+
+- name: Wait for MAAS services after re-init
+  pause:
+    seconds: 30
+  when: needs_maas_reinit | default(false) and maas_reinit.changed
+  tags: maas
+
+- name: Initialize MAAS region controller (first time init)
+  command: >
+    maas init {{ maas_region_mode }}
+    --database-uri postgres://maas@{{ pgsql_vip }}/{{ maas_database_name }}
+    --maas-url http://{{ maas_vip }}:5240/MAAS
+  when: maas_status_check.rc != 0
+  register: maas_init
+  tags: maas
+
+- name: Check MAAS initialization result
+  debug:
+    msg: "{{ maas_init.stdout_lines | default(['MAAS already initialized or no output']) }}"
+  when: maas_init is defined and maas_init.changed
+  tags: maas
+
+- name: Wait for MAAS to be ready
+  wait_for:
+    host: "{{ inventory_hostname }}"
+    port: 5240
+    delay: 10
+    timeout: 180
+  tags: maas
+
+- name: Create MAAS admin user (only on first node)
+  command: >
+    maas createadmin
+    --username {{ maas_admin_user }}
+    --password {{ maas_admin_pass }}
+    --email {{ maas_admin_email }}
+  run_once: true
+  ignore_errors: yes
+  register: maas_admin
+  tags: maas
+
+- name: Show MAAS admin creation result
+  debug:
+    msg: "{{ maas_admin.stdout_lines | default(['Admin user created or already exists']) }}"
+  when: maas_admin is defined
+  tags: maas
+
+- name: Display MAAS access information
+  debug:
+    msg:
+      - "MAAS Web UI: http://{{ maas_vip }}/MAAS"
+      - "MAAS API: http://{{ maas_vip }}:5240/MAAS/api/2.0/"
+      - "PostgreSQL: postgres://maas@{{ pgsql_vip }}/{{ maas_database_name }}"
+      - "MAAS HA Nodes: {{ groups['maas_ha'] | map('extract', hostvars, 'ansible_host') | join(', ') }}"
+  run_once: true
+  tags: maas

@@ -1,0 +1,38 @@
+---
+
+- name: Stop corosync service
+  systemd:
+    name: corosync
+    state: stopped
+  tags: corosync
+
+- name: Deploy corosync.conf
+  template:
+    src: corosync.conf.j2
+    dest: "{{ corosync_config_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart corosync
+  tags: corosync
+
+- name: Start corosync service
+  systemd:
+    name: corosync
+    state: started
+    enabled: yes
+  tags: corosync
+
+- name: Wait for corosync to be ready
+  command: corosync-cfgtool -s
+  register: corosync_status
+  until: corosync_status.rc == 0
+  retries: 10
+  delay: 5
+  changed_when: false
+  tags: corosync
+
+- name: Show corosync status
+  debug:
+    msg: "{{ corosync_status.stdout_lines }}"
+  tags: corosync

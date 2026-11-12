@@ -1,0 +1,14 @@
+network:
+  version: 2
+  ethernets:
+    eth0:
+      addresses: [{{ iscsi_portal_ip_1 }}/24]
+    eth1:
+      addresses: [{{ iscsi_portal_ip_2 }}/24]
+    eth2:
+      dhcp4: true
+      routes:
+        - to: default
+          via: {{ iscsi_gateway }}
+      nameservers:
+        addresses: [{{ iscsi_gateway }}, 8.8.8.8]

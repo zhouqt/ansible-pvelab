@@ -1,0 +1,56 @@
+---
+maas_api_url: "{{ hostvars['maas-ha-1']['ansible_host'] }}:5240/MAAS/api/2.0/"
+maas_api_key: "mDokAqxvV7XXhOBXd7:sCPM681aA6r3q2F8gu:PCogeKWkIkD0mIeDIQI3K7RWlqshYMZ1"
+maas_vm_host_id: 5
+lxd_project: "maas-managed"
+
+osd_disk_path: "/home/Data/lxd-storage-pool/custom"
+osd_disk_size: "100G"
+
+control_vms:
+  - name: "os-control-1"
+    hostname: "os-control-1"
+    memory: 16384
+    cores: 4
+    disk_size: 80
+    interfaces:
+      - fabric_name: "fabric-1"
+      - fabric_name: "fabric-0"
+  - name: "os-control-2"
+    hostname: "os-control-2"
+    memory: 16384
+    cores: 4
+    disk_size: 80
+    interfaces:
+      - fabric_name: "fabric-1"
+      - fabric_name: "fabric-0"
+  - name: "os-control-3"
+    hostname: "os-control-3"
+    memory: 16384
+    cores: 4
+    disk_size: 80
+    interfaces:
+      - fabric_name: "fabric-1"
+      - fabric_name: "fabric-0"
+
+compute_vms:
+  - name: "os-compute-1"
+    hostname: "os-compute-1"
+    memory: 32768
+    cores: 4
+    disk_size: 100
+    osd_disk_size: 100
+    nested_vmx: true
+    interfaces:
+      - fabric_name: "fabric-1"
+      - fabric_name: "fabric-0"
+  - name: "os-compute-2"
+    hostname: "os-compute-2"
+    memory: 32768
+    cores: 4
+    disk_size: 100
+    osd_disk_size: 100
+    nested_vmx: true
+    interfaces:
+      - fabric_name: "fabric-1"
+      - fabric_name: "fabric-0"

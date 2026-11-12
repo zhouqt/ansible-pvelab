@@ -1,0 +1,25 @@
+---
+
+iscsi_storage_file: "/home/iscsi-storage-lxd-os.img"
+iscsi_storage_size: "50G"
+iscsi_vg_name: "cinder-iscsi-lxd"
+
+iscsi_cinder_project: "openstack"
+
+iscsi_cinder_unit: "cinder/0"
+
+iscsi_volume_backend_name: "LVM_iSCSI"
+
+iscsi_charm_template_dir: "/var/lib/juju/agents/unit-{{ iscsi_cinder_unit | replace('/', '-') }}/charm/templates"
+iscsi_charm_backends_file: "parts/backends"
+
+iscsi_portal_ip_2: "192.168.166.229"
+iscsi_portal_bridge_2: "virbr2"
+
+iscsi_cinder_gateway: "192.168.122.1"
+
+iscsi_setup_multipath: false
+iscsi_compute_lxd_project: "openstack"
+
+iscsi_openstack_rc: "{{ project_dir }}/credentials/admin-openrc-lxd-openstack.sh"
+

@@ -1,0 +1,747 @@
+---
+
+- name: Check if lma model exists
+  shell: >
+    juju-29 models --controller {{ os_lxd_juju_controller }} --format json 2>/dev/null |
+    jq -r '.models[].name' | grep -qE '(^|/)lma$' && echo "exists" || echo "not_found"
+  register: lma_model_check
+  changed_when: false
+
+- name: Create lma model
+  shell: juju-29 add-model lma --controller {{ os_lxd_juju_controller }}
+  when: lma_model_check.stdout == "not_found"
+
+- name: Add 'public' space to lma model
+  shell: juju-29 add-space -m {{ os_lxd_juju_controller }}:lma public 2>&1
+  register: lma_add_public
+  failed_when:
+    - lma_add_public.rc != 0
+    - "'already exists' not in lma_add_public.stdout"
+    - "'already exists' not in lma_add_public.stderr"
+  changed_when: lma_add_public.rc == 0
+
+- name: Add 'internal' space to lma model
+  shell: juju-29 add-space -m {{ os_lxd_juju_controller }}:lma internal 2>&1
+  register: lma_add_internal
+  failed_when:
+    - lma_add_internal.rc != 0
+    - "'already exists' not in lma_add_internal.stdout"
+    - "'already exists' not in lma_add_internal.stderr"
+  changed_when: lma_add_internal.rc == 0
+
+- name: Get controller container name
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:controller --format json 2>/dev/null |
+    jq -r '.machines["0"]["instance-id"]'
+  register: ctrl_container
+  changed_when: false
+
+- name: Get MongoDB password from controller agent.conf
+  shell: |
+    lxc exec {{ ctrl_container.stdout }} --project {{ os_lxd_project }} -- \
+      grep statepassword /var/lib/juju/agents/machine-0/agent.conf | awk '{print $2}'
+  register: mongo_password
+  changed_when: false
+
+- name: Get lma model UUID
+  shell: >
+    juju-29 show-model {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '.lma."model-uuid"'
+  register: lma_model_uuid
+  changed_when: false
+
+- name: Inject subnet records into lma model MongoDB
+  shell: |
+    lxc exec {{ ctrl_container.stdout }} --project {{ os_lxd_project }} -- \
+      juju-db.mongo --quiet --tls \
+      --tlsCAFile /var/snap/juju-db/common/ca.crt \
+      --tlsCertificateKeyFile /var/snap/juju-db/common/server.pem \
+      --host localhost --port 37017 \
+      --authenticationDatabase admin \
+      -u machine-0 -p "{{ mongo_password.stdout }}" \
+      juju --eval '
+    var modelUUID = "{{ lma_model_uuid.stdout }}";
+
+    var publicSpace = db.spaces.findOne({"model-uuid": modelUUID, "name": "public"});
+    var internalSpace = db.spaces.findOne({"model-uuid": modelUUID, "name": "internal"});
+
+    if (!publicSpace || !internalSpace) {
+      print("ERROR: spaces not found");
+      quit(1);
+    }
+
+    var subnets = [
+      {cidr: "192.168.122.0/24", spaceId: publicSpace._id.split(":")[1]},
+      {cidr: "192.168.165.0/24", spaceId: internalSpace._id.split(":")[1]}
+    ];
+
+    subnets.forEach(function(s) {
+      if (!db.subnets.findOne({"model-uuid": modelUUID, "cidr": s.cidr})) {
+        db.subnets.insert({
+          "_id": modelUUID + ":" + s.cidr,
+          "model-uuid": modelUUID,
+          "cidr": s.cidr,
+          "space-id": s.spaceId,
+          "provider-id": "",
+          "provider-network-id": "",
+          "vlan-tag": 0,
+          "availability-zones": null,
+          "life": 0,
+          "is-public": false
+        });
+      }
+    });
+    print("OK: subnets configured for lma model");
+    '
+  register: lma_mongo_inject
+  changed_when: "'OK' in lma_mongo_inject.stdout"
+
+- name: Check if nagios is deployed in lma model
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '.applications | keys[]' | grep -q "^nagios$" && echo "exists" || echo "not_found"
+  register: nagios_check
+  changed_when: false
+
+- name: Deploy nagios in lma model (bound to public space)
+  shell: >
+    juju-29 deploy nagios --series bionic --channel stable
+    --bind "public monitors=public"
+    -m {{ os_lxd_juju_controller }}:lma
+  when: nagios_check.stdout == "not_found"
+
+- name: Wait for nagios machine to start
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '[.machines[]][0]["juju-status"].current'
+  register: nagios_machine
+  until: nagios_machine.stdout == "started"
+  retries: 20
+  delay: 15
+  changed_when: false
+  when: nagios_check.stdout == "not_found"
+
+- name: Lock down Nagios container network (static IPs + disable cloud-init network)
+  shell: |
+    CONTAINER=$(juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+      jq -r '[.machines[]][0]["instance-id"]')
+    ETH0_MAC=$(lxc exec "$CONTAINER" --project {{ os_lxd_project }} -- ip link show eth0 2>/dev/null | grep -oP 'link/ether \K[0-9a-f:]+')
+    ETH1_MAC=$(lxc exec "$CONTAINER" --project {{ os_lxd_project }} -- ip link show eth1 2>/dev/null | grep -oP 'link/ether \K[0-9a-f:]+')
+    lxc exec "$CONTAINER" --project {{ os_lxd_project }} -- bash -c '
+      set -e
+      mkdir -p /etc/cloud/cloud.cfg.d
+      cat > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg <<CLOUDCFG
+      network: {config: disabled}
+      CLOUDCFG
+      rm -f /etc/netplan/99-juju.yaml /etc/netplan/50-cloud-init.yaml /etc/netplan/150-static.yaml
+      cat > /etc/netplan/99-static.yaml <<NETPLAN
+      network:
+        version: 2
+        ethernets:
+          eth0:
+            match:
+              macaddress: ${ETH0_MAC}
+            dhcp4: false
+            dhcp6: false
+            addresses:
+              - {{ lma_nagios_public_ip }}/24
+            routes:
+              - to: 0.0.0.0/0
+                via: {{ lma_nagios_public_gw }}
+            nameservers:
+              addresses:
+                - {{ lma_nagios_public_gw }}
+                - 8.8.8.8
+          eth1:
+            match:
+              macaddress: ${ETH1_MAC}
+            dhcp4: false
+            dhcp6: false
+            addresses:
+              - {{ lma_nagios_internal_ip }}/24
+      NETPLAN
+      netplan generate >/dev/null 2>&1 || true
+      netplan apply
+      sleep 2
+      ETH0_NOW=$(ip -4 addr show eth0 | grep -oP "inet \K[0-9.]+" | head -1)
+      ETH1_NOW=$(ip -4 addr show eth1 | grep -oP "inet \K[0-9.]+" | head -1)
+      if [ "$ETH0_NOW" = "{{ lma_nagios_public_ip }}" ] && [ "$ETH1_NOW" = "{{ lma_nagios_internal_ip }}" ]; then
+        echo "ok eth0=$ETH0_NOW eth1=$ETH1_NOW"
+      else
+        echo "MISMATCH eth0=$ETH0_NOW({{ lma_nagios_public_ip }}) eth1=$ETH1_NOW({{ lma_nagios_internal_ip }})"
+        exit 1
+      fi
+    '
+  register: net_fix
+  changed_when: "'ok' in net_fix.stdout"
+
+- name: Check if grafana is deployed in lma model
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '.applications | keys[]' 2>/dev/null | grep -q "^grafana$" && echo "exists" || echo "not_found"
+  register: grafana_check
+  changed_when: false
+
+- name: Deploy grafana in lma model (focal, snap install, public space)
+  shell: >
+    juju-29 deploy grafana --series focal --channel stable
+    --config install_method=snap
+    --bind "public dashboards=public grafana-source=public website=public"
+    -m {{ os_lxd_juju_controller }}:lma
+  when: grafana_check.stdout == "not_found"
+
+- name: Wait for grafana machine to start
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '.machines[] | select(.["juju-status"] != null) | .["juju-status"].current' 2>/dev/null |
+    grep -q "started" && echo "started" || echo "not_started"
+  register: grafana_machine
+  until: grafana_machine.stdout == "started"
+  retries: 20
+  delay: 15
+  changed_when: false
+  when: grafana_check.stdout == "not_found"
+
+- name: Get grafana container instance id
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '.machines | to_entries[] | select(.value.series == "focal") | .value["instance-id"]' 2>/dev/null
+  register: grafana_container_id
+  changed_when: false
+  when: grafana_check.stdout == "not_found"
+
+- name: Fix grafana container network (remove eth1 default route + static netplan)
+  shell: |
+    CONTAINER="{{ grafana_container_id.stdout }}"
+    ETH0_MAC=$(lxc exec "$CONTAINER" --project {{ os_lxd_project }} -- ip link show eth0 2>/dev/null | grep -oP 'link/ether \K[0-9a-f:]+')
+    ETH1_MAC=$(lxc exec "$CONTAINER" --project {{ os_lxd_project }} -- ip link show eth1 2>/dev/null | grep -oP 'link/ether \K[0-9a-f:]+')
+    ETH0_IP=$(lxc exec "$CONTAINER" --project {{ os_lxd_project }} -- ip -4 addr show eth0 | grep -oP 'inet \K[0-9.]+')
+    ETH1_IP=$(lxc exec "$CONTAINER" --project {{ os_lxd_project }} -- ip -4 addr show eth1 | grep -oP 'inet \K[0-9.]+')
+    lxc exec "$CONTAINER" --project {{ os_lxd_project }} -- bash -c "
+      set -e
+      ip route del default via 192.168.165.1 dev eth1 2>/dev/null || true
+      mkdir -p /etc/netplan
+      cat > /etc/netplan/150-static.yaml <<NETPLAN
+      network:
+        version: 2
+        ethernets:
+          eth0:
+            match:
+              macaddress: ${ETH0_MAC}
+            addresses: [${ETH0_IP}/24]
+            routes:
+              - to: default
+                via: 192.168.122.1
+                metric: 100
+            nameservers:
+              addresses: [8.8.8.8, 8.8.4.4]
+            dhcp4: false
+          eth1:
+            match:
+              macaddress: ${ETH1_MAC}
+            addresses: [${ETH1_IP}/24]
+            routes:
+              - to: 192.168.165.0/24
+                via: 192.168.165.1
+                metric: 200
+            dhcp4: false
+      NETPLAN
+      netplan apply 2>/dev/null || true
+      echo 'fixed'
+    "
+  register: grafana_net_fix
+  changed_when: "'fixed' in grafana_net_fix.stdout"
+  when: grafana_check.stdout == "not_found" and grafana_container_id.stdout | length > 0
+
+- name: Check if nrpe is deployed in openstack model
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --format json 2>/dev/null |
+    jq -r '.applications | keys[]' | grep -q "^nrpe$" && echo "exists" || echo "not_found"
+  register: nrpe_check
+  changed_when: false
+
+- name: Deploy nrpe in openstack model
+  shell: >
+    juju-29 deploy nrpe --series focal --channel stable
+    -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }}
+  when: nrpe_check.stdout == "not_found"
+
+- name: Relate nrpe to OpenStack services
+  shell: >
+    juju-29 add-relation nrpe:general-info {{ item }}
+    -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} 2>&1
+  loop: "{{ lma_nrpe_targets }}"
+  register: nrpe_relate
+  changed_when: "'already exists' not in nrpe_relate.stdout"
+  failed_when:
+    - nrpe_relate.rc != 0
+    - "'already exists' not in nrpe_relate.stdout"
+
+- name: Relate nrpe-external-master to charms that support it
+  shell: >
+    juju-29 add-relation {{ item }}:nrpe-external-master nrpe:nrpe-external-master
+    -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} 2>&1
+  loop: "{{ lma_nrpe_targets | difference(['mysql-innodb-cluster', 'placement']) }}"
+  register: nrpe_ext_relate
+  changed_when: "'already exists' not in nrpe_ext_relate.stdout"
+  failed_when:
+    - nrpe_ext_relate.rc != 0
+    - "'already exists' not in nrpe_ext_relate.stdout"
+
+- name: Check if openstack-service-checks is deployed
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --format json 2>/dev/null |
+    jq -r '.applications | keys[]' | grep -q "^openstack-service-checks$" && echo "exists" || echo "not_found"
+  register: osc_check
+  changed_when: false
+
+- name: Deploy openstack-service-checks
+  shell: >
+    juju-29 deploy openstack-service-checks --series focal --channel stable
+    -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }}
+  when: osc_check.stdout == "not_found"
+
+- name: Relate openstack-service-checks to keystone
+  shell: >
+    juju-29 add-relation openstack-service-checks:identity-credentials keystone
+    -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} 2>&1
+  register: osc_keystone
+  changed_when: "'already exists' not in osc_keystone.stdout"
+  failed_when:
+    - osc_keystone.rc != 0
+    - "'already exists' not in osc_keystone.stdout"
+
+- name: Relate openstack-service-checks to nrpe
+  shell: >
+    juju-29 add-relation openstack-service-checks:nrpe-external-master nrpe
+    -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} 2>&1
+  register: osc_nrpe
+  changed_when: "'already exists' not in osc_nrpe.stdout"
+  failed_when:
+    - osc_nrpe.rc != 0
+    - "'already exists' not in osc_nrpe.stdout"
+
+- name: Get Vault root CA for openstack-service-checks
+  shell: >
+    juju-29 run --unit vault/0 "leader-get root-ca"
+    -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }}
+  register: vault_root_ca
+  changed_when: false
+
+- name: Configure trusted_ssl_ca on openstack-service-checks
+  shell: >
+    juju-29 config openstack-service-checks
+    trusted_ssl_ca="{{ vault_root_ca.stdout | b64encode }}"
+    -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }}
+
+- name: Get all floating IP IDs to skip
+  shell: |
+    source {{ playbook_dir }}/credentials/admin-openrc-lxd-openstack.sh >/dev/null
+    openstack floating ip list -f json 2>/dev/null | jq -r '.[].ID' | tr '\n' ',' | sed 's/,$//'
+  args:
+    executable: /bin/bash
+  register: fip_ids
+  changed_when: false
+
+- name: Get all port IDs to skip
+  shell: |
+    source {{ playbook_dir }}/credentials/admin-openrc-lxd-openstack.sh >/dev/null
+    openstack port list -f json 2>/dev/null | jq -r '.[].ID' | tr '\n' ',' | sed 's/,$//'
+  args:
+    executable: /bin/bash
+  register: port_ids
+  changed_when: false
+
+- name: Configure openstack-service-checks to skip FIP and port checks
+  shell: >
+    juju-29 config openstack-service-checks
+    check-floating-ips=all
+    skip-floating-ips="{{ fip_ids.stdout }}"
+    check-ports=all
+    skip-ports="{{ port_ids.stdout }}"
+    -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }}
+  when: fip_ids.stdout | length > 0 or port_ids.stdout | length > 0
+
+- name: Switch to openstack model for offer
+  shell: juju-29 switch {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }}
+  changed_when: false
+
+- name: Offer nrpe monitors endpoint
+  shell: juju-29 offer nrpe:monitors 2>&1
+  register: nrpe_offer
+  changed_when: "'already exists' not in nrpe_offer.stdout"
+  failed_when:
+    - nrpe_offer.rc != 0
+    - "'already exists' not in nrpe_offer.stdout"
+
+- name: Switch to lma model
+  shell: juju-29 switch {{ os_lxd_juju_controller }}:lma
+  changed_when: false
+
+- name: Consume nrpe offer in lma model
+  shell: juju-29 consume admin/{{ os_lxd_model_name }}.nrpe 2>&1
+  register: nrpe_consume
+  changed_when: "'already exists' not in nrpe_consume.stdout"
+  failed_when:
+    - nrpe_consume.rc != 0
+    - "'already exists' not in nrpe_consume.stdout"
+
+- name: Relate nagios to nrpe via CMR
+  shell: juju-29 add-relation nagios:monitors nrpe -m {{ os_lxd_juju_controller }}:lma 2>&1
+  register: nagios_nrpe
+  changed_when: "'already exists' not in nagios_nrpe.stdout"
+  failed_when:
+    - nagios_nrpe.rc != 0
+    - "'already exists' not in nagios_nrpe.stdout"
+
+- name: Offer grafana dashboards endpoint from lma model
+  shell: juju-29 offer grafana:dashboards 2>&1
+  register: grafana_offer
+  changed_when: "'already exists' not in grafana_offer.stdout"
+  failed_when:
+    - grafana_offer.rc != 0
+    - "'already exists' not in grafana_offer.stdout"
+
+- name: Switch to openstack model to consume grafana offer
+  shell: juju-29 switch {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }}
+  changed_when: false
+
+- name: Consume grafana offer in openstack model
+  shell: juju-29 consume admin/lma.grafana 2>&1
+  register: grafana_consume
+  changed_when: "'already exists' not in grafana_consume.stdout"
+  failed_when:
+    - grafana_consume.rc != 0
+    - "'already exists' not in grafana_consume.stdout"
+
+- name: Relate OpenStack services with dashboard interface to Grafana via CMR
+  shell: >
+    juju-29 add-relation {{ item }} grafana:dashboards
+    -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} 2>&1
+  loop: "{{ lma_grafana_dashboard_sources }}"
+  register: grafana_relate
+  changed_when: "'already exists' not in grafana_relate.stdout"
+  failed_when:
+    - grafana_relate.rc != 0
+    - "'already exists' not in grafana_relate.stdout"
+    - "'has no' not in grafana_relate.stdout"
+    - "'no relations found' not in grafana_relate.stdout"
+
+- name: Switch back to lma model
+  shell: juju-29 switch {{ os_lxd_juju_controller }}:lma
+  changed_when: false
+
+- name: Check if prometheus2 is deployed in lma model
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '.applications | keys[]' 2>/dev/null | grep -q "^{{ lma_prometheus_app }}$" && echo "exists" || echo "not_found"
+  register: prometheus_check
+  changed_when: false
+
+- name: Deploy prometheus2 in lma model (focal, public space)
+  shell: >
+    juju-29 deploy {{ lma_prometheus_app }} --series focal --channel {{ lma_prometheus_channel }}
+    --revision {{ lma_prometheus_revision }}
+    --bind "public grafana-source=public website=public nrpe-external-master=public"
+    -m {{ os_lxd_juju_controller }}:lma
+  when: prometheus_check.stdout == "not_found"
+
+- name: Wait for prometheus2 machine to start
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '.machines | to_entries[] | select(.value["juju-status"] != null) | .value["juju-status"].current' 2>/dev/null |
+    grep -q "started" && echo "started" || echo "not_started"
+  register: prometheus_machine
+  until: prometheus_machine.stdout == "started"
+  retries: 20
+  delay: 15
+  changed_when: false
+  when: prometheus_check.stdout == "not_found"
+
+- name: Get prometheus2 container instance id
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '[.machines[]][0]["instance-id"]' 2>/dev/null
+  register: prometheus_container_id
+  changed_when: false
+  when: prometheus_check.stdout == "not_found"
+
+- name: Fix prometheus2 container network (remove eth1 default route + static netplan)
+  shell: |
+    CONTAINER="{{ prometheus_container_id.stdout }}"
+    ETH0_MAC=$(lxc exec "$CONTAINER" --project {{ os_lxd_project }} -- ip link show eth0 2>/dev/null | grep -oP 'link/ether \K[0-9a-f:]+')
+    ETH1_MAC=$(lxc exec "$CONTAINER" --project {{ os_lxd_project }} -- ip link show eth1 2>/dev/null | grep -oP 'link/ether \K[0-9a-f:]+')
+    ETH0_IP=$(lxc exec "$CONTAINER" --project {{ os_lxd_project }} -- ip -4 addr show eth0 | grep -oP 'inet \K[0-9.]+')
+    ETH1_IP=$(lxc exec "$CONTAINER" --project {{ os_lxd_project }} -- ip -4 addr show eth1 | grep -oP 'inet \K[0-9.]+')
+    lxc exec "$CONTAINER" --project {{ os_lxd_project }} -- bash -c "
+      set -e
+      ip route del default via 192.168.165.1 dev eth1 2>/dev/null || true
+      mkdir -p /etc/netplan
+      cat > /etc/netplan/150-static.yaml <<NETPLAN
+      network:
+        version: 2
+        ethernets:
+          eth0:
+            match:
+              macaddress: \${ETH0_MAC}
+            addresses: [\${ETH0_IP}/24]
+            routes:
+              - to: default
+                via: 192.168.122.1
+                metric: 100
+            nameservers:
+              addresses: [8.8.8.8, 8.8.4.4]
+            dhcp4: false
+          eth1:
+            match:
+              macaddress: \${ETH1_MAC}
+            addresses: [\${ETH1_IP}/24]
+            routes:
+              - to: 192.168.165.0/24
+                via: 192.168.165.1
+                metric: 200
+            dhcp4: false
+      NETPLAN
+      netplan apply 2>/dev/null || true
+      echo 'fixed'
+    "
+  register: prometheus_net_fix
+  changed_when: "'fixed' in prometheus_net_fix.stdout"
+  when:
+    - prometheus_check.stdout == "not_found"
+    - prometheus_container_id.stdout is defined
+    - prometheus_container_id.stdout | length > 0
+
+- name: Relate prometheus2 to grafana (provides grafana-source interface)
+  shell: >
+    juju-29 add-relation {{ lma_prometheus_app }}:grafana-source grafana:grafana-source
+    -m {{ os_lxd_juju_controller }}:lma 2>&1
+  register: prometheus_grafana_rel
+  changed_when: "'already exists' not in prometheus_grafana_rel.stdout"
+  failed_when:
+    - prometheus_grafana_rel.rc != 0
+    - "'already exists' not in prometheus_grafana_rel.stdout"
+
+- name: Check if grafana-agent is deployed in openstack model
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --format json 2>/dev/null |
+    jq -r '.applications | keys[]' 2>/dev/null | grep -q "^grafana-agent$" && echo "exists" || echo "not_found"
+  register: grafana_agent_check
+  changed_when: false
+
+- name: Deploy grafana-agent in openstack model (jammy via --force, focal model base)
+  shell: >
+    juju-29 deploy grafana-agent --series jammy --channel {{ lma_grafana_agent_channel }}
+    --revision {{ lma_grafana_agent_revision }} --force
+    -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }}
+  when: grafana_agent_check.stdout == "not_found"
+
+- name: Switch to openstack model for grafana-agent attach
+  shell: juju-29 switch {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }}
+  changed_when: false
+
+- name: Attach grafana-agent subordinate to principal via juju-info
+  shell: >
+    juju-29 add-relation grafana-agent {{ lma_grafana_agent_principal }}
+    -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} 2>&1
+  register: grafana_agent_principal_rel
+  changed_when: "'already exists' not in grafana_agent_principal_rel.stdout"
+  failed_when:
+    - grafana_agent_principal_rel.rc != 0
+    - "'already exists' not in grafana_agent_principal_rel.stdout"
+
+- name: Switch to lma model
+  shell: juju-29 switch {{ os_lxd_juju_controller }}:lma
+  changed_when: false
+
+- name: Get grafana-agent unit IP from principal unit machine
+  shell: |
+    juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --format json 2>/dev/null |
+      jq -r '.applications["{{ lma_grafana_agent_principal }}"].units | to_entries[] | .value["public-address"]' 2>/dev/null |
+      head -1
+  register: grafana_agent_target_ip
+  changed_when: false
+
+- name: Configure prometheus2 scrape_jobs to scrape grafana-agent metrics endpoint
+  shell: |
+    juju-29 config {{ lma_prometheus_app }} scrape-jobs="- job_name: grafana-agent
+      scrape_interval: 30s
+      static_configs:
+        - targets:
+          - '{{ grafana_agent_target_ip.stdout }}:12345'" \
+      -m {{ os_lxd_juju_controller }}:lma 2>&1
+  register: prometheus_scrape_config
+  changed_when: "'already exists' not in prometheus_scrape_config.stdout"
+  failed_when:
+    - prometheus_scrape_config.rc != 0
+    - "'already exists' not in prometheus_scrape_config.stdout"
+  when: grafana_agent_target_ip.stdout | length > 0
+
+- name: Get nagios container internal IP for NRPE allowed_hosts
+  shell: |
+    CONTAINER=$(juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+      jq -r '[.machines[]][0]["instance-id"]')
+    lxc exec "$CONTAINER" --project {{ os_lxd_project }} -- ip -4 addr show eth1 2>/dev/null |
+      grep -oP 'inet \K[0-9.]+'
+  register: nagios_internal_ip
+  changed_when: false
+
+- name: Get nagios public IP
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '[.machines[]][0]["dns-name"]'
+  register: nagios_public_ip
+  changed_when: false
+
+- name: Configure NRPE nagios_master with both Nagios IPs
+  shell: >
+    PUB_IP=$(echo "{{ nagios_public_ip.stdout }}" | sed -E 's|/.*||');
+    INT_IP=$(echo "{{ nagios_internal_ip.stdout }}" | sed -E 's|/.*||');
+    juju-29 config nrpe nagios_master="${PUB_IP},${INT_IP}"
+    -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }}
+  when: nagios_internal_ip.stdout | length > 0
+
+- name: Strip CIDR suffixes from NRPE allowed_hosts on all NRPE units
+  shell: |
+    for unit in $(juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --format json 2>/dev/null \
+      | jq -r '.applications.nrpe.units // {} | keys[]'); do
+      CHANGED=$(juju-29 ssh -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} $unit -- \
+        "sudo sed -i -E 's|([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/[0-9]+|\1|g' /etc/nagios/nrpe.cfg && \
+         sudo systemctl restart nagios-nrpe-server && echo restarted" 2>&1)
+      echo "$unit: $CHANGED"
+    done
+  register: nrpe_cidr_cleanup
+  changed_when: "'restarted' in nrpe_cidr_cleanup.stdout"
+
+- name: Get nagios leader unit name
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '.applications.nagios.units | to_entries[] | select(.value.leader == true) | .key'
+  register: nagios_leader
+  changed_when: false
+
+- name: Wait for nagios to be ready
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '.applications.nagios.units["{{ nagios_leader.stdout }}"]["workload-status"].current'
+  register: nagios_status
+  until: nagios_status.stdout == "active"
+  retries: 30
+  delay: 30
+  changed_when: false
+
+- name: Get nagios unit address
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '.applications.nagios.units["{{ nagios_leader.stdout }}"]["public-address"]'
+  register: nagios_address
+  changed_when: false
+
+- name: Get nagios admin password
+  shell: >
+    juju-29 ssh -m {{ os_lxd_juju_controller }}:lma {{ nagios_leader.stdout }}
+    "sudo cat /var/lib/juju/nagios.passwd" 2>/dev/null
+  register: nagios_password
+  changed_when: false
+
+- name: Get grafana leader unit name
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '.applications.grafana.units | to_entries[] | select(.value.leader == true) | .key'
+  register: grafana_leader
+  changed_when: false
+
+- name: Wait for grafana to be ready
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '.applications.grafana.units["{{ grafana_leader.stdout }}"]["workload-status"].current'
+  register: grafana_status
+  until: grafana_status.stdout == "active"
+  retries: 30
+  delay: 30
+  changed_when: false
+  failed_when: false
+
+- name: Get grafana unit address
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '.applications.grafana.units["{{ grafana_leader.stdout }}"]["public-address"]'
+  register: grafana_address
+  changed_when: false
+
+- name: Get grafana admin password
+  shell: >
+    juju-29 run-action --wait {{ grafana_leader.stdout }} get-admin-password
+    -m {{ os_lxd_juju_controller }}:lma 2>/dev/null | grep -E '^\s+password:' | awk '{print $2}'
+  register: grafana_password
+  changed_when: false
+  failed_when: false
+
+- name: Get grafana container instance id for dashboard import
+  shell: >
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+    jq -r '.applications.grafana.units | to_entries[] | .value.machine' 2>/dev/null |
+    xargs -I {} sh -c 'juju-29 status -m {{ os_lxd_juju_controller }}:lma --format json 2>/dev/null |
+      jq -r ".machines[\"{}\"][\"instance-id\"]"' | head -1
+  register: grafana_lma_container_id
+  changed_when: false
+
+- name: Check if Prometheus Overview dashboard exists
+  shell: >
+    GRAFANA_PASS=$(juju-29 run-action --wait {{ grafana_leader.stdout }} get-admin-password \
+      -m {{ os_lxd_juju_controller }}:lma 2>/dev/null | grep -E '^\s+password:' | awk '{print $2}');
+    lxc exec {{ grafana_lma_container_id.stdout }} --project {{ os_lxd_project }} -- \
+      curl -s -u admin:$GRAFANA_PASS http://localhost:3000/api/search?query=Prometheus \
+      | jq -r '.[] | select(.title == "Prometheus Overview") | .uid' 2>/dev/null
+  register: prom_dashboard_check
+  changed_when: false
+
+- name: Get Prometheus datasource UID from Grafana
+  shell: >
+    GRAFANA_PASS=$(juju-29 run-action --wait {{ grafana_leader.stdout }} get-admin-password \
+      -m {{ os_lxd_juju_controller }}:lma 2>/dev/null | grep -E '^\s+password:' | awk '{print $2}');
+    lxc exec {{ grafana_lma_container_id.stdout }} --project {{ os_lxd_project }} -- \
+      curl -s -u admin:$GRAFANA_PASS http://localhost:3000/api/datasources \
+      | jq -r '.[] | select(.type == "prometheus") | .uid' 2>/dev/null | head -1
+  register: prom_datasource_uid
+  changed_when: false
+
+- name: Render Prometheus Overview dashboard JSON with actual datasource UID
+  shell: "cp {{ role_path }}/files/prometheus-overview-dashboard.json /tmp/prometheus-overview-dashboard-rendered.json && sed -i 's|\\${DS_PROMETHEUS2}|{{ prom_datasource_uid.stdout }}|g' /tmp/prometheus-overview-dashboard-rendered.json && jq 'del(.templating.list)' /tmp/prometheus-overview-dashboard-rendered.json > /tmp/prom-dash-final.json && mv /tmp/prom-dash-final.json /tmp/prometheus-overview-dashboard-rendered.json"
+  delegate_to: localhost
+  when:
+    - prom_dashboard_check.stdout == ""
+    - prom_datasource_uid.stdout is defined
+    - prom_datasource_uid.stdout | length > 0
+
+- name: Push rendered Prometheus Overview dashboard JSON to grafana container
+  shell: cp /tmp/prometheus-overview-dashboard-rendered.json /tmp/prometheus-overview-dashboard.json && wc -c /tmp/prometheus-overview-dashboard.json
+  delegate_to: localhost
+  when: prom_dashboard_check.stdout == ""
+
+- name: Copy dashboard JSON into grafana container
+  shell: lxc file push /tmp/prometheus-overview-dashboard.json {{ grafana_lma_container_id.stdout }}/tmp/prometheus-overview-dashboard.json --project {{ os_lxd_project }}
+  when: prom_dashboard_check.stdout == ""
+  changed_when: true
+
+- name: Import Prometheus Overview dashboard via grafana action
+  shell: >
+    juju-29 run-action --wait {{ grafana_leader.stdout }} import-dashboard
+    location=/tmp/prometheus-overview-dashboard.json
+    -m {{ os_lxd_juju_controller }}:lma 2>/dev/null
+  register: dashboard_import
+  changed_when: dashboard_import.rc == 0
+  failed_when: false
+  when: prom_dashboard_check.stdout == ""
+
+- name: Display LMA deployment info
+  debug:
+    msg: |
+      LMA stack deployed successfully:
+        Nagios UI: http://{{ nagios_address.stdout }}/nagios3/
+        Credentials: nagiosadmin / {{ nagios_password.stdout }}
+        NRPE monitoring {{ lma_nrpe_targets | length }} OpenStack services
+        openstack-service-checks: active (with Vault CA)
+        Grafana UI: http://{{ grafana_address.stdout }}:3000/
+        Grafana credentials: admin / {{ grafana_password.stdout }}
+        Grafana dashboards: Prometheus Overview + {{ lma_grafana_dashboard_sources | length }} OpenStack services wired via CMR

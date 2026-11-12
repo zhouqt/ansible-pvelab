@@ -1,0 +1,103 @@
+---
+
+- name: Test MAAS HA Failover
+  hosts: localhost
+  gather_facts: false
+  vars:
+    primary_node: ""
+    test_duration: 60
+  tags: failover
+
+  tasks:
+    - name: Get current cluster status
+      command: ssh root@{{ hostvars['maas-ha-1']['ansible_host'] }} "crm_mon -1"
+      register: initial_status
+      changed_when: false
+      tags: failover
+
+    - name: Display initial status
+      debug:
+        msg: "{{ initial_status.stdout_lines }}"
+      tags: failover
+
+    - name: Identify current Primary
+      shell: ssh root@{{ hostvars['maas-ha-1']['ansible_host'] }} "crm resource status ms_pgsql 2>/dev/null | grep -i master"
+      register: primary_check
+      changed_when: false
+      tags: failover
+
+    - name: Set Primary node fact
+      set_fact:
+        current_primary: "{{ primary_check.stdout.split()[-1] }}"
+      tags: failover
+
+    - name: Display current Primary
+      debug:
+        msg: "Current Primary node: {{ current_primary }}"
+      tags: failover
+
+    - name: Stop the Primary node
+      command: lxc stop {{ current_primary }} --force
+      delegate_to: localhost
+      tags: failover
+
+    - name: Wait for failover to complete
+      pause:
+        seconds: 30
+      tags: failover
+
+    - name: Get new cluster status
+      shell: ssh root@{{ hostvars['maas-ha-1']['ansible_host'] }} "crm_mon -1 -A" 2>/dev/null || ssh root@{{ hostvars['maas-ha-2']['ansible_host'] }} "crm_mon -1 -A"
+      register: new_status
+      changed_when: false
+      tags: failover
+
+    - name: Display new status
+      debug:
+        msg: "{{ new_status.stdout_lines }}"
+      tags: failover
+
+    - name: Verify VIP is on new Primary
+      shell: |
+        for node in {{ groups['maas_ha'] | difference([current_primary]) | join(' ') }}; do
+          ssh root@{{ hostvars[$node]['ansible_host'] }} "ip addr show | grep {{ pgsql_vip }}" && echo "VIP found on $node"
+        done
+      register: vip_check
+      changed_when: false
+      ignore_errors: yes
+      tags: failover
+
+    - name: Display VIP status
+      debug:
+        msg: "{{ vip_check.stdout_lines }}"
+      tags: failover
+
+    - name: Start the stopped node
+      command: lxc start {{ current_primary }}
+      delegate_to: localhost
+      tags: failover
+
+    - name: Wait for node to rejoin
+      pause:
+        seconds: 45
+      tags: failover
+
+    - name: Get final cluster status
+      shell: ssh root@{{ hostvars['maas-ha-1']['ansible_host'] }} "crm_mon -1 -A"
+      register: final_status
+      changed_when: false
+      tags: failover
+
+    - name: Display final status
+      debug:
+        msg: "{{ final_status.stdout_lines }}"
+      tags: failover
+
+    - name: Failover test summary
+      debug:
+        msg:
+          - "=== Failover Test Summary ==="
+          - "Original Primary: {{ current_primary }}"
+          - "New Primary: Check output above"
+          - "VIP Status: {{ vip_check.stdout_lines }}"
+      tags: failover

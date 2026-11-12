@@ -1,0 +1,86 @@
+---
+
+- name: Configure /etc/hosts
+  blockinfile:
+    path: /etc/hosts
+    block: |
+      {{ node_ips['maas-ha-1'] }} maas-ha-1
+      {{ node_ips['maas-ha-2'] }} maas-ha-2
+      {{ node_ips['maas-ha-3'] }} maas-ha-3
+      {{ maas_vip }} maas-ha-vip
+      {{ pgsql_vip }} maas-pgsql-vip
+    marker: "# {mark} ANSIBLE MANAGED MAAS HA HOSTS"
+    state: present
+  tags: hosts
+
+- name: Set hostname
+  hostname:
+    name: "{{ inventory_hostname }}"
+  tags: hosts
+
+- name: Configure apt repositories to use mirror
+  shell: |
+    sed -i 's|http://archive.ubuntu.com/ubuntu|http://{{ apt_mirror }}/ubuntu|g' /etc/apt/sources.list
+    sed -i 's|http://security.ubuntu.com/ubuntu|http://{{ apt_mirror }}/ubuntu|g' /etc/apt/sources.list
+    sed -i 's|http://archive.ubuntu.com/ubuntu|http://{{ apt_mirror }}/ubuntu|g' /etc/apt/sources.list.d/*.list 2>/dev/null || true
+    sed -i 's|http://security.ubuntu.com/ubuntu|http://{{ apt_mirror }}/ubuntu|g' /etc/apt/sources.list.d/*.list 2>/dev/null || true
+  changed_when: true
+  tags: install
+
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  tags: install
+
+- name: Install common packages
+  apt:
+    name: "{{ common_packages }}"
+    state: present
+  tags: install
+
+- name: Install snapd
+  apt:
+    name: snapd
+    state: present
+  tags: install
+
+- name: Install PostgreSQL {{ postgresql_version }} (from Ubuntu repo)
+  apt:
+    name:
+      - "postgresql-{{ postgresql_version }}"
+      - "postgresql-client-{{ postgresql_version }}"
+      - python3-psycopg2
+    state: present
+  tags: install
+
+- name: Install HA clustering packages
+  apt:
+    name:
+      - haproxy
+      - corosync
+      - pacemaker
+      - pcs
+      - crmsh
+      - pacemaker-resource-agents
+    state: present
+  tags: install
+
+- name: Set hacluster user password
+  user:
+    name: hacluster
+    password: "{{ 'hacluster' | password_hash('sha512') }}"
+    shell: /bin/bash
+  tags: install
+
+- name: Enable services
+  systemd:
+    name: "{{ item }}"
+    enabled: yes
+    state: stopped
+  loop:
+    - postgresql
+    - haproxy
+    - corosync
+    - pacemaker
+  tags: install

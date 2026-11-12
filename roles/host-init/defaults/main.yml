@@ -1,0 +1,31 @@
+---
+lxd_storage_pool_name: default
+lxd_storage_pool_path: /home/Data/lxd-storage-pool
+
+libvirt_bridges:
+  - name: virbr0
+    ip: 192.168.122.1
+    netmask: 255.255.255.0
+    dhcp: true
+    dhcp_end: "192.168.122.199"
+    nat: true
+  - name: virbr1
+    ip: 192.168.165.1
+    netmask: 255.255.255.0
+    dhcp: false
+    nat: false
+  - name: virbr2
+    ip: 192.168.166.1
+    netmask: 255.255.255.0
+    dhcp: false
+    nat: false
+  - name: virbr3
+    ip: 192.168.167.1
+    netmask: 255.255.255.0
+    dhcp: false
+    nat: false
+  - name: virbr4
+    ip: 192.168.170.1
+    netmask: 255.255.255.0
+    dhcp: false
+    nat: false

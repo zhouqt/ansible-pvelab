@@ -1,0 +1,190 @@
+---
+
+- name: Load required kernel modules
+  modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+    - ip_vs
+    - ip_vs_rr
+    - ip_vs_wrr
+    - ip_vs_sh
+    - nf_nat
+
+- name: Persist kernel modules across reboot
+  copy:
+    dest: /etc/modules-load.d/kubernetes-lxd.conf
+    content: |
+      overlay
+      br_netfilter
+      ip_vs
+      ip_vs_rr
+      ip_vs_wrr
+      ip_vs_sh
+      nf_nat
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Configure sysctl for Kubernetes
+  copy:
+    dest: /etc/sysctl.d/99-kubernetes-lxd.conf
+    content: |
+      vm.overcommit_memory = 1
+      kernel.panic = 10
+      kernel.panic_on_oops = 1
+      net.netfilter.nf_conntrack_max = 720896
+      net.bridge.bridge-nf-call-iptables = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward = 1
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Apply sysctl settings
+  command: sysctl --system
+  changed_when: true
+
+- name: Check if LXD project exists
+  command: lxc project show {{ k8s_lxd_project }}
+  register: project_check
+  changed_when: false
+  failed_when: false
+
+- name: Create LXD project
+  command: lxc project create {{ k8s_lxd_project }}
+  when: project_check.rc != 0
+
+- name: Set default profile security config - privileged
+  command: lxc profile set default --project {{ k8s_lxd_project }} security.privileged true
+  changed_when: true
+
+- name: Set default profile security config - nesting
+  command: lxc profile set default --project {{ k8s_lxd_project }} security.nesting true
+  changed_when: true
+
+- name: Set default profile security config - mknod intercept
+  command: lxc profile set default --project {{ k8s_lxd_project }} security.syscalls.intercept.mknod true
+  changed_when: true
+
+- name: Set default profile - boot autostart
+  command: lxc profile set default --project {{ k8s_lxd_project }} boot.autostart true
+  changed_when: true
+
+- name: Set default profile - kernel modules
+  command: >
+    lxc profile set default --project {{ k8s_lxd_project }}
+    linux.kernel_modules
+    "ip_vs,ip_vs_rr,ip_vs_wrr,ip_vs_sh,ip_tables,ip6_tables,netlink_diag,nf_nat,overlay,br_netfilter"
+  changed_when: true
+
+- name: Set default profile - raw.lxc (AppArmor unconfined)
+  shell: |
+    lxc profile set default --project {{ k8s_lxd_project }} raw.lxc "lxc.apparmor.profile=unconfined
+    lxc.mount.auto=proc:rw sys:rw cgroup:rw
+    lxc.cgroup.devices.allow=a
+    lxc.cap.drop="
+  changed_when: true
+
+- name: Add root disk device to default profile
+  command: >
+    lxc profile device add default root disk
+    pool=default path=/
+    --project {{ k8s_lxd_project }}
+  ignore_errors: true
+
+- name: Add eth0 (internet bridge) to default profile
+  command: >
+    lxc profile device add default eth0 nic
+    nictype=bridged parent={{ k8s_lxd_bridge_internet }} name=eth0
+    --project {{ k8s_lxd_project }}
+  ignore_errors: true
+
+- name: Add eth1 (pod network bridge) to default profile
+  command: >
+    lxc profile device add default eth1 nic
+    nictype=bridged parent={{ k8s_lxd_bridge_pod }} name=eth1
+    --project {{ k8s_lxd_project }}
+  ignore_errors: true
+
+- name: Add kmsg device to default profile
+  command: >
+    lxc profile device add default kmsg unix-char
+    source=/dev/kmsg path=/dev/kmsg
+    --project {{ k8s_lxd_project }}
+  ignore_errors: true
+
+- name: Add conntrack hashsize device to default profile
+  command: >
+    lxc profile device add default aadisable disk
+    source=/sys/module/nf_conntrack/parameters/hashsize
+    path=/sys/module/nf_conntrack/parameters/hashsize
+    --project {{ k8s_lxd_project }}
+  ignore_errors: true
+
+- name: Check if juju-ck8s profile exists
+  command: lxc profile show {{ k8s_lxd_profile_name }} --project {{ k8s_lxd_project }}
+  register: profile_check
+  changed_when: false
+  failed_when: false
+
+- name: Create juju-ck8s profile
+  command: lxc profile create {{ k8s_lxd_profile_name }} --project {{ k8s_lxd_project }}
+  when: profile_check.rc != 0
+
+- name: Set juju-ck8s profile security - privileged
+  command: lxc profile set {{ k8s_lxd_profile_name }} --project {{ k8s_lxd_project }} security.privileged true
+  changed_when: true
+
+- name: Set juju-ck8s profile security - nesting
+  command: lxc profile set {{ k8s_lxd_profile_name }} --project {{ k8s_lxd_project }} security.nesting true
+  changed_when: true
+
+- name: Set juju-ck8s profile security - mknod
+  command: lxc profile set {{ k8s_lxd_profile_name }} --project {{ k8s_lxd_project }} security.syscalls.intercept.mknod true
+  changed_when: true
+
+- name: Set juju-ck8s profile - boot autostart
+  command: lxc profile set {{ k8s_lxd_profile_name }} --project {{ k8s_lxd_project }} boot.autostart true
+  changed_when: true
+
+- name: Set juju-ck8s profile - kernel modules
+  command: >
+    lxc profile set {{ k8s_lxd_profile_name }} --project {{ k8s_lxd_project }}
+    linux.kernel_modules
+    "ip_vs,ip_vs_rr,ip_vs_wrr,ip_vs_sh,ip_tables,ip6_tables,netlink_diag,nf_nat,overlay,br_netfilter"
+  changed_when: true
+
+- name: Set juju-ck8s profile - raw.lxc
+  shell: |
+    lxc profile set {{ k8s_lxd_profile_name }} --project {{ k8s_lxd_project }} raw.lxc "lxc.apparmor.profile=unconfined
+    lxc.mount.auto=proc:rw sys:rw cgroup:rw
+    lxc.cgroup.devices.allow=a
+    lxc.cap.drop="
+  changed_when: true
+
+- name: Add kmsg device to juju-ck8s profile
+  command: >
+    lxc profile device add {{ k8s_lxd_profile_name }} kmsg unix-char
+    source=/dev/kmsg path=/dev/kmsg
+    --project {{ k8s_lxd_project }}
+  ignore_errors: true
+
+- name: Add conntrack hashsize device to juju-ck8s profile
+  command: >
+    lxc profile device add {{ k8s_lxd_profile_name }} aadisable disk
+    source=/sys/module/nf_conntrack/parameters/hashsize
+    path=/sys/module/nf_conntrack/parameters/hashsize
+    --project {{ k8s_lxd_project }}
+  ignore_errors: true
+
+- name: Display profile summary
+  debug:
+    msg: |
+      LXD project '{{ k8s_lxd_project }}' prepared for Charmed Kubernetes:
+        - default profile: privileged, nesting, unconfined, dual NIC ({{ k8s_lxd_bridge_internet }} + {{ k8s_lxd_bridge_pod }})
+        - {{ k8s_lxd_profile_name }} profile: same security config (supplementary, no NIC/disk devices)
+        - /dev/kmsg device mapped for kubelet
+        - Host kernel modules and sysctl configured

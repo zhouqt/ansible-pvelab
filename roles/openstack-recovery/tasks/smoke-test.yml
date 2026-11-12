@@ -1,0 +1,189 @@
+---
+- name: "STEP 13b: End-to-end OpenStack recovery smoke test"
+  block:
+    - name: "STEP 13b: Initialize smoke-test result"
+      set_fact:
+        recovery_smoke_result: "FAIL: smoke test did not complete"
+
+    - name: "STEP 13b: Verify smoke-test prerequisites"
+      shell: |
+        set -euo pipefail
+        os() {
+          bash {{ project_dir }}/openstack-wrapper.sh openstack "$@" | sed '1{/^OpenStack RC loaded:/d;}'
+        }
+        test -x {{ project_dir }}/openstack-wrapper.sh
+        command -v jq >/dev/null
+        os image show {{ recovery_smoke_image }} -f value -c id >/dev/null
+        os flavor show {{ recovery_smoke_flavor }} -f value -c id >/dev/null
+        os network show {{ recovery_smoke_network }} -f value -c id >/dev/null
+
+        PROJECT_ID=$(os token issue -f json | jq -r '.project_id')
+        SG_ID=$(os security group list --project "$PROJECT_ID" -f json | \
+          jq -r '.[] | select(.Name == "default") | .ID')
+        test -n "$PROJECT_ID"
+        test -n "$SG_ID"
+
+        RULES=$(os security group rule list "$SG_ID" -f json)
+        echo "$RULES" | jq -e '.[] | select(.Direction == "egress" and .Ethertype == "IPv4" and ."IP Range" == "0.0.0.0/0")' >/dev/null
+
+        SUBNETS=$(os subnet list --network {{ recovery_smoke_network }} -f json)
+        echo "$SUBNETS" | jq -e '.[] | select(."Subnet" == "10.0.0.0/24" and ."Gateway IP" == "{{ recovery_smoke_gateway }}")' >/dev/null
+        printf '%s\n%s\n' "$PROJECT_ID" "$SG_ID"
+      args:
+        executable: /bin/bash
+      register: recovery_smoke_prerequisites
+      changed_when: false
+
+    - name: "STEP 13b: Save smoke-test project and security group IDs"
+      set_fact:
+        recovery_smoke_project_id: "{{ recovery_smoke_prerequisites.stdout_lines[0] }}"
+        recovery_smoke_security_group_id: "{{ recovery_smoke_prerequisites.stdout_lines[1] }}"
+
+    - name: "STEP 13b: Write guest-side gateway probe"
+      copy:
+        dest: "{{ recovery_smoke_userdata_file }}"
+        mode: '0600'
+        content: |
+          #!/bin/sh
+          exec >/dev/console 2>&1
+          echo RECOVERY_SMOKE_GUEST_BOOTED
+          if ping -c 5 -W 2 {{ recovery_smoke_gateway }}; then
+            echo RECOVERY_SMOKE_PING_PASS
+          else
+            echo RECOVERY_SMOKE_PING_FAIL
+          fi
+
+    - name: "STEP 13b: Locate stale recovery smoke instances"
+      shell: |
+        set -o pipefail
+        os() {
+          bash {{ project_dir }}/openstack-wrapper.sh openstack "$@" | sed '1{/^OpenStack RC loaded:/d;}'
+        }
+        os server list --name {{ recovery_smoke_server_name }} -f value -c ID
+      args:
+        executable: /bin/bash
+      register: recovery_smoke_existing
+      changed_when: false
+
+    - name: "STEP 13b: Remove stale recovery smoke instances"
+      shell: |
+        set -euo pipefail
+        os() {
+          bash {{ project_dir }}/openstack-wrapper.sh openstack "$@" | sed '1{/^OpenStack RC loaded:/d;}'
+        }
+        while IFS= read -r server_id; do
+          if [ -n "$server_id" ]; then
+            os server delete --wait "$server_id"
+          fi
+        done <<< '{{ recovery_smoke_existing.stdout | trim }}'
+      args:
+        executable: /bin/bash
+      when: recovery_smoke_existing.stdout | trim | length > 0
+      changed_when: true
+
+    - name: "STEP 13b: Create fresh CirrOS VM with guest gateway probe"
+      shell: |
+        set -o pipefail
+        bash {{ project_dir }}/openstack-wrapper.sh openstack server create \
+          --flavor {{ recovery_smoke_flavor }} \
+          --image {{ recovery_smoke_image }} \
+          --network {{ recovery_smoke_network }} \
+          --security-group {{ recovery_smoke_security_group_id }} \
+          --user-data {{ recovery_smoke_userdata_file }} \
+          --wait {{ recovery_smoke_server_name }} | sed '1{/^OpenStack RC loaded:/d;}'
+      args:
+        executable: /bin/bash
+      register: recovery_smoke_create
+      changed_when: true
+
+    - name: "STEP 13b: Wait for smoke VM fixed address"
+      shell: |
+        set -o pipefail
+        os() {
+          bash {{ project_dir }}/openstack-wrapper.sh openstack "$@" | sed '1{/^OpenStack RC loaded:/d;}'
+        }
+        os server show {{ recovery_smoke_server_name }} -f json -c addresses | \
+          jq -r '.addresses["{{ recovery_smoke_network }}"][]? | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$"))' | head -1
+      args:
+        executable: /bin/bash
+      register: recovery_smoke_fixed_ip
+      changed_when: false
+      retries: 30
+      delay: 5
+      until: recovery_smoke_fixed_ip.stdout | trim | length > 0
+
+    - name: "STEP 13b: Wait for guest-side gateway ping result in console"
+      shell: |
+        set -o pipefail
+        os() {
+          bash {{ project_dir }}/openstack-wrapper.sh openstack "$@" | sed '1{/^OpenStack RC loaded:/d;}'
+        }
+        os console log show --lines 150 {{ recovery_smoke_server_name }}
+      args:
+        executable: /bin/bash
+      register: recovery_smoke_console
+      changed_when: false
+      retries: 36
+      delay: 5
+      until: >-
+        'RECOVERY_SMOKE_PING_PASS' in recovery_smoke_console.stdout or
+        'RECOVERY_SMOKE_PING_FAIL' in recovery_smoke_console.stdout
+
+    - name: "STEP 13b: Assert guest reached the internal gateway"
+      assert:
+        that:
+          - "'RECOVERY_SMOKE_PING_PASS' in recovery_smoke_console.stdout"
+          - "'0% packet loss' in recovery_smoke_console.stdout"
+        fail_msg: >-
+          Guest-side ping to {{ recovery_smoke_gateway }} failed or had packet loss.
+          Console tail: {{ recovery_smoke_console.stdout[-1200:] }}
+
+    - name: "STEP 13b: Mark end-to-end smoke test successful"
+      set_fact:
+        recovery_smoke_result: "PASS: {{ recovery_smoke_server_name }} ({{ recovery_smoke_fixed_ip.stdout | trim }}) pinged {{ recovery_smoke_gateway }} from guest with 0% packet loss"
+
+  rescue:
+    - name: "STEP 13b: Mark end-to-end smoke test failed"
+      set_fact:
+        recovery_smoke_result: "FAIL: {{ ansible_failed_task.name | default('OpenStack smoke test') }} — {{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default('see failed task output')) }}"
+
+  always:
+    - name: "STEP 13b: Delete temporary smoke VM if present"
+      shell: |
+        set -o pipefail
+        os() {
+          bash {{ project_dir }}/openstack-wrapper.sh openstack "$@" | sed '1{/^OpenStack RC loaded:/d;}'
+        }
+        SERVER_IDS=$(os server list --name {{ recovery_smoke_server_name }} -f value -c ID)
+        while IFS= read -r server_id; do
+          if [ -n "$server_id" ]; then
+            os server delete --wait "$server_id"
+          fi
+        done <<< "$SERVER_IDS"
+      args:
+        executable: /bin/bash
+      register: recovery_smoke_delete
+      changed_when: recovery_smoke_delete.stdout | default('') | length > 0
+      failed_when: false
+
+    - name: "STEP 13b: Remove guest probe file"
+      file:
+        path: "{{ recovery_smoke_userdata_file }}"
+        state: absent
+      register: recovery_smoke_userdata_delete
+      failed_when: false
+
+    - name: "STEP 13b: Fail recovery if smoke test or cleanup failed"
+      fail:
+        msg: >-
+          {{ recovery_smoke_result }}.
+          VM cleanup rc={{ recovery_smoke_delete.rc | default('not-run') }};
+          user-data cleanup failed={{ recovery_smoke_userdata_delete.failed | default(false) }}.
+      when: >-
+        (recovery_smoke_result is search('^FAIL:')) or
+        (recovery_smoke_delete.rc | default(1) != 0) or
+        (recovery_smoke_userdata_delete.failed | default(false))
+
+- name: "STEP 13b: Display end-to-end smoke-test result"
+  debug:
+    msg: "{{ recovery_smoke_result }}"

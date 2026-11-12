@@ -1,0 +1,208 @@
+---
+
+- name: Ensure Ubuntu Jammy Image in MAAS
+  hosts: localhost
+  connection: local
+  tags: [phase0, images]
+  vars:
+    maas_host: "192.168.122.10"
+  tasks:
+    - name: Check if Ubuntu Jammy selection exists
+      shell: |
+        ssh root@{{ maas_host }} "maas maas-admin boot-source-selections read 1" 2>/dev/null | grep -c '"release": "jammy"' || echo "0"
+      register: jammy_selection
+      changed_when: false
+
+    - name: Add Ubuntu Jammy to boot source selections
+      shell: |
+        ssh root@{{ maas_host }} "maas maas-admin boot-source-selections create 1 os=ubuntu release=jammy arches=amd64 subarches=* labels=*"
+      when: jammy_selection.stdout == "0"
+      register: add_jammy
+      changed_when: add_jammy.rc == 0
+
+    - name: Trigger image download
+      shell: |
+        ssh root@{{ maas_host }} "curl -X POST http://localhost:5240/MAAS/api/2.0/boot-resources/?op=import"
+      register: trigger_import
+      changed_when: trigger_import.rc == 0
+
+    - name: Wait for Jammy image to be available
+      shell: |
+        ssh root@{{ maas_host }} "maas maas-admin boot-resources read" | grep -c '"name": "ubuntu/jammy"' || echo "0"
+      register: jammy_available
+      until: jammy_available.stdout | int >= 1
+      retries: 60
+      delay: 60
+      changed_when: false
+
+    - name: Display available images
+      shell: |
+        ssh root@{{ maas_host }} "maas maas-admin boot-resources read | jq -r '.[] | select(.type == \"Synced\") | .name'"
+      register: available_images
+      changed_when: false
+
+    - name: Show available images
+      debug:
+        msg: "Available synced images: {{ available_images.stdout_lines }}"
+
+- name: Phase 1 - Create VMs in MAAS
+  hosts: localhost
+  connection: local
+  tags: [phase1, create-vms]
+  vars:
+    maas_host: "192.168.122.10"
+    vm_host_id: 5
+    control_vms:
+      - { name: "os-control-1", memory: 16384, cores: 4, disk: 80 }
+      - { name: "os-control-2", memory: 16384, cores: 4, disk: 80 }
+      - { name: "os-control-3", memory: 16384, cores: 4, disk: 80 }
+    compute_vms:
+      - { name: "os-compute-1", memory: 32768, cores: 4, disk: 100 }
+      - { name: "os-compute-2", memory: 32768, cores: 4, disk: 100 }
+  tasks:
+    - name: Check existing VMs
+      shell: |
+        ssh root@{{ maas_host }} "maas maas-admin machines read | jq -r '.[] | select(.hostname | startswith(\"os-\")) | .hostname'"
+      register: existing_vms
+      changed_when: false
+
+    - name: Set existing VM list
+      set_fact:
+        existing_vm_list: "{{ existing_vms.stdout_lines }}"
+
+    - name: Create control VMs if not exist
+      shell: |
+        ssh root@{{ maas_host }} "maas maas-admin vm-host compose {{ vm_host_id }} cores={{ item.cores }} memory={{ item.memory }} storage='root:{{ item.disk }}' hostname={{ item.name }}"
+      loop: "{{ control_vms }}"
+      when: item.name not in existing_vm_list
+      register: control_create
+      changed_when: "'system_id' in control_create.stdout"
+
+    - name: Create compute VMs if not exist
+      shell: |
+        ssh root@{{ maas_host }} "maas maas-admin vm-host compose {{ vm_host_id }} cores={{ item.cores }} memory={{ item.memory }} storage='root:{{ item.disk }}' hostname={{ item.name }}"
+      loop: "{{ compute_vms }}"
+      when: item.name not in existing_vm_list
+      register: compute_create
+      changed_when: "'system_id' in compute_create.stdout"
+
+- name: Phase 2 - Configure VM Networks and Nested VMX
+  hosts: localhost
+  connection: local
+  tags: [phase2, configure-vms]
+  vars:
+    lxd_project: "maas-managed"
+    control_vms: ["os-control-1", "os-control-2", "os-control-3"]
+    compute_vms: ["os-compute-1", "os-compute-2"]
+  tasks:
+    - name: Add overlay network to control VMs
+      shell: |
+        lxc config device add {{ item }} eth1 nic nictype=bridged parent=virbr2 name=eth1 --project {{ lxd_project }} 2>/dev/null || true
+      loop: "{{ control_vms }}"
+      changed_when: false
+
+    - name: Add storage network to control VMs
+      shell: |
+        lxc config device add {{ item }} eth2 nic nictype=bridged parent=virbr3 name=eth2 --project {{ lxd_project }} 2>/dev/null || true
+      loop: "{{ control_vms }}"
+      changed_when: false
+
+    - name: Add overlay network to compute VMs
+      shell: |
+        lxc config device add {{ item }} eth1 nic nictype=bridged parent=virbr2 name=eth1 --project {{ lxd_project }} 2>/dev/null || true
+      loop: "{{ compute_vms }}"
+      changed_when: false
+
+    - name: Add storage network to compute VMs
+      shell: |
+        lxc config device add {{ item }} eth2 nic nictype=bridged parent=virbr3 name=eth2 --project {{ lxd_project }} 2>/dev/null || true
+      loop: "{{ compute_vms }}"
+      changed_when: false
+
+    - name: Add external network to compute VMs
+      shell: |
+        lxc config device add {{ item }} eth3 nic nictype=bridged parent=virbr4 name=eth3 --project {{ lxd_project }} 2>/dev/null || true
+      loop: "{{ compute_vms }}"
+      changed_when: false
+
+    - name: Enable nested VMX on compute VMs (CPU passthrough)
+      shell: |
+        lxc config set {{ item }} raw.qemu="-cpu host" --project {{ lxd_project }} 2>/dev/null || true
+      loop: "{{ compute_vms }}"
+      changed_when: false
+
+- name: Phase 3 - Commission VMs
+  hosts: localhost
+  connection: local
+  tags: [phase3, commission]
+  vars:
+    maas_host: "192.168.122.10"
+    all_vms: ["os-control-1", "os-control-2", "os-control-3", "os-compute-1", "os-compute-2"]
+  tasks:
+    - name: Start all VMs
+      shell: |
+        lxc start {{ item }} --project maas-managed 2>/dev/null || true
+      loop: "{{ all_vms }}"
+      changed_when: false
+
+    - name: Commission VMs in MAAS
+      shell: |
+        ssh root@{{ maas_host }} "maas maas-admin machine commission \$(maas maas-admin machines read hostname={{ item }} | jq -r '.[].system_id')"
+      loop: "{{ all_vms }}"
+      register: commission_result
+      changed_when: false
+
+    - name: Wait for VMs to be Ready
+      shell: |
+        ssh root@{{ maas_host }} "maas maas-admin machines read | jq -r '.[] | select(.hostname | startswith(\"os-\")) | select(.status_name == \"Ready\") | .hostname' | wc -l"
+      register: ready_count
+      until: ready_count.stdout | int >= 5
+      retries: 60
+      delay: 30
+      changed_when: false
+
+- name: Phase 4 - Deploy Ubuntu Jammy on VMs
+  hosts: localhost
+  connection: local
+  tags: [phase4, deploy]
+  vars:
+    maas_host: "192.168.122.10"
+    all_vms: ["os-control-1", "os-control-2", "os-control-3", "os-compute-1", "os-compute-2"]
+    ubuntu_series: "ubuntu/jammy"
+  tasks:
+    - name: Verify Jammy image is available before deploy
+      shell: |
+        ssh root@{{ maas_host }} "maas maas-admin boot-resources read" | grep -c '"name": "ubuntu/jammy"' || echo "0"
+      register: jammy_check
+      failed_when: jammy_check.stdout | int < 1
+
+    - name: Deploy Ubuntu Jammy on all VMs
+      shell: |
+        ssh root@{{ maas_host }} "maas maas-admin machine deploy \$(maas maas-admin machines read hostname={{ item }} | jq -r '.[].system_id') distro_series={{ ubuntu_series }}"
+      loop: "{{ all_vms }}"
+      register: deploy_result
+      changed_when: "'Deployed' in deploy_result.stdout"
+
+    - name: Wait for VMs to be Deployed
+      shell: |
+        ssh root@{{ maas_host }} "maas maas-admin machines read | jq -r '.[] | select(.hostname | startswith(\"os-\")) | select(.status_name == \"Deployed\") | .hostname' | wc -l"
+      register: deployed_count
+      until: deployed_count.stdout | int >= 5
+      retries: 90
+      delay: 30
+      changed_when: false
+
+    - name: Get deployed VM IP addresses
+      shell: |
+        ssh root@{{ maas_host }} "maas maas-admin machines read hostname={{ item }} | jq -r '.[].ip_addresses[0]'"
+      loop: "{{ all_vms }}"
+      register: vm_ips
+      changed_when: false
+
+    - name: Display deployed VM information
+      debug:
+        msg: |
+          Deployed VMs with Ubuntu Jammy:
+          {% for result in vm_ips.results %}
+          {{ result.item }}: {{ result.stdout }}
+          {% endfor %}

@@ -1,0 +1,292 @@
+---
+- name: Require OpenStack credentials before deploying Keystone
+  ansible.builtin.assert:
+    that:
+      - pve_keystone_admin_password | length > 0
+    fail_msg: "set vault_pve_keystone_admin_password through Ansible Vault."
+  no_log: true
+
+- name: Require OpenStack public/admin/internal binding spaces before deploying charms
+  ansible.builtin.assert:
+    that:
+      - "pve_juju_network_spaces | selectattr('name', 'equalto', pve_juju_public_native_space) | map(attribute='cidr') | list == [pve_juju_public_cidr]"
+      - "pve_juju_network_spaces | selectattr('name', 'equalto', pve_juju_default_space) | map(attribute='cidr') | list == ['192.168.13.0/24']"
+    fail_msg: "OpenStack endpoint bindings require public=alpha and default/internal=192.168.13.0/24."
+
+- name: Verify Juju controller and OpenStack model are ready
+  ansible.builtin.command: >-
+    pct exec {{ pve_juju_client_vmid }} -- su - {{ pve_juju_client_user }} -c
+    '{{ pve_juju_bin }} status -m {{ pve_juju_controller_name }}:openstack --format short'
+  register: pve_control_status
+  changed_when: false
+
+- name: Read configured Juju model default space
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} model-config -m {{ pve_juju_controller_name }}:openstack default-space"
+  register: pve_control_default_space
+  changed_when: false
+
+- name: Require verified Juju default space before OpenStack deployment
+  ansible.builtin.assert:
+    that:
+      - pve_control_default_space.rc == 0
+      - pve_control_default_space.stdout | trim == pve_juju_default_space
+    fail_msg: >-
+      OpenStack model default-space must be {{ pve_juju_default_space }}. Run
+      --tags pve-juju-network after registering workload machines and before this stage.
+
+- name: Read existing application inventory before OpenStack deployment
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} status -m {{ pve_juju_controller_name }}:openstack --format json"
+  register: pve_control_existing_applications
+  changed_when: false
+  failed_when: pve_control_existing_applications.rc != 0 or 'applications' not in (pve_control_existing_applications.stdout | from_json)
+
+- name: Require endpoint bindings use only public and default internal spaces for existing applications
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} show-application -m {{ pve_juju_controller_name }}:openstack {{ item.application }} --format json"
+  loop:
+    - { application: keystone, endpoints: [public, admin, internal] }
+    - { application: nova-cloud-controller, endpoints: [public, admin, internal] }
+    - { application: neutron-api, endpoints: [public, admin, internal] }
+    - { application: glance, endpoints: [public, admin, internal] }
+    - { application: openstack-dashboard, endpoints: [public] }
+  register: pve_control_public_binding_checks
+  changed_when: false
+  when: item.application in ((pve_control_existing_applications.stdout | from_json).applications | default({})).keys() | list
+
+- name: Verify public and internal endpoint bindings for existing OpenStack applications
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.stdout | from_json)[item.item.application]['endpoint-bindings'].get('public', '')
+        == pve_juju_public_native_space
+      - >-
+        (item.stdout | from_json)[item.item.application]['endpoint-bindings'].get('', '')
+        == 'internal'
+      - >-
+        item.item.endpoints | difference(
+          (item.stdout | from_json)[item.item.application]['endpoint-bindings'].keys() | list
+        ) | length == 0
+      - >-
+        (item.item.endpoints | reject('equalto', 'public') | list
+        | select('in', ((item.stdout | from_json)[item.item.application]['endpoint-bindings']
+          | dict2items | selectattr('key', 'in', item.item.endpoints)
+          | selectattr('value', 'equalto', 'internal') | map(attribute='key') | list))
+        | list | length) ==
+        (item.item.endpoints | reject('equalto', 'public') | list | length)
+    fail_msg: >-
+      Existing {{ item.item.application }} endpoint bindings are not public=alpha and
+      admin/internal=internal. Refusing to deploy around a potentially wrong live endpoint mapping;
+      correct it in a controlled maintenance window.
+  loop: "{{ pve_control_public_binding_checks.results | default([]) }}"
+  when: not item.skipped | default(false)
+
+- name: Copy OpenStack control-plane deployment script to PVE host
+  ansible.builtin.template:
+    src: "{{ pve_deploy_control_template }}"
+    dest: /root/deploy-control-plane.sh
+    mode: "0700"
+  no_log: true
+
+- name: Push OpenStack control-plane deployment script into MAAS CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ pve_juju_client_vmid }}"
+      - /root/deploy-control-plane.sh
+      - /tmp/deploy-control-plane.sh
+  no_log: true
+
+- name: Run idempotent OpenStack control-plane deployment as Juju client
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - bash /tmp/deploy-control-plane.sh
+  register: pve_control_deployment
+  changed_when: "'DEPLOY ' in pve_control_deployment.stdout or 'REL ' in pve_control_deployment.stdout"
+  no_log: true
+
+- name: Read deployed OpenStack API endpoint bindings
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} show-application -m {{ pve_juju_controller_name }}:openstack {{ item.application }} --format json"
+  loop:
+    - { application: keystone, endpoints: [public, admin, internal] }
+    - { application: nova-cloud-controller, endpoints: [public, admin, internal] }
+    - { application: neutron-api, endpoints: [public, admin, internal] }
+    - { application: glance, endpoints: [public, admin, internal] }
+    - { application: openstack-dashboard, endpoints: [public] }
+  register: pve_control_deployed_binding_checks
+  changed_when: false
+
+- name: Verify deployed OpenStack API endpoint bindings
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.stdout | from_json)[item.item.application]['endpoint-bindings'].get('public', '')
+        == pve_juju_public_native_space
+      - >-
+        (item.stdout | from_json)[item.item.application]['endpoint-bindings'].get('', '')
+        == 'internal'
+      - >-
+        item.item.endpoints | difference(
+          (item.stdout | from_json)[item.item.application]['endpoint-bindings'].keys() | list
+        ) | length == 0
+      - >-
+        (item.item.endpoints | reject('equalto', 'public') | list
+        | select('in', ((item.stdout | from_json)[item.item.application]['endpoint-bindings']
+          | dict2items | selectattr('key', 'in', item.item.endpoints)
+          | selectattr('value', 'equalto', 'internal') | map(attribute='key') | list))
+        | list | length) ==
+        (item.item.endpoints | reject('equalto', 'public') | list | length)
+    fail_msg: >-
+      Deployed {{ item.item.application }} endpoint bindings do not map public=alpha and
+      admin/internal=internal as expected.
+  loop: "{{ pve_control_deployed_binding_checks.results }}"
+
+- name: Check whether Vault charm needs root-token authorization
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} run-action vault/0 get-root-ca --wait --format json -m {{ pve_juju_controller_name }}:openstack"
+  register: pve_vault_root_ca_pre_auth
+  failed_when: false
+  changed_when: false
+  when: pve_vault_root_token | length > 0
+  no_log: true
+
+- name: Authorize Vault charm with root token when not yet authorized
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} run-action vault/0 authorize-charm token={{ pve_vault_root_token }} --wait -m {{ pve_juju_controller_name }}:openstack"
+  when:
+    - pve_vault_root_token | length > 0
+    - pve_vault_root_ca_pre_auth.rc != 0 or 'BEGIN CERTIFICATE' not in pve_vault_root_ca_pre_auth.stdout
+  no_log: true
+
+- name: Generate Vault root CA parameter file inside MAAS CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "printf '%s\\n' '{\"common_name\": \"root-ca\"}' > /tmp/pve-vault-ca-params.json"
+  when: pve_vault_root_token | length > 0
+
+- name: Check whether Vault root CA already exists
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} run-action vault/0 get-root-ca --wait --format json -m {{ pve_juju_controller_name }}:openstack"
+  register: pve_vault_root_ca_check
+  failed_when: false
+  changed_when: false
+  when: pve_vault_root_token | length > 0
+
+- name: Generate Vault root CA only when it is missing
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} run-action vault/0 generate-root-ca --params /tmp/pve-vault-ca-params.json --wait -m {{ pve_juju_controller_name }}:openstack"
+  when:
+    - pve_vault_root_token | length > 0
+    - pve_vault_root_ca_check.rc != 0 or 'BEGIN CERTIFICATE' not in pve_vault_root_ca_check.stdout
+  no_log: true
+
+- name: Verify Vault root CA is available after initialization
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} run-action vault/0 get-root-ca --wait --format json -m {{ pve_juju_controller_name }}:openstack"
+  register: pve_vault_root_ca_final
+  changed_when: false
+  when: pve_vault_root_token | length > 0
+  failed_when: >-
+    pve_vault_root_ca_final.rc != 0 or
+    'BEGIN CERTIFICATE' not in pve_vault_root_ca_final.stdout
+  no_log: true

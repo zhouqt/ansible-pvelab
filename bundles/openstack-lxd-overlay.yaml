@@ -1,0 +1,185 @@
+machines:
+  '0':
+  '1':
+  '2':
+  '3':
+  '4':
+  '5':
+  '6':
+  '7':
+  '8':
+  '9':
+  '10':
+  '11':
+  '12':
+  '13':
+  '14':
+  '15':
+
+applications:
+  nova-compute:
+    num_units: 2
+    bindings:
+      "": public
+      cloud-compute: internal
+      amqp: internal
+      ceph: storage
+      ceph-access: storage
+    to:
+    - '0'
+    - '1'
+
+  ceph-osd:
+    num_units: 2
+    options:
+      osd-devices: ""
+    bindings:
+      "": public
+      mon: storage
+    to:
+    - '0'
+    - '1'
+
+  mysql-innodb-cluster:
+    num_units: 3
+    bindings:
+      "": internal
+      db-router: internal
+      cluster: internal
+      certificates: internal
+    to:
+    - '2'
+    - '3'
+    - '4'
+
+  keystone:
+    bindings:
+      "": internal
+      public: public
+      admin: internal
+      internal: internal
+      identity-service: internal
+      shared-db: internal
+      certificates: internal
+    to:
+    - '5'
+
+  nova-cloud-controller:
+    bindings:
+      "": internal
+      public: public
+      admin: internal
+      internal: internal
+      cloud-compute: internal
+      amqp: internal
+      shared-db: internal
+      certificates: internal
+    to:
+    - '6'
+
+  vault:
+    bindings:
+      "": internal
+      certificates: internal
+      shared-db: internal
+    to:
+    - '7'
+
+  ovn-central:
+    num_units: 1
+    bindings:
+      "": internal
+      ovsdb-cms: data
+      certificates: internal
+    to:
+    - '8'
+
+  ceph-mon:
+    num_units: 1
+    options:
+      monitor-count: 1
+      expected-osd-count: 2
+    bindings:
+      "": internal
+      osd: storage
+      client: internal
+    to:
+    - '9'
+
+  cinder:
+    bindings:
+      "": internal
+      public: public
+      admin: internal
+      internal: internal
+      amqp: internal
+      shared-db: internal
+      certificates: internal
+    to:
+    - '10'
+
+  neutron-api:
+    bindings:
+      "": internal
+      public: public
+      admin: internal
+      internal: internal
+      amqp: internal
+      shared-db: internal
+      certificates: internal
+    to:
+    - '11'
+
+  openstack-dashboard:
+    bindings:
+      "": internal
+      public: public
+      shared-db: internal
+      certificates: internal
+    to:
+    - '12'
+
+  glance:
+    bindings:
+      "": internal
+      public: public
+      admin: internal
+      internal: internal
+      amqp: internal
+      shared-db: internal
+      certificates: internal
+      ceph: internal
+    to:
+    - '13'
+
+  placement:
+    bindings:
+      "": internal
+      public: public
+      admin: internal
+      internal: internal
+      shared-db: internal
+      certificates: internal
+    to:
+    - '14'
+
+  rabbitmq-server:
+    bindings:
+      "": internal
+      amqp: internal
+    to:
+    - '15'
+
+  ovn-chassis:
+    bindings:
+      "": public
+      ovsdb: data
+      certificates: internal
+
+  ceph-radosgw:
+    num_units: 0
+    to: []
+
+  ntp:
+    num_units: 0
+    to: []

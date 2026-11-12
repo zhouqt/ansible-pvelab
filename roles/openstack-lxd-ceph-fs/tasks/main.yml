@@ -1,0 +1,336 @@
+---
+
+- name: Set ceph-fs deployment facts
+  ansible.builtin.set_fact:
+    cephfs_app: "ceph-fs"
+    cephfs_channel: "octopus/stable"
+    cephfs_series: "focal"
+    cephfs_replication: 2
+    cephfs_lxd_project: "openstack"
+    cephfs_internal_cidr: "192.168.165.0/24"
+    cephfs_internal_gw: "192.168.165.1"
+    cephfs_external_gw: "192.168.122.1"
+    cephfs_dns: "8.8.8.8,8.8.4.4"
+
+- name: Verify juju command is available
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} version"
+  register: juju_version_check
+  become: false
+  changed_when: false
+  failed_when: juju_version_check.rc != 0
+
+- name: Verify Juju controller is accessible
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} show-controller {{ juju_controller_name }}"
+  register: controller_check
+  become: false
+  changed_when: false
+  failed_when: controller_check.rc != 0
+
+- name: Verify OpenStack model exists
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} show-model {{ juju_controller_name }}:{{ juju_model_name }}"
+  register: model_check
+  become: false
+  changed_when: false
+  failed_when: model_check.rc != 0
+
+- name: Check required ceph + vault services are active
+  ansible.builtin.shell: |
+    {{ juju_openstack_cmd }} status -m {{ juju_controller_name }}:{{ juju_model_name }} --format=json | \
+    python3 -c "
+    import sys, json
+    data = json.load(sys.stdin)
+    apps = data.get('applications', {})
+    required = ['ceph-mon', 'ceph-osd', 'vault']
+    inactive = []
+    for r in required:
+        if r not in apps:
+            inactive.append(f'{r}=MISSING')
+        elif apps[r].get('application-status', {}).get('current') != 'active':
+            inactive.append(f'{r}={apps[r][\"application-status\"][\"current\"]}')
+    if inactive:
+        print('NOT_READY: ' + ', '.join(inactive))
+        sys.exit(1)
+    print('OK')
+    "
+  register: prereq_check
+  become: false
+  changed_when: false
+
+- name: Fail if ceph/vault services not ready
+  ansible.builtin.fail:
+    msg: |
+      Required services not active: {{ prereq_check.stdout }}
+      Run openstack-lxd-services role first (deploys ceph-mon/ceph-osd/vault).
+      If vault is sealed, unseal it using credentials/vault-unseal-lxd-openstack.json.
+  when: prereq_check.rc != 0
+
+- name: Check current ceph-fs status
+  ansible.builtin.shell: |
+    {{ juju_openstack_cmd }} status -m {{ juju_controller_name }}:{{ juju_model_name }} {{ cephfs_app }} --format=json | \
+    python3 -c "
+    import sys, json
+    try:
+        d = json.load(sys.stdin)
+    except Exception:
+        print('NOT_DEPLOYED')
+        sys.exit(1)
+    apps = d.get('applications', {})
+    app = apps.get('{{ cephfs_app }}', {})
+    status = app.get('application-status', {}).get('current', '')
+    if status == 'active':
+        print('ACTIVE')
+        sys.exit(0)
+    if app:
+        print('PRESENT_BUT_' + status.upper())
+        sys.exit(0)
+    print('NOT_DEPLOYED')
+    sys.exit(1)
+    "
+  register: cephfs_status_check
+  become: false
+  changed_when: false
+  failed_when: false
+
+- name: Parse ceph-fs current state
+  ansible.builtin.set_fact:
+    cephfs_already_deployed: "{{ cephfs_status_check.stdout == 'ACTIVE' }}"
+
+- name: Display idempotency decision
+  ansible.builtin.debug:
+    msg: >-
+      ceph-fs already deployed and active: {{ cephfs_already_deployed }}.
+      {% if cephfs_already_deployed %}Skipping deploy/relate, going to verify.{% else %}Proceeding with fresh deploy.{% endif %}
+
+- name: Deploy ceph-fs charm
+  ansible.builtin.command:
+    cmd: >
+      {{ juju_openstack_cmd }} deploy -m {{ juju_controller_name }}:{{ juju_model_name }}
+      {{ cephfs_app }} --channel {{ cephfs_channel }} --series {{ cephfs_series }} -n 1
+  register: cephfs_deploy
+  become: false
+  changed_when: cephfs_deploy.rc == 0
+  failed_when: cephfs_deploy.rc != 0 and 'already exists' not in cephfs_deploy.stderr
+  when: not cephfs_already_deployed
+
+- name: Wait for ceph-fs application record to register in juju
+  ansible.builtin.shell: |
+    {{ juju_openstack_cmd }} status -m {{ juju_controller_name }}:{{ juju_model_name }} {{ cephfs_app }} --format=json | \
+    python3 -c "
+    import sys, json
+    try:
+        d = json.load(sys.stdin)
+    except Exception:
+        print('WAITING')
+        sys.exit(1)
+    if '{{ cephfs_app }}' in d.get('applications', {}):
+        print('REGISTERED')
+        sys.exit(0)
+    print('WAITING')
+    sys.exit(1)
+    "
+  register: cephfs_register_check
+  become: false
+  until: cephfs_register_check.stdout == 'REGISTERED' or ansible_check_mode
+  retries: 30
+  delay: 2
+  changed_when: false
+  when: not cephfs_already_deployed
+
+- name: Set ceph-osd-replication-count on ceph-fs
+  ansible.builtin.command:
+    cmd: >
+      {{ juju_openstack_cmd }} config -m {{ juju_controller_name }}:{{ juju_model_name }} {{ cephfs_app }}
+      ceph-osd-replication-count={{ cephfs_replication }}
+  register: cephfs_config
+  become: false
+  changed_when: cephfs_config.rc == 0
+  when: not cephfs_already_deployed
+
+- name: Get ceph-fs machine id and hostname
+  ansible.builtin.shell: |
+    {{ juju_openstack_cmd }} status -m {{ juju_controller_name }}:{{ juju_model_name }} {{ cephfs_app }} --format=json | \
+    python3 -c "
+    import sys, json
+    d = json.load(sys.stdin)
+    unit = list(d['applications']['{{ cephfs_app }}']['units'].keys())[0]
+    machine = str(d['applications']['{{ cephfs_app }}']['units'][unit]['machine'])
+    hostname = d['machines'][machine].get('hostname', machine)
+    print(f'{machine}|{hostname}')
+    "
+  register: cephfs_machine_info
+  become: false
+  changed_when: false
+  when: not cephfs_already_deployed
+
+- name: Set ceph-fs machine facts
+  ansible.builtin.set_fact:
+    cephfs_machine_id: "{{ cephfs_machine_info.stdout.split('|')[0] }}"
+    cephfs_hostname: "{{ cephfs_machine_info.stdout.split('|')[1] }}"
+  when: not cephfs_already_deployed
+
+- name: Wait for ceph-fs container to exist in LXD
+  ansible.builtin.command:
+    cmd: "lxc list {{ cephfs_hostname }} --project {{ cephfs_lxd_project }} -f csv -c n"
+  register: cephfs_lxc_check
+  become: false
+  until: cephfs_lxc_check.stdout.strip() != ""
+  retries: 30
+  delay: 2
+  changed_when: false
+  when: not cephfs_already_deployed
+
+- name: Read ceph-fs container eth0 / eth1 IPs and MACs
+  ansible.builtin.shell: |
+    ETH0_IP=$(lxc exec {{ cephfs_hostname }} --project {{ cephfs_lxd_project }} -- ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+    ETH1_IP=$(lxc exec {{ cephfs_hostname }} --project {{ cephfs_lxd_project }} -- ip -4 -o addr show eth1 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+    ETH0_MAC=$(lxc exec {{ cephfs_hostname }} --project {{ cephfs_lxd_project }} -- ip link show eth0 2>/dev/null | awk '/ether/ {print $2}')
+    ETH1_MAC=$(lxc exec {{ cephfs_hostname }} --project {{ cephfs_lxd_project }} -- ip link show eth1 2>/dev/null | awk '/ether/ {print $2}')
+    echo "{{ '${ETH0_IP}|${ETH1_IP}|${ETH0_MAC}|${ETH1_MAC}' }}"
+  register: cephfs_nic_info
+  become: false
+  changed_when: false
+  when: not cephfs_already_deployed
+
+- name: Parse ceph-fs NIC info
+  ansible.builtin.set_fact:
+    cephfs_eth0_ip: "{{ cephfs_nic_info.stdout.split('|')[0] }}"
+    cephfs_eth1_ip: "{{ cephfs_nic_info.stdout.split('|')[1] }}"
+    cephfs_eth0_mac: "{{ cephfs_nic_info.stdout.split('|')[2] }}"
+    cephfs_eth1_mac: "{{ cephfs_nic_info.stdout.split('|')[3] }}"
+  when: not cephfs_already_deployed
+
+- name: Fail if ceph-fs NICs could not be detected
+  ansible.builtin.fail:
+    msg: |
+      Could not read eth0/eth1 IPs on {{ cephfs_hostname }}.
+      eth0={{ cephfs_eth0_ip | default('?') }}, eth1={{ cephfs_eth1_ip | default('?') }}.
+      Container may not be fully booted; check `lxc list` and `lxc info`.
+  when:
+    - not cephfs_already_deployed
+    - cephfs_eth0_ip == "" or cephfs_eth1_ip == "" or cephfs_eth0_mac == "" or cephfs_eth1_mac == ""
+
+- name: Remove default Juju netplan to prevent conflict with 150-static.yaml
+  ansible.builtin.command:
+    cmd: "lxc exec {{ cephfs_hostname }} --project {{ cephfs_lxd_project }} -- rm -f /etc/netplan/99-juju.yaml"
+  register: cephfs_rm_juju_netplan
+  become: false
+  changed_when: cephfs_rm_juju_netplan.rc == 0
+  when: not cephfs_already_deployed
+
+- name: Write 150-static.yaml and apply netplan on ceph-fs container
+  ansible.builtin.shell: |
+    lxc exec {{ cephfs_hostname }} --project {{ cephfs_lxd_project }} -- bash -c "
+      printf 'network:\n  version: 2\n  ethernets:\n    eth0:\n      match:\n        macaddress: {{ cephfs_eth0_mac }}\n      addresses: [{{ cephfs_eth0_ip }}/24]\n      routes:\n        - to: default\n          via: {{ cephfs_external_gw }}\n          metric: 100\n      nameservers:\n        addresses: [{{ cephfs_dns }}]\n      dhcp4: false\n    eth1:\n      match:\n        macaddress: {{ cephfs_eth1_mac }}\n      addresses: [{{ cephfs_eth1_ip }}/24]\n      routes:\n        - to: {{ cephfs_internal_cidr }}\n          via: {{ cephfs_internal_gw }}\n          metric: 200\n      dhcp4: false\n' > /etc/netplan/150-static.yaml
+      chmod 600 /etc/netplan/150-static.yaml
+      netplan apply
+    "
+  register: cephfs_static_ip
+  become: false
+  changed_when: cephfs_static_ip.rc == 0
+  failed_when: cephfs_static_ip.rc != 0
+  when: not cephfs_already_deployed
+
+- name: Add ceph-fs:ceph-mds to ceph-mon:mds
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} add-relation -m {{ juju_controller_name }}:{{ juju_model_name }} {{ cephfs_app }}:ceph-mds ceph-mon:mds"
+  register: cephfs_rel_mds
+  become: false
+  changed_when: cephfs_rel_mds.rc == 0
+  failed_when: cephfs_rel_mds.rc != 0 and 'already exists' not in cephfs_rel_mds.stderr
+  when: not cephfs_already_deployed
+
+- name: Add ceph-fs:certificates to vault:certificates
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} add-relation -m {{ juju_controller_name }}:{{ juju_model_name }} {{ cephfs_app }}:certificates vault:certificates"
+  register: cephfs_rel_certs
+  become: false
+  changed_when: cephfs_rel_certs.rc == 0
+  failed_when: cephfs_rel_certs.rc != 0 and 'already exists' not in cephfs_rel_certs.stderr
+  when: not cephfs_already_deployed
+
+- name: Wait for ceph-fs to reach active status
+  ansible.builtin.shell: |
+    {{ juju_openstack_cmd }} status -m {{ juju_controller_name }}:{{ juju_model_name }} {{ cephfs_app }} --format=json | \
+    python3 -c "
+    import sys, json
+    try:
+        d = json.load(sys.stdin)
+    except Exception:
+        print('WAITING')
+        sys.exit(1)
+    status = d.get('applications', {}).get('{{ cephfs_app }}', {}).get('application-status', {}).get('current', '')
+    msg = d.get('applications', {}).get('{{ cephfs_app }}', {}).get('application-status', {}).get('message', '')
+    if status == 'active':
+        print('ACTIVE')
+        sys.exit(0)
+    print('WAITING: ' + status + (' / ' + msg if msg else ''))
+    sys.exit(1)
+    "
+  register: cephfs_active_check
+  become: false
+  until: cephfs_active_check.stdout == 'ACTIVE' or ansible_check_mode
+  retries: 60
+  delay: 10
+  changed_when: false
+
+- name: Capture ceph-fs app status for summary
+  ansible.builtin.shell: |
+    {{ juju_openstack_cmd }} status -m {{ juju_controller_name }}:{{ juju_model_name }} {{ cephfs_app }} --format=json | \
+    python3 -c "
+    import sys, json
+    d = json.load(sys.stdin)
+    print(d['applications']['{{ cephfs_app }}']['application-status']['current'])
+    "
+  register: cephfs_app_status
+  become: false
+  changed_when: false
+
+- name: Get ceph-mon/0 unit name for verification commands
+  ansible.builtin.shell: |
+    {{ juju_openstack_cmd }} status -m {{ juju_controller_name }}:{{ juju_model_name }} ceph-mon --format=json | \
+    python3 -c "import sys,json; d=json.load(sys.stdin); print(list(d['applications']['ceph-mon']['units'].keys())[0])"
+  register: cephmon_unit
+  become: false
+  changed_when: false
+
+- name: Check ceph MDS state
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} ssh -m {{ juju_controller_name }}:{{ juju_model_name }} {{ cephmon_unit.stdout }} 'sudo ceph mds stat'"
+  register: cephfs_mds_stat
+  become: false
+  changed_when: false
+  failed_when: "'up:active' not in cephfs_mds_stat.stdout"
+
+- name: Check ceph filesystem list
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} ssh -m {{ juju_controller_name }}:{{ juju_model_name }} {{ cephmon_unit.stdout }} 'sudo ceph fs ls'"
+  register: cephfs_fs_ls
+  become: false
+  changed_when: false
+  failed_when: "'ceph-fs' not in cephfs_fs_ls.stdout"
+
+- name: Check ceph cluster overall health
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} ssh -m {{ juju_controller_name }}:{{ juju_model_name }} {{ cephmon_unit.stdout }} 'sudo ceph -s'"
+  register: cephfs_health
+  become: false
+  changed_when: false
+  failed_when: "'HEALTH_OK' not in cephfs_health.stdout"
+
+- name: Display ceph-fs deployment summary
+  ansible.builtin.debug:
+    msg: |
+      ceph-fs deployment complete.
+      App status: {{ cephfs_app_status.stdout }}
+      MDS:       {{ cephfs_mds_stat.stdout }}
+      Filesystem: {{ cephfs_fs_ls.stdout }}
+      Cluster:   {{ cephfs_health.stdout_lines[0] }}
+
+      Next steps (optional, all opt-in):
+        {{ juju_openstack_cmd }} ssh -m {{ juju_controller_name }}:{{ juju_model_name }} {{ cephmon_unit.stdout }} \
+          'sudo ceph fs authorize ceph-fs client.manila / rw' > /tmp/cephfs.keyring
+        sudo mount -t ceph :/ /mnt/cephfs -o name=manila,secretfile=/tmp/cephfs.keyring
+

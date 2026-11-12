@@ -1,0 +1,86 @@
+---
+
+- name: Stop PostgreSQL service
+  systemd:
+    name: postgresql
+    state: stopped
+  tags: postgresql
+
+- name: Configure postgresql.conf for HA
+  blockinfile:
+    path: "/etc/postgresql/{{ postgresql_version }}/main/postgresql.conf"
+    block: |
+      listen_addresses = '*'
+      port = {{ postgresql_port }}
+      max_connections = {{ postgresql_max_connections | default(100) }}
+      wal_level = {{ postgresql_wal_level }}
+      max_wal_senders = {{ postgresql_max_wal_senders }}
+      max_replication_slots = {{ postgresql_max_replication_slots }}
+      hot_standby = {{ postgresql_hot_standby }}
+      wal_keep_size = {{ postgresql_wal_keep_size }}
+    marker: "# {mark} ANSIBLE MANAGED HA SETTINGS"
+    state: present
+  tags: postgresql
+
+- name: Configure pg_hba.conf for replication
+  blockinfile:
+    path: "/etc/postgresql/{{ postgresql_version }}/main/pg_hba.conf"
+    block: |
+      host    replication     replication     {{ network_cidr }}        trust
+      host    replication     replicator      {{ network_cidr }}        md5
+      host    replication     postgres        {{ network_cidr }}        trust
+      host    all             all             {{ network_cidr }}        trust
+    marker: "# {mark} ANSIBLE MANAGED HA REPLICATION"
+    state: present
+  tags: postgresql
+
+- name: Start PostgreSQL service
+  systemd:
+    name: postgresql
+    state: started
+    enabled: yes
+  tags: postgresql
+
+- name: Wait for PostgreSQL to be ready
+  wait_for:
+    port: "{{ postgresql_port }}"
+    host: "127.0.0.1"
+    delay: 5
+    timeout: 60
+  tags: postgresql
+
+- name: Create replication user
+  become_user: postgres
+  postgresql_user:
+    name: "{{ replication_user }}"
+    password: "{{ replication_pass }}"
+    role_attr_flags: REPLICATION
+    state: present
+  environment:
+    PGOPTIONS: "-c password_encryption=md5"
+  run_once: true
+  delegate_to: "{{ groups['maas_ha'][0] }}"
+  tags: postgresql
+
+- name: Create replication user postgres trust
+  become_user: postgres
+  postgresql_user:
+    name: postgres
+    role_attr_flags: SUPERUSER,CREATEROLE,CREATEDB,REPLICATION
+    state: present
+  run_once: true
+  delegate_to: "{{ groups['maas_ha'][0] }}"
+  tags: postgresql
+
+- name: Create replication slots
+  become_user: postgres
+  postgresql_slot:
+    name: "{{ item }}"
+    slot_type: physical
+    state: present
+  loop:
+    - standby1
+    - standby2
+  run_once: true
+  delegate_to: "{{ groups['maas_ha'][0] }}"
+  tags: postgresql

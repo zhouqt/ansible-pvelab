@@ -1,0 +1,51 @@
+---
+
+juju_controller_name: "lxd-os-ctrl"
+juju_model_name: "openstack"
+
+co_juju_ssh_key_path: "/home/zhouqt/.local/share/juju/ssh/juju_id_rsa"
+co_juju_ssh_pubkey_path: "/home/zhouqt/.local/share/juju/ssh/juju_id_rsa.pub"
+
+co_app: "cinder-volume-oceanstor"
+co_subordinate_charm: "fe-staging-cinder-oceanstor"
+co_subordinate_app: "cinder-oceanstor"
+co_mysql_router_app: "cinder-volume-oceanstor-mysql-router"
+co_series: "focal"
+co_cinder_channel: "ussuri/stable"
+co_mysql_router_channel: "8.0/stable"
+co_mysql_router_revision: 257
+co_cinder_region: "RegionOceanstor"
+
+co_lxd_project: "openstack"
+co_lxd_image_alias: "focal-vm"
+co_vm_name: "cinder-oceanstor-vm"
+co_vm_cpu: 2
+co_vm_memory: "4GiB"
+co_vm_root_disk: "20GiB"
+
+co_eth0_bridge: "lxdbr165"
+co_eth1_bridge: "lxdbr122"
+co_eth0_ip: "192.168.165.200"
+co_eth1_ip: "192.168.122.199"
+co_internal_cidr: "192.168.165.0/24"
+co_internal_gw: "192.168.165.1"
+co_external_gw: "192.168.122.1"
+co_dns: "8.8.8.8,8.8.4.4"
+
+co_vm_boot_timeout: 300
+co_vm_boot_poll_interval: 5
+
+co_sim_resturl: "https://192.168.165.1:8088/deviceManager/rest/"
+co_sim_username: "admin"
+co_sim_userpassword: "Admin@123"
+co_sim_storagepool: "OpenStack_Pool"
+co_sim_iscsi_target_ip: "192.168.165.1"
+co_sim_protocol: "iscsi"
+co_volume_backend_name: "oceanstor"
+co_volume_type: "oceanstor"
+
+co_enforce_multipath_image_xfer: false
+co_use_multipath_for_image_xfer: false
+
+co_active_wait_retries: 60
+co_active_wait_delay: 10

@@ -1,0 +1,4 @@
+---
+pacemaker_cluster_name: "maas-ha"
+pacemaker_stonith_enabled: false
+pacemaker_no_quorum_policy: "stop"

@@ -1,0 +1,42 @@
+totem {
+  version: 2
+  token: {{ corosync_token }}
+  token_retransmits_before_loss_const: {{ corosync_token_retransmits }}
+  join: {{ corosync_join }}
+  consensus: {{ corosync_consensus }}
+  vsftype: none
+  max_messages: 20
+  clear_node_high_bit: yes
+  secauth: {{ corosync_secauth }}
+  threads: {{ corosync_threads }}
+  ip_version: {{ corosync_ip_version }}
+  rrp_mode: {{ corosync_rrp_mode }}
+  transport: {{ corosync_transport }}
+}
+
+quorum {
+  provider: corosync_votequorum
+}
+
+nodelist {
+{% for host in groups['maas_ha'] %}
+  node {
+    ring0_addr: {{ hostvars[host]['ansible_host'] }}
+    nodeid: {{ hostvars[host]['node_id'] }}
+    name: {{ host }}
+  }
+{% endfor %}
+}
+
+logging {
+  fileline: off
+  to_stderr: yes
+  to_logfile: yes
+  to_syslog: yes
+  syslog_facility: daemon
+  debug: off
+  logger_subsys {
+    subsys: QUORUM
+    debug: off
+  }
+}

@@ -1,0 +1,447 @@
+---
+- name: Check Juju client snap on MAAS controller CT
+  ansible.builtin.command: "pct exec {{ pve_juju_client_vmid }} -- snap list juju"
+  register: pve_juju_snap_check
+  failed_when: false
+  changed_when: false
+
+- name: Copy Juju client APT proxy configuration to PVE host
+  ansible.builtin.copy:
+    content: |
+      Acquire::http::Proxy "{{ pve_maas_http_proxy }}";
+      Acquire::https::Proxy "{{ pve_maas_https_proxy }}";
+    dest: /root/pve-client-apt-proxy.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install APT proxy configuration in MAAS controller CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ pve_juju_client_vmid }}"
+      - /root/pve-client-apt-proxy.conf
+      - /etc/apt/apt.conf.d/90pve-proxy
+      - --perms
+      - "0644"
+
+- name: Configure Juju client snapd proxy
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - snap
+      - set
+      - system
+      - "proxy.http={{ pve_maas_http_proxy }}"
+      - "proxy.https={{ pve_maas_https_proxy }}"
+  changed_when: false
+
+- name: Install Juju 2.9 snap on MAAS controller CT
+  ansible.builtin.command: "pct exec {{ pve_juju_client_vmid }} -- snap install juju --channel=2.9/stable"
+  when: pve_juju_snap_check.rc != 0
+
+- name: Install SSH client and server in Juju client CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - bash
+      - -lc
+      - >-
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq &&
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-client openssh-server &&
+        systemctl enable --now ssh
+  changed_when: false
+
+- name: Ensure Juju client account and SSH directories
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ pve_juju_client_vmid }} -- bash -lc '
+      id {{ pve_juju_client_user }} >/dev/null 2>&1 || useradd -m -s /bin/bash {{ pve_juju_client_user }}
+      usermod -s /bin/bash -aG sudo {{ pve_juju_client_user }}
+      install -d -m 0700 -o {{ pve_juju_client_user }} -g {{ pve_juju_client_user }} /home/{{ pve_juju_client_user }}/.ssh
+    '
+    pct exec {{ pve_juju_client_vmid }} -- su - {{ pve_juju_client_user }} -c 'test -s ~/.ssh/id_ed25519 && test -s ~/.ssh/id_ed25519.pub' || \
+      pct exec {{ pve_juju_client_vmid }} -- su - {{ pve_juju_client_user }} -c 'ssh-keygen -q -t ed25519 -N "" -f ~/.ssh/id_ed25519'
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Read Juju client public key
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "cat ~/.ssh/id_ed25519.pub"
+  register: pve_juju_client_pubkey
+  changed_when: false
+
+- name: Validate Juju client public key output
+  ansible.builtin.assert:
+    that:
+      - pve_juju_client_pubkey.stdout is match('^ssh-ed25519 [A-Za-z0-9+/]+={0,3}( .*)?$')
+    fail_msg: "Juju client did not return a valid ed25519 public key."
+
+- name: Check whether Juju controller CT exists
+  ansible.builtin.command: "pct status {{ pve_juju_controller_vmid }}"
+  register: pve_juju_controller_status
+  failed_when: false
+  changed_when: false
+
+- name: Create Juju controller CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - create
+      - "{{ pve_juju_controller_vmid }}"
+      - "{{ pve_focal_template }}"
+      - --hostname
+      - pve-ctrl
+      - --ostype
+      - ubuntu
+      - --cores
+      - "2"
+      - --memory
+      - "4096"
+      - --swap
+      - "0"
+      - --rootfs
+      - "{{ pve_storage }}:32"
+      - --unprivileged
+      - "0"
+      - --features
+      - nesting=1,fuse=1
+      - --net0
+      - "name=eth0,bridge=pub11,ip={{ pve_juju_controller_ip }}/24,gw=192.168.11.1"
+      - --nameserver
+      - 8.8.8.8
+      - --onboot
+      - "1"
+      - --start
+      - "0"
+  when: pve_juju_controller_status.rc != 0
+
+- name: Read Juju controller CT configuration
+  ansible.builtin.command: "pct config {{ pve_juju_controller_vmid }}"
+  register: pve_juju_controller_config
+  changed_when: false
+
+- name: Refuse a mismatched existing Juju controller CT
+  ansible.builtin.assert:
+    that:
+      - "'hostname: pve-ctrl' in pve_juju_controller_config.stdout"
+      - "'ip={{ pve_juju_controller_ip }}/24' in pve_juju_controller_config.stdout"
+    fail_msg: "CT {{ pve_juju_controller_vmid }} is taken by a different config; refusing to rewrite it."
+
+- name: Configure privileged Juju controller CT
+  ansible.builtin.blockinfile:
+    path: "/etc/pve/lxc/{{ pve_juju_controller_vmid }}.conf"
+    marker: "# {mark} ANSIBLE JUJU CONTROLLER SETTINGS"
+    block: |
+      lxc.apparmor.profile: unconfined
+      lxc.cap.drop:
+      lxc.cap.drop: mac_override sys_time sys_module sys_rawio
+
+- name: Read Juju controller CT configuration after profile update
+  ansible.builtin.command: "pct config {{ pve_juju_controller_vmid }}"
+  register: pve_juju_controller_config_after_update
+  changed_when: false
+
+- name: Refuse an existing Juju controller CT with a DHCP address
+  ansible.builtin.assert:
+    that:
+      - "'ip=dhcp' not in pve_juju_controller_config_after_update.stdout"
+    fail_msg: "the NICs of CT {{ pve_juju_controller_vmid }} are still on DHCP; configure static IPs as the runbook says first, so the bootstrap target and the CT address cannot disagree."
+
+- name: Check whether Juju controller CT is running
+  ansible.builtin.command: "pct status {{ pve_juju_controller_vmid }}"
+  register: pve_juju_controller_runtime_status
+  changed_when: false
+
+- name: Start Juju controller CT if stopped
+  ansible.builtin.command: "pct start {{ pve_juju_controller_vmid }}"
+  when: "'status: stopped' in pve_juju_controller_runtime_status.stdout"
+
+- name: Wait for Juju controller CT systemd
+  ansible.builtin.command: "pct exec {{ pve_juju_controller_vmid }} -- systemctl is-system-running"
+  register: pve_juju_controller_systemd
+  until: pve_juju_controller_systemd.rc == 0 or 'degraded' in pve_juju_controller_systemd.stdout
+  retries: 30
+  delay: 5
+  changed_when: false
+
+- name: Copy Juju controller APT proxy configuration to PVE host
+  ansible.builtin.copy:
+    content: |
+      Acquire::http::Proxy "{{ pve_maas_http_proxy }}";
+      Acquire::https::Proxy "{{ pve_maas_https_proxy }}";
+    dest: /root/pve-controller-apt-proxy.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Copy Juju controller shell proxy environment to PVE host
+  ansible.builtin.copy:
+    content: |
+      export http_proxy="{{ pve_maas_http_proxy }}" https_proxy="{{ pve_maas_https_proxy }}"
+      export HTTP_PROXY="{{ pve_maas_http_proxy }}" HTTPS_PROXY="{{ pve_maas_https_proxy }}"
+      export no_proxy="{{ pve_maas_no_proxy }}" NO_PROXY="{{ pve_maas_no_proxy }}"
+    dest: /root/pve-controller-proxy-env.sh
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install Juju controller APT proxy configuration
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ pve_juju_controller_vmid }}"
+      - /root/pve-controller-apt-proxy.conf
+      - /etc/apt/apt.conf.d/90pve-proxy
+      - --perms
+      - "0644"
+
+- name: Install Juju controller shell proxy environment
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ pve_juju_controller_vmid }}"
+      - /root/pve-controller-proxy-env.sh
+      - /etc/profile.d/90pve-proxy.sh
+      - --perms
+      - "0644"
+
+- name: Initialize Juju controller CT account, SSH, and snapd
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct exec {{ pve_juju_controller_vmid }} -- bash -lc '
+      touch /etc/cloud/cloud-init.disabled
+      id ubuntu >/dev/null 2>&1 || useradd -m -s /bin/bash ubuntu
+      usermod -s /bin/bash -aG sudo ubuntu
+      printf "%s\\n" "ubuntu ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/90-juju
+      chmod 0440 /etc/sudoers.d/90-juju
+      install -d -m 0700 -o ubuntu -g ubuntu /home/ubuntu/.ssh
+      install -d -m 0700 /root/.ssh
+      apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq snapd openssh-server
+      systemctl enable --now ssh
+      systemctl enable --now snapd snapd.socket || true
+      for n in $(seq 1 30); do snap list >/dev/null 2>&1 && break; sleep 2; done
+    '
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Configure Juju controller snapd proxy
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_controller_vmid }}"
+      - --
+      - snap
+      - set
+      - system
+      - "proxy.http={{ pve_maas_http_proxy }}"
+      - "proxy.https={{ pve_maas_https_proxy }}"
+  changed_when: false
+
+- name: Check required Juju database snap
+  ansible.builtin.command: "pct exec {{ pve_juju_controller_vmid }} -- snap list juju-db"
+  register: pve_juju_db_check
+  failed_when: false
+  changed_when: false
+
+- name: Install Juju database snap required for manual bootstrap
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_controller_vmid }}"
+      - --
+      - snap
+      - install
+      - juju-db
+      - --channel={{ pve_juju_db_channel }}
+  when: pve_juju_db_check.rc != 0
+
+- name: Copy Juju client public key to PVE host
+  ansible.builtin.copy:
+    content: "{{ pve_juju_client_pubkey.stdout | trim }}\n"
+    dest: /root/juju-client.pub
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Push Juju client public key to controller CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ pve_juju_controller_vmid }}"
+      - /root/juju-client.pub
+      - /tmp/juju-client.pub
+      - --perms
+      - "0600"
+
+- name: Authorize Juju client key on controller CT
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_controller_vmid }}"
+      - --
+      - bash
+      - -lc
+      - >-
+        key=$(cat /tmp/juju-client.pub);
+        for home in /home/ubuntu /root; do
+          install -d -m 0700 "$home/.ssh";
+          touch "$home/.ssh/authorized_keys";
+          grep -qxF "$key" "$home/.ssh/authorized_keys" || printf '%s\n' "$key" >>"$home/.ssh/authorized_keys";
+          chmod 0600 "$home/.ssh/authorized_keys";
+        done;
+        chown -R ubuntu:ubuntu /home/ubuntu/.ssh;
+        rm -f /tmp/juju-client.pub
+  changed_when: false
+
+- name: Check whether Juju controller already exists
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} controllers --format json"
+  register: pve_juju_controller_list
+  changed_when: false
+
+- name: Require Juju controller listing to be valid
+  ansible.builtin.assert:
+    that:
+      - pve_juju_controller_list.rc == 0
+      - "'controllers' in (pve_juju_controller_list.stdout | from_json)"
+    fail_msg: "cannot read the Juju controller JSON list; refusing to bootstrap while the state is unknown."
+
+- name: Add controller IP to Juju client's known_hosts
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ip={{ pve_juju_controller_ip }}
+    if pct exec {{ pve_juju_client_vmid }} -- su - {{ pve_juju_client_user }} -c \
+      "install -d -m 0700 ~/.ssh; touch ~/.ssh/known_hosts; \
+       ssh-keygen -F \"[$ip]:22\" -f ~/.ssh/known_hosts >/dev/null || \
+         ssh-keygen -F \"$ip\" -f ~/.ssh/known_hosts >/dev/null"; then
+      exit 0
+    fi
+    keyscan=$(ssh-keyscan -H "$ip" 2>/dev/null)
+    [[ -n "$keyscan" ]] || { echo "SSH did not become available on Juju controller $ip" >&2; exit 1; }
+    printf '%s\n' "$keyscan" | pct exec {{ pve_juju_client_vmid }} -- su - {{ pve_juju_client_user }} -c 'cat >> ~/.ssh/known_hosts'
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Bootstrap Juju manual controller
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} bootstrap manual/ubuntu@{{ pve_juju_controller_ip }} {{ pve_juju_controller_name }}"
+  when: pve_juju_controller_name not in (pve_juju_controller_list.stdout | from_json).controllers
+
+- name: Refresh Juju controller list after bootstrap
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} controllers --format json"
+  register: pve_juju_controller_list_after_bootstrap
+  changed_when: false
+
+- name: Require Juju controller to be available after bootstrap stage
+  ansible.builtin.assert:
+    that:
+      - pve_juju_controller_list_after_bootstrap.rc == 0
+      - "'controllers' in (pve_juju_controller_list_after_bootstrap.stdout | from_json)"
+      - "pve_juju_controller_name in (pve_juju_controller_list_after_bootstrap.stdout | from_json).controllers"
+    fail_msg: "the Juju controller is not registered or not usable; refusing to create a model."
+
+- name: Read Juju models after bootstrap
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} models --controller {{ pve_juju_controller_name }} --format json"
+  register: pve_juju_models_after_bootstrap
+  failed_when: false
+  changed_when: false
+
+- name: Require Juju model listing to succeed
+  ansible.builtin.assert:
+    that:
+      - pve_juju_models_after_bootstrap.rc == 0
+      - "'models' in (pve_juju_models_after_bootstrap.stdout | from_json)"
+    fail_msg: "the Juju controller is registered but the model list cannot be read; stopping to avoid a wrong call and a duplicate model."
+
+- name: Create OpenStack Juju model
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} add-model --controller {{ pve_juju_controller_name }} openstack --config enable-os-upgrade=false"
+  when: "((pve_juju_models_after_bootstrap.stdout | from_json).models | selectattr('short-name', 'equalto', 'openstack') | list | length) == 0"
+
+- name: Create LMA Juju model
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} add-model --controller {{ pve_juju_controller_name }} lma --config enable-os-upgrade=false"
+  when: "((pve_juju_models_after_bootstrap.stdout | from_json).models | selectattr('short-name', 'equalto', 'lma') | list | length) == 0"

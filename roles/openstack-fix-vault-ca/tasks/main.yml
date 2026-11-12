@@ -1,0 +1,53 @@
+---
+- name: Switch to openstack model
+  shell: "{{ juju_openstack_cmd }} switch {{ juju_controller_name }}:admin/{{ juju_model_name }}"
+  changed_when: false
+
+- name: Verify Vault CA certificate exists
+  stat:
+    path: "{{ project_dir }}/credentials/vault-ca.crt"
+  register: vault_ca_file
+
+- name: Create VAULT_CA cert file for distribution
+  copy:
+    content: |
+      -----BEGIN CERTIFICATE-----
+      MIIDazCCAlOgAwIBAgIUF/I3dwFZl6/6bE5zOtB51reuwuIwDQYJKoZIhvcNAQEL
+      BQAwPTE7MDkGA1UEAxMyVmF1bHQgUm9vdCBDZXJ0aWZpY2F0ZSBBdXRob3JpdHkg
+      KGNoYXJtLXBraS1sb2NhbCkwHhcNMjYwNDMwMDgzOTA1WhcNMzYwNDI3MDgzOTM1
+      WjA9MTswOQYDVQQDEzJWYXVsdCBSb290IENlcnRpZmljYXRlIEF1dGhvcml0eSAo
+      Y2hhcm0tcGtpLWxvY2FsKTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB
+      ANLPrqtX5fZFqbnooYd9G/SbP7baz6qm1bKB3UGfU8xWINRdi+j1m/2HfXdus1gA
+      fGMCKLNI7A3sOC9sVCqCvAh1QbO4oqldSeM8usFFtNfgRK6h7drrzpDj0mBZxD3u
+      Z8cVkDVdzEPDpiAH3ey9E0PGWKpLXAV7+75T2NiiVRbs/67LXPHNqrANAJpKZ7aw
+      QRUCcSpPPZYygAEmcZ19U3l71xa7Ya+sYeCGD6sGnbW2v5Nq36B4xGma8accClMu
+      sBKRsoVMFN7GrbHXR+2b2kAOq8DQRSrTEq+Skk8DYRKnNFOfxdEOCP8Ptju74a1K
+      d2yh3D9wyRrDVpPrymasCD8CAwEAAaNjMGEwDgYDVR0PAQH/BAQDAgEGMA8GA1Ud
+      EwEB/wQFMAMBAf8wHQYDVR0OBBYEFOh6dPLrSm8kgRNpOwBPRmm+7gfxMB8GA1Ud
+      IwQYMBaAFOh6dPLrSm8kgRNpOwBPRmm+7gfxMA0GCSqGSIb3DQEBCwUAA4IBAQCT
+      2Ipt/deXoPaWBw4DTFQn2AW/TR+VYUszrcHynzVlw3bdcbCfwv0o+USNgqd5pwa5
+      yDOXo02IVRC17wbRKnwWCXBOw9HpZ/FK9+X25kIsv965+GeJtUP9n4BEcj/1gPiH
+      /u3h3/IGJt2G9kAhRsUEzvPC8u7TIkC3counuKIz0Ij7HFEBgGWLq7hg0CMvxLL3
+      p5WSltbm5o3OAPr/jr9JEKuF2trDKsjDgH2QzCUemJQnXbEEk87h7WrfMhUM7qfy
+      OCm+eMn4FN1xfHLls1Tl0/qshwvUj8vycUxwVd2EW54SCKdXUh6jhwbJkVrd6wqA
+      pFm6Gb2VYArxZyLuixfW
+      -----END CERTIFICATE-----
+    dest: /tmp/vault-ca.crt
+    mode: '0644'
+
+- name: Distribute Vault CA to all OpenStack units
+  shell: |
+    for unit in {{ openstack_units | join(' ') }}; do
+      echo "Copying CA cert to $unit"
+      {{ juju_openstack_cmd }} scp /tmp/vault-ca.crt $unit:/tmp/vault-ca.crt 2>/dev/null || true
+      {{ juju_openstack_cmd }} ssh $unit 'sudo cp /tmp/vault-ca.crt /usr/local/share/ca-certificates/vault_juju_ca_cert.crt && sudo update-ca-certificates' 2>/dev/null || true
+    done
+    echo "Done!"
+  register: ca_dist_result
+  changed_when: "'Done' in ca_dist_result.stdout"
+  ignore_errors: true
+
+- name: Display CA distribution result
+  debug:
+    msg: "Vault CA distribution: {{ ca_dist_result is defined and 'Done' in ca_dist_result.stdout ? 'COMPLETED' : 'PARTIAL - check individual units' }}"
+

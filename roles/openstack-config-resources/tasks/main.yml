@@ -1,0 +1,283 @@
+---
+- name: Check existing flavors
+  shell: bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack flavor list -f value -c Name'
+  register: existing_flavors
+  changed_when: false
+
+- name: Create flavors
+  shell: bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack flavor create {{ item.name }} --id {{ item.id }} --ram {{ item.ram }} --vcpus {{ item.vcpus }} --disk {{ item.disk }} --public'
+  loop: "{{ flavors }}"
+  when: item.name not in existing_flavors.stdout_lines
+
+- name: Download Cirros test image
+  get_url:
+    url: "{{ cirros_image_url }}"
+    dest: "{{ project_dir }}/credentials/cirros.img"
+    mode: '0644'
+    force: false
+
+- name: Check if cirros image exists
+  shell: bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack image show cirros -f value -c id 2>/dev/null'
+  register: cirros_check
+  changed_when: false
+  ignore_errors: true
+
+- name: Upload Cirros image to Glance
+  shell: bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack image create cirros --file {{ project_dir }}/credentials/cirros.img --disk-format qcow2 --container-format bare --public'
+  when: cirros_check.rc != 0
+
+- name: Check if demo project exists
+  shell: bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack project show demo -f value -c id 2>/dev/null'
+  register: demo_project_check
+  changed_when: false
+  ignore_errors: true
+
+- name: Create demo project and user
+  shell: |
+    bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack project create demo --description "Demo Project"'
+    bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack user create demo --password {{ openstack_demo_password }} --project demo'
+    bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack role add member --user demo --project demo'
+  when: demo_project_check.rc != 0
+  ignore_errors: true
+
+- name: Check if allow-ssh security group exists
+  shell: bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack security group show allow-ssh -f value -c id 2>/dev/null'
+  register: ssh_sg_check
+  changed_when: false
+  ignore_errors: true
+
+- name: Create security group for SSH access
+  shell: |
+    bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack security group create allow-ssh --description "Allow SSH access"'
+    bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack security group rule create allow-ssh --protocol tcp --dst-port 22:22 --remote-ip 0.0.0.0/0'
+    bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack security group rule create allow-ssh --protocol icmp --remote-ip 0.0.0.0/0'
+  when: ssh_sg_check.rc != 0
+
+- name: Check if demo keypair exists in OpenStack
+  shell: bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack keypair show demo-key -f value -c fingerprint 2>/dev/null'
+  register: keypair_check
+  changed_when: false
+  ignore_errors: true
+
+- name: Check if demo key already exists locally
+  stat:
+    path: "{{ project_dir }}/credentials/demo-key.pem"
+  register: demo_key_stat
+
+- name: Create key pair for demo user (generate new keypair)
+  shell: bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack keypair create --private-key {{ project_dir }}/credentials/demo-key.pem demo-key'
+  when: keypair_check.rc != 0 and not demo_key_stat.stat.exists
+
+- name: Upload existing public key as keypair (key already exists locally)
+  shell: |
+    bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && \
+      openstack keypair create --public-key <(ssh-keygen -y -f {{ project_dir }}/credentials/demo-key.pem) demo-key'
+  args:
+    executable: /bin/bash
+  when: keypair_check.rc != 0 and demo_key_stat.stat.exists
+
+- name: Set private key permissions
+  file:
+    path: "{{ project_dir }}/credentials/demo-key.pem"
+    mode: '0600'
+  ignore_errors: true
+
+- name: Extract and save public key
+  shell: |
+    ssh-keygen -y -f {{ project_dir }}/credentials/demo-key.pem > {{ project_dir }}/credentials/demo-key.pub 2>/dev/null || true
+  changed_when: false
+  ignore_errors: true
+
+- name: Set public key permissions
+  file:
+    path: "{{ project_dir }}/credentials/demo-key.pub"
+    mode: '0644'
+  ignore_errors: true
+
+- name: Get admin project ID
+  shell: bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack project show admin -f value -c id'
+  register: admin_project_id
+  changed_when: false
+
+- name: Increase OpenStack quotas for K8s deployment
+  shell: |
+    bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && \
+      openstack quota set \
+        --secgroups {{ os_quota_secgroups }} \
+        --secgroup-rules {{ os_quota_secgroup_rules }} \
+        --instances {{ os_quota_instances }} \
+        --cores {{ os_quota_cores }} \
+        --ram {{ os_quota_ram }} \
+        --floating-ips {{ os_quota_floating_ips }} \
+        --ports {{ os_quota_ports }} \
+        {{ admin_project_id.stdout }}'
+  changed_when: true
+
+- name: Configure nova-compute allocation ratios
+  shell: |
+    {{ juju_cmd }} config nova-compute \
+      cpu-allocation-ratio={{ nova_cpu_allocation_ratio }} \
+      disk-allocation-ratio={{ nova_disk_allocation_ratio }}
+  changed_when: true
+
+- name: Check if test instance exists
+  shell: bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack server show test-instance -f value -c id 2>/dev/null'
+  register: test_instance_check
+  changed_when: false
+  ignore_errors: true
+
+- name: Create test instance
+  shell: bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack server create test-instance --flavor m1.small --image cirros --nic net-id={{ internal_network_name }} --security-group allow-ssh --key-name demo-key --wait'
+  register: create_instance
+  until: create_instance.rc == 0
+  retries: 10
+  delay: 60
+  when: test_instance_check.rc != 0
+  ignore_errors: true
+
+- name: Check if test instance has a floating IP
+  shell: bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack server show test-instance -f json -c addresses 2>/dev/null' | grep -o '192\.168\.122\.[0-9]*'
+  register: existing_fip
+  changed_when: false
+  ignore_errors: true
+
+- name: Assign floating IP to test instance
+  shell: |
+    bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && FLOATING_IP=$(openstack floating ip create {{ external_network_name }} -f value -c floating_ip_address) && openstack server add floating ip test-instance $FLOATING_IP && echo $FLOATING_IP'
+  register: assign_fip
+  when: existing_fip.rc != 0 or existing_fip.stdout == ""
+  ignore_errors: true
+
+- name: Set floating IP fact
+  set_fact:
+    test_instance_fip: "{{ existing_fip.stdout | default(assign_fip.stdout | default('N/A'), true) }}"
+
+- name: Save floating IP info
+  copy:
+    content: "{{ test_instance_fip }}"
+    dest: "{{ project_dir }}/credentials/test-instance-floating-ip.txt"
+    mode: '0644'
+  when: test_instance_fip != 'N/A'
+  ignore_errors: true
+
+- name: Display test instance status
+  shell: bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack server show test-instance' || true
+  register: instance_status
+  changed_when: false
+  ignore_errors: true
+
+- name: Create credentials summary file
+  copy:
+    content: |
+
+      Horizon Dashboard: https://{{ keystone_address.stdout }}/horizon
+      Keystone API: https://{{ keystone_address.stdout }}:5000/v3
+
+      Username: {{ openstack_admin_user }}
+      Password: {{ openstack_admin_password }}
+      Project: admin
+      Domain: Default
+      RC File: {{ project_dir }}/credentials/admin-openrc.sh
+
+      Username: demo
+      Password: {{ openstack_demo_password }}
+      Project: demo
+      Domain: Default
+      RC File: {{ project_dir }}/credentials/demo-openrc.sh
+
+      Private Key: {{ project_dir }}/credentials/demo-key.pem
+      Public Key: {{ project_dir }}/credentials/demo-key.pub
+      Key Name in OpenStack: demo-key
+
+      CA Certificate: {{ project_dir }}/credentials/vault-ca.crt
+      Unseal Key: {{ project_dir }}/credentials/vault-unseal-key.txt
+      Root Token: {{ project_dir }}/credentials/vault-root-token.txt
+
+      Floating IP: {{ assign_fip.stdout | default(test_instance_fip | default('N/A'), true) }}
+      SSH Access: ssh -i {{ project_dir }}/credentials/demo-key.pem cirros@{{ assign_fip.stdout | default(test_instance_fip | default('FIP_NOT_ASSIGNED'), true) }}
+
+      - admin-openrc.sh: Admin user environment variables
+      - demo-openrc.sh: Demo user environment variables
+      - demo-key.pem: SSH private key (chmod 600)
+      - demo-key.pub: SSH public key
+      - vault-ca.crt: Vault CA certificate for HTTPS
+      - vault-unseal-key.txt: Vault unseal key
+      - vault-root-token.txt: Vault root token
+      - test-instance-floating-ip.txt: Floating IP of test instance
+      - cirros.img: Cirros test image
+
+      source {{ openstack_rc_file }} >/dev/null 2>&1
+      openstack server list
+
+      ssh -i {{ project_dir }}/credentials/demo-key.pem cirros@$(cat {{ project_dir }}/credentials/test-instance-floating-ip.txt)
+    dest: "{{ project_dir }}/credentials/README.txt"
+    mode: '0644'
+
+- name: Display deployment completion
+  debug:
+    msg: |
+      ========================================
+      OpenStack deployment completed successfully!
+      ========================================
+
+      KEY FIXES APPLIED DURING DEPLOYMENT:
+
+      Fix 1: Keystone Role Name
+        - Issue: Bootstrap expects "admin" but charm created "Admin"
+        - Fix: UPDATE role SET name='admin' WHERE name='Admin'
+
+      Fix 2: service_token_roles Mismatch (Critical for Nova-Neutron auth)
+        - Issue: Nova send_service_user_token=true sends service tokens
+                 Neutron validates tokens require role matching service_token_roles
+                 Config had "Admin" but role was "admin" (after Fix 1)
+                 Result: 401 Unauthorized for service token validation
+        - Pattern: First request 200, retry requests 401
+        - Fix: Changed service_token_roles = Admin -> admin in:
+               - /etc/neutron/neutron.conf (neutron-api)
+               - /etc/nova/nova.conf (nova-cloud-controller)
+               - /etc/nova/nova.conf (nova-compute)
+
+      Fix 3: Juju Status Cache
+        - Issue: Manual config changes don't auto-refresh Juju status
+        - Fix: Trigger update-status hook for nova-compute units
+
+      ========================================
+      CREDENTIALS FILES ({{ project_dir }}/credentials/)
+      ========================================
+
+      OpenStack RC Files:
+        - admin-openrc.sh: Admin user environment (source before openstack commands)
+        - demo-openrc.sh: Demo user environment
+
+      SSH Keys:
+        - demo-key.pem: Private key (chmod 600)
+        - demo-key.pub: Public key
+
+      Vault:
+        - vault-ca.crt: CA certificate for HTTPS
+        - vault-unseal-key.txt: Unseal key
+        - vault-root-token.txt: Root token
+
+      Test Instance:
+        - test-instance-floating-ip.txt: Floating IP
+        - cirros.img: Test image
+
+      Summary: {{ project_dir }}/credentials/README.txt
+
+      ========================================
+      ACCESS INFORMATION
+      ========================================
+
+      Horizon: https://{{ keystone_address.stdout }}/horizon
+      Admin: admin / {{ openstack_admin_password }}
+      Demo: demo / {{ openstack_demo_password }}
+
+      Test Instance Floating IP: {{ assign_fip.stdout | default(test_instance_fip | default('N/A'), true) }}
+
+      SSH Access:
+        source {{ openstack_rc_file }} >/dev/null 2>&1
+        ssh -i {{ project_dir }}/credentials/demo-key.pem cirros@{{ assign_fip.stdout | default(test_instance_fip | default('FIP_NOT_ASSIGNED'), true) }}
+
+      Instance details:
+      {{ instance_status.stdout | default('Instance creation in progress') }}
+

@@ -1,0 +1,61 @@
+---
+
+- name: Stop haproxy service
+  systemd:
+    name: haproxy
+    state: stopped
+  tags: haproxy
+
+- name: Deploy haproxy.cfg
+  template:
+    src: haproxy.cfg.j2
+    dest: "{{ haproxy_config_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart haproxy
+  tags: haproxy
+
+- name: Ensure newline at end of file
+  shell: echo "" >> {{ haproxy_config_path }}
+  changed_when: false
+  tags: haproxy
+
+- name: Start haproxy service
+  systemd:
+    name: haproxy
+    state: started
+    enabled: yes
+  tags: haproxy
+
+- name: Verify HAProxy is listening on port 80
+  wait_for:
+    port: 80
+    host: "0.0.0.0"
+    delay: 5
+    timeout: 30
+  tags: haproxy
+
+- name: Verify HAProxy is listening on port 443
+  wait_for:
+    port: 443
+    host: "0.0.0.0"
+    delay: 5
+    timeout: 30
+  tags: haproxy
+
+- name: Verify HAProxy is NOT listening on port 5432
+  wait_for:
+    port: 5432
+    host: "0.0.0.0"
+    state: stopped
+    timeout: 10
+  ignore_errors: yes
+  register: haproxy_5432_check
+  tags: haproxy
+
+- name: Warn if HAProxy is listening on 5432
+  debug:
+    msg: "WARNING: HAProxy is listening on port 5432. This may conflict with PostgreSQL!"
+  when: haproxy_5432_check.state is defined and haproxy_5432_check.state == "started"
+  tags: haproxy

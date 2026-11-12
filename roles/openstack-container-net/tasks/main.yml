@@ -1,0 +1,74 @@
+---
+- name: Get control VM management IPs
+  shell: |
+    for vm in {{ control_vms | join(' ') }}; do
+      ip=$(lxc list $vm --project {{ lxd_project }} --format json 2>/dev/null | \
+           jq -r '[.[].state.network | to_entries[] | select(.key != "lo") | .value.addresses[] | select(.family=="inet" and (.address | startswith("192.168.165.")))] | .[0].address' 2>/dev/null)
+      echo "$vm:$ip"
+    done
+  register: ctrl_vm_ips
+  changed_when: false
+
+- name: Configure eth1 on LXD containers for internet access
+  shell: |
+    vm_ip=$(echo "{{ item }}" | cut -d: -f2)
+    [ -z "$vm_ip" ] && exit 0
+    ssh -o StrictHostKeyChecking=no ubuntu@$vm_ip bash -s << 'SCRIPT'
+    containers=$(sudo lxc list --format json | jq -r '.[] | select(.type=="container") | .name')
+    for container in $containers; do
+      echo "Configuring $container..."
+      sudo lxc config device remove $container eth1 2>/dev/null || true
+      sudo lxc config device add $container eth1 nic nictype=bridged parent=br-internet name=eth1
+      echo "  Added eth1 on br-internet to $container"
+    done
+    SCRIPT
+  loop: "{{ ctrl_vm_ips.stdout_lines }}"
+  changed_when: true
+  ignore_errors: true
+
+- name: Configure DHCP and routing inside LXD containers
+  shell: |
+    vm_ip=$(echo "{{ item }}" | cut -d: -f2)
+    [ -z "$vm_ip" ] && exit 0
+    ssh -o StrictHostKeyChecking=no ubuntu@$vm_ip bash -s << 'SCRIPT'
+    containers=$(sudo lxc list --format json | jq -r '.[] | select(.type=="container" and .state.status=="Running") | .name')
+    for container in $containers; do
+      echo "Setting up networking in $container..."
+      sudo lxc exec $container -- dhclient eth1 2>/dev/null || true
+      sudo lxc exec $container -- ip route replace default via 192.168.122.1 dev eth1 2>/dev/null || true
+      result=$(sudo lxc exec $container -- ping -c 1 -W 3 8.8.8.8 2>/dev/null && echo "OK" || echo "FAIL")
+      echo "  $container: $result"
+    done
+    SCRIPT
+  loop: "{{ ctrl_vm_ips.stdout_lines }}"
+  changed_when: true
+  ignore_errors: true
+
+- name: Run apt-get update in all LXD containers
+  shell: |
+    vm_ip=$(echo "{{ item }}" | cut -d: -f2)
+    [ -z "$vm_ip" ] && exit 0
+    ssh -o StrictHostKeyChecking=no ubuntu@$vm_ip bash -s << 'SCRIPT'
+    containers=$(sudo lxc list --format json | jq -r '.[] | select(.type=="container" and .state.status=="Running") | .name')
+    for container in $containers; do
+      echo "Running apt-get update in $container..."
+      sudo lxc exec $container -- apt-get update -qq 2>/dev/null || true
+    done
+    SCRIPT
+  loop: "{{ ctrl_vm_ips.stdout_lines }}"
+  changed_when: true
+  ignore_errors: true
+
+- name: Resolve failed Juju hooks after container networking fix
+  shell: |
+    for unit in $({{ juju_openstack_cmd }} status --format json 2>/dev/null | jq -r '.applications[].units // {} | to_entries[] | select(.value["workload-status"].current == "error" or .value["juju-status"].current == "error") | .key'); do
+      echo "Resolving $unit..."
+      {{ juju_openstack_cmd }} resolved $unit --no-retry 2>/dev/null || true
+    done
+  changed_when: true
+  ignore_errors: true
+
+- name: Wait for hooks to re-run after resolve
+  pause:
+    minutes: 3
+

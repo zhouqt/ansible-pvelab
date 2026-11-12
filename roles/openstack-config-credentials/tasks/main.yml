@@ -1,0 +1,187 @@
+---
+- name: Ensure credentials directory exists
+  file:
+    path: "{{ project_dir }}/credentials"
+    state: directory
+    mode: '0700'
+
+- name: Clean up Juju lock files
+  become: true
+  shell: rm -f /tmp/juju-store-lock-* || true
+  changed_when: false
+
+- name: Set juju command
+  set_fact:
+    juju_cmd: "{{ juju_openstack_cmd | default(juju_cmd) | default('juju') }}"
+    openstack_rc_file: "{{ openstack_rc_file | default(project_dir + '/credentials/admin-openrc.sh') }}"
+    vault_ca_file: "{{ vault_ca_file | default(project_dir + '/credentials/vault-ca.crt') }}"
+
+- name: Switch to openstack model
+  shell: "{{ juju_cmd }} switch {{ juju_controller_name }}:admin/{{ juju_model_name }}"
+  changed_when: false
+
+- name: Get Keystone public address
+  shell: "{{ juju_cmd }} status keystone --format json 2>/dev/null | jq -r '.applications.keystone.units | to_entries[0].value[\"public-address\"]'"
+  register: keystone_address
+  changed_when: false
+
+- name: Get Keystone admin password from charm
+  shell: "{{ juju_cmd }} run-action --wait keystone/leader get-admin-password 2>/dev/null | grep -oP 'admin-password:\\s*\\K\\S+'"
+  register: keystone_admin_password
+  changed_when: false
+
+- name: Set admin password fact
+  set_fact:
+    openstack_admin_password: "{{ keystone_admin_password.stdout | default(openstack_admin_password) }}"
+
+- name: Create admin-openrc file with HTTPS and Vault CA
+  copy:
+    content: |
+      export OS_USERNAME={{ openstack_admin_user }}
+      export OS_PASSWORD={{ openstack_admin_password }}
+      export OS_PROJECT_NAME=admin
+      export OS_USER_DOMAIN_NAME=admin_domain
+      export OS_PROJECT_DOMAIN_NAME=admin_domain
+      export OS_AUTH_URL=https://{{ keystone_address.stdout }}:5000/v3
+      export OS_IDENTITY_API_VERSION=3
+      export OS_AUTH_TYPE=password
+      export OS_REGION_NAME={{ openstack_region }}
+      export OS_CACERT={{ vault_ca_file }}
+    dest: "{{ project_dir }}/credentials/admin-openrc.sh"
+    mode: '0600'
+
+- name: Create demo-openrc file
+  copy:
+    content: |
+      export OS_USERNAME=demo
+      export OS_PASSWORD={{ openstack_demo_password }}
+      export OS_PROJECT_NAME=demo
+      export OS_USER_DOMAIN_NAME=Default
+      export OS_PROJECT_DOMAIN_NAME=Default
+      export OS_AUTH_URL=https://{{ keystone_address.stdout }}:5000/v3
+      export OS_IDENTITY_API_VERSION=3
+      export OS_REGION_NAME={{ openstack_region }}
+      export OS_CACERT={{ vault_ca_file }}
+    dest: "{{ project_dir }}/credentials/demo-openrc.sh"
+    mode: '0600'
+
+- name: Copy Vault CA certificate to system location
+  become: true
+  copy:
+    src: "{{ vault_ca_file }}"
+    dest: /etc/openstack/vault-ca.crt
+    mode: '0644'
+    remote_src: yes
+  ignore_errors: true
+
+- name: Create role update script
+  copy:
+    content: |
+      import sqlalchemy
+      engine = sqlalchemy.create_engine("mysql+pymysql://keystone:nzKBhZ4P6dygyXMmWYPHR4JC3zBGgKS3@127.0.0.1/keystone")
+      with engine.begin() as conn:
+          conn.execute(sqlalchemy.text("UPDATE role SET name='admin' WHERE name='Admin'"))
+          print("Role updated")
+    dest: /tmp/update_role.py
+    mode: '0644'
+  when: not (openstack_lxd_deploy | default(false))
+
+- name: Bootstrap Keystone admin user
+  shell: |
+    {{ juju_cmd }} ssh keystone/leader 'sudo keystone-manage bootstrap --bootstrap-username admin --bootstrap-password {{ openstack_admin_password }} --bootstrap-project-name admin --bootstrap-role-name admin --bootstrap-service-name keystone --bootstrap-region-id {{ openstack_region }} --bootstrap-admin-url https://{{ keystone_address.stdout }}:5000/v3 --bootstrap-public-url https://{{ keystone_address.stdout }}:5000/v3 --bootstrap-internal-url https://{{ keystone_address.stdout }}:5000/v3' || true
+  register: bootstrap_keystone
+  changed_when: "'bootstrap' in bootstrap_keystone.stdout.lower()"
+  ignore_errors: true
+  when: not (openstack_lxd_deploy | default(false))
+
+- name: Fix role name if uppercase Admin
+  shell: |
+    {{ juju_cmd }} scp /tmp/update_role.py keystone/leader:/tmp/update_role.py || true
+    {{ juju_cmd }} ssh keystone/leader 'sudo python3 /tmp/update_role.py' || true
+  ignore_errors: true
+  when: not (openstack_lxd_deploy | default(false))
+
+- name: Restart Keystone Apache
+  shell: |
+    {{ juju_cmd }} ssh keystone/leader 'sudo systemctl restart apache2'
+  changed_when: true
+  when: not (openstack_lxd_deploy | default(false))
+
+- name: Wait for Keystone to be ready after bootstrap
+  shell: sleep 5
+  changed_when: false
+  when: not (openstack_lxd_deploy | default(false))
+
+- name: Fix service_token_roles mismatch in Neutron
+  shell: |
+    {{ juju_cmd }} ssh neutron-api/leader 'sudo sed -i "s/service_token_roles = Admin/service_token_roles = admin/g" /etc/neutron/neutron.conf && sudo systemctl restart neutron-server'
+  changed_when: true
+  ignore_errors: true
+  when: not (openstack_lxd_deploy | default(false))
+
+- name: Fix service_token_roles mismatch in Nova cloud controller
+  shell: |
+    {{ juju_cmd }} ssh nova-cloud-controller/leader 'sudo sed -i "s/service_token_roles = Admin/service_token_roles = admin/g" /etc/nova/nova.conf && sudo systemctl restart apache2'
+  changed_when: true
+  ignore_errors: true
+  when: not (openstack_lxd_deploy | default(false))
+
+- name: Fix service_token_roles mismatch in Nova compute units
+  shell: |
+    for unit in $({{ juju_cmd }} status nova-compute --format json 2>/dev/null | jq -r '.applications.nova-compute.units | keys[]'); do
+      {{ juju_cmd }} ssh $unit 'sudo sed -i "s/service_token_roles = Admin/service_token_roles = admin/g" /etc/nova/nova.conf && sudo systemctl restart nova-compute' || true
+    done
+  changed_when: true
+  ignore_errors: true
+  when: not (openstack_lxd_deploy | default(false))
+
+- name: Wait for services to stabilize after config changes
+  shell: sleep 10
+  changed_when: false
+  when: not (openstack_lxd_deploy | default(false))
+
+- name: Trigger update-status hook for nova-compute units
+  shell: |
+    for unit in $({{ juju_cmd }} status nova-compute --format json 2>/dev/null | jq -r '.applications.nova-compute.units | keys[]'); do
+      {{ juju_cmd }} exec --unit $unit "JUJU_UNIT_NAME=$unit ./hooks/update-status" || true
+    done
+  changed_when: true
+  ignore_errors: true
+  when: not (openstack_lxd_deploy | default(false))
+
+- name: Install OpenStack client
+  become: true
+  apt:
+    name:
+      - python3-openstackclient
+      - python3-neutronclient
+      - python3-novaclient
+      - python3-glanceclient
+      - sshpass
+    state: present
+    update_cache: yes
+
+- name: Create admin-openrc file with HTTPS and Vault CA
+  copy:
+    content: |
+      export OS_USERNAME={{ openstack_admin_user }}
+      export OS_PASSWORD={{ openstack_admin_password }}
+      export OS_PROJECT_NAME=admin
+      export OS_USER_DOMAIN_NAME=admin_domain
+      export OS_PROJECT_DOMAIN_NAME=admin_domain
+      export OS_AUTH_URL=https://{{ keystone_address.stdout }}:5000/v3
+      export OS_IDENTITY_API_VERSION=3
+      export OS_AUTH_TYPE=password
+      export OS_REGION_NAME={{ openstack_region }}
+      export OS_CACERT={{ vault_ca_file }}
+    dest: /tmp/admin-openrc.sh
+    mode: '0644'
+
+- name: Wait for Keystone API to be accessible
+  shell: |
+    bash -c 'source {{ openstack_rc_file }} >/dev/null 2>&1 && openstack token issue'
+  register: token_issue
+  until: token_issue.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false

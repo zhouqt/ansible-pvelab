@@ -1,0 +1,369 @@
+---
+
+- name: Ensure MAAS CLI is logged in
+  shell: |
+    maas maas-admin machines read &>/dev/null && echo "already logged in" && exit 0
+    API_KEY=$(maas apikey --username admin 2>/dev/null || cat /var/snap/maas/common/maas-apikey 2>/dev/null)
+    if [ -z "$API_KEY" ]; then
+      echo "ERROR: Cannot find MAAS API key"
+      exit 1
+    fi
+    maas login maas-admin http://localhost:5240/MAAS "$API_KEY"
+  register: maas_login
+  changed_when: "'already logged in' not in maas_login.stdout"
+
+- name: Discover VM host ID dynamically
+  shell: |
+    VM_HOST_ID=$(maas maas-admin vm-hosts read | jq -r '.[] | select(.type == "lxd") | .id' | head -1)
+    if [ -z "$VM_HOST_ID" ] || [ "$VM_HOST_ID" = "null" ]; then
+      echo "ERROR: No LXD VM host found in MAAS"
+      exit 1
+    fi
+    echo "$VM_HOST_ID"
+  register: discovered_vm_host_id
+  changed_when: false
+
+- name: Set VM host ID fact
+  set_fact:
+    maas_vm_host_id: "{{ discovered_vm_host_id.stdout | trim }}"
+
+- name: Get VM host power address (LXD host)
+  shell: |
+    maas maas-admin vm-host read {{ maas_vm_host_id }} | jq -r '.connection // .power_parameters.power_address // empty' | sed 's|https://||;s|:8443||'
+  register: lxd_host_address
+  changed_when: false
+
+- name: Display discovered VM host
+  debug:
+    msg: "Using MAAS VM host ID: {{ maas_vm_host_id }}, LXD host: {{ lxd_host_address.stdout }}"
+
+- name: Set overcommit ratio to 10x (host has limited RAM for all VMs)
+  shell: |
+    CURRENT_CPU=$(maas maas-admin vm-host read {{ maas_vm_host_id }} | jq -r '.cpu_over_commit_ratio')
+    CURRENT_MEM=$(maas maas-admin vm-host read {{ maas_vm_host_id }} | jq -r '.memory_over_commit_ratio')
+    if [ "$CURRENT_CPU" != "10" ] || [ "$CURRENT_MEM" != "10" ]; then
+      maas maas-admin vm-host update {{ maas_vm_host_id }} \
+        cpu_over_commit_ratio=10 memory_over_commit_ratio=10
+      echo "Set overcommit ratio to 10x (was cpu=$CURRENT_CPU mem=$CURRENT_MEM)"
+    else
+      echo "Overcommit already set to 10x"
+    fi
+  register: overcommit_result
+  changed_when: "'Set overcommit' in overcommit_result.stdout"
+
+- name: Verify VM host resources and project
+  shell: |
+    VM_HOST_INFO=$(maas maas-admin vm-host read {{ maas_vm_host_id }})
+    echo "VM host name: $(echo "$VM_HOST_INFO" | jq -r '.name')"
+    echo "VM host project: $(echo "$VM_HOST_INFO" | jq -r '.project // "default"')"
+    echo "Total cores: $(echo "$VM_HOST_INFO" | jq -r '.total.cores')"
+    echo "Total memory: $(echo "$VM_HOST_INFO" | jq -r '.total.memory / 1073741824 | floor')GB"
+    echo "Overcommit: cpu=$(echo "$VM_HOST_INFO" | jq -r '.cpu_over_commit_ratio')x mem=$(echo "$VM_HOST_INFO" | jq -r '.memory_over_commit_ratio')x"
+  register: vm_host_info
+  changed_when: false
+
+- name: Display VM host info
+  debug:
+    msg: "{{ vm_host_info.stdout }}"
+
+- name: Compose VMs via MAAS vm-host compose
+  shell: |
+    EXISTS=$(maas maas-admin machines read hostname={{ item.name }} 2>/dev/null | jq -r '.[].system_id' 2>/dev/null)
+    if [ -n "$EXISTS" ] && [ "$EXISTS" != "null" ] && [ "$EXISTS" != "" ]; then
+      echo "VM {{ item.name }} already exists with system_id: $EXISTS"
+      exit 0
+    fi
+    IFACE_ARGS="eth0:fabric={{ item.interfaces[0].fabric_name }};eth1:fabric={{ item.interfaces[1].fabric_name }}"
+
+    STORAGE_ARGS="root:{{ item.disk_size }}"
+    {% if item.osd_disk_size is defined %}
+    STORAGE_ARGS="${STORAGE_ARGS},osd:{{ item.osd_disk_size }}"
+    {% endif %}
+
+    echo "Composing VM {{ item.name }} on vm-host {{ maas_vm_host_id }}..."
+    echo "  cores={{ item.cores }} memory={{ item.memory }}MiB storage=$STORAGE_ARGS"
+    echo "  interfaces=$IFACE_ARGS"
+    maas maas-admin vm-host compose {{ maas_vm_host_id }} \
+      cores={{ item.cores }} \
+      memory={{ item.memory }} \
+      storage="$STORAGE_ARGS" \
+      hostname={{ item.name }} \
+      interfaces="$IFACE_ARGS"
+  loop: "{{ control_vms + compute_vms }}"
+  register: vm_compose
+  changed_when: "'Composing VM' in vm_compose.stdout"
+  ignore_errors: true
+
+- name: Wait for composed VMs to appear in LXD (30s)
+  pause:
+    seconds: 30
+  when: vm_compose.changed
+
+- name: Verify and fix VM resource specs via LXD
+  delegate_to: localhost
+  shell: |
+    VM="{{ item.name }}"
+    if ! lxc list $VM --project {{ lxd_project }} --format json 2>/dev/null | jq -r '.[].name' | grep -q "^${VM}$"; then
+      echo "VM $VM not found in LXD, skipping"
+      exit 0
+    fi
+    CHANGED=0
+
+    CURRENT_CPU=$(lxc config get $VM limits.cpu --project {{ lxd_project }} 2>/dev/null)
+    if [ "$CURRENT_CPU" != "{{ item.cores }}" ]; then
+      lxc config set $VM limits.cpu={{ item.cores }} --project {{ lxd_project }}
+      echo "Fixed CPU: $CURRENT_CPU -> {{ item.cores }}"
+      CHANGED=1
+    fi
+
+    CURRENT_MEM=$(lxc config get $VM limits.memory --project {{ lxd_project }} 2>/dev/null)
+    EXPECTED_BYTES="{{ item.memory * 1048576 }}"
+    if [ "$CURRENT_MEM" != "$EXPECTED_BYTES" ] && [ "$CURRENT_MEM" != "{{ item.memory }}MiB" ]; then
+      lxc config set $VM limits.memory={{ item.memory }}MiB --project {{ lxd_project }}
+      echo "Fixed memory: $CURRENT_MEM -> {{ item.memory }}MiB"
+      CHANGED=1
+    fi
+
+    CURRENT_SB=$(lxc config get $VM security.secureboot --project {{ lxd_project }} 2>/dev/null)
+    if [ "$CURRENT_SB" != "false" ]; then
+      lxc config set $VM security.secureboot=false --project {{ lxd_project }}
+      echo "Disabled secure boot"
+      CHANGED=1
+    fi
+
+    {% if item.nested_vmx is defined and item.nested_vmx %}
+    CURRENT_NESTING=$(lxc config get $VM security.nesting --project {{ lxd_project }} 2>/dev/null)
+    if [ "$CURRENT_NESTING" != "true" ]; then
+      lxc config set $VM security.nesting=true --project {{ lxd_project }}
+      lxc config set $VM security.privileged=true --project {{ lxd_project }} 2>/dev/null || true
+      echo "Enabled nesting for compute VM"
+      CHANGED=1
+    fi
+    {% endif %}
+
+    if [ "$CHANGED" = "0" ]; then
+      echo "VM $VM specs verified OK"
+    fi
+  loop: "{{ control_vms + compute_vms }}"
+  register: verify_specs
+  changed_when: "'Fixed' in verify_specs.stdout or 'Disabled' in verify_specs.stdout"
+
+- name: Verify eth0 on virbr1 and eth1 on virbr0
+  delegate_to: localhost
+  shell: |
+    VM="{{ item.name }}"
+    if ! lxc list $VM --project {{ lxd_project }} --format json 2>/dev/null | jq -r '.[].name' | grep -q "^${VM}$"; then
+      echo "VM $VM not found, skipping"
+      exit 0
+    fi
+    CHANGED=0
+
+    ETH0_PARENT=$(lxc config device get $VM eth0 parent --project {{ lxd_project }} 2>/dev/null)
+    if [ "$ETH0_PARENT" != "virbr1" ]; then
+      lxc config device override $VM eth0 parent=virbr1 --project {{ lxd_project }} 2>/dev/null || \
+        lxc config device set $VM eth0 parent=virbr1 --project {{ lxd_project }} 2>/dev/null || true
+      echo "Fixed eth0 parent: $ETH0_PARENT -> virbr1"
+      CHANGED=1
+    fi
+
+    ETH1_PARENT=$(lxc config device get $VM eth1 parent --project {{ lxd_project }} 2>/dev/null)
+    if [ -z "$ETH1_PARENT" ]; then
+      lxc config device add $VM eth1 nic nictype=bridged parent=virbr0 name=eth1 --project {{ lxd_project }}
+      echo "Added missing eth1 on virbr0"
+      CHANGED=1
+    elif [ "$ETH1_PARENT" != "virbr0" ]; then
+      lxc config device set $VM eth1 parent=virbr0 --project {{ lxd_project }}
+      echo "Fixed eth1 parent: $ETH1_PARENT -> virbr0"
+      CHANGED=1
+    fi
+
+    if [ "$CHANGED" = "0" ]; then
+      echo "VM $VM NICs verified OK (eth0=virbr1, eth1=virbr0)"
+    fi
+  loop: "{{ control_vms + compute_vms }}"
+  register: verify_nics
+  changed_when: "'Fixed' in verify_nics.stdout or 'Added' in verify_nics.stdout"
+
+- name: Verify Ceph OSD disks on compute VMs
+  delegate_to: localhost
+  shell: |
+    VM="{{ item.name }}"
+    if ! lxc list $VM --project {{ lxd_project }} --format json 2>/dev/null | jq -r '.[].name' | grep -q "^${VM}$"; then
+      echo "VM $VM not found, skipping"
+      exit 0
+    fi
+    DISK_COUNT=$(lxc config device show $VM --project {{ lxd_project }} 2>/dev/null | grep -c "type: disk" || echo "0")
+    if [ "$DISK_COUNT" -ge 2 ]; then
+      echo "VM $VM has $DISK_COUNT disk devices (root + OSD) - OK"
+    else
+      echo "VM $VM only has $DISK_COUNT disk(s), creating OSD disk manually..."
+      OSD_DISK="{{ osd_disk_path }}/osd-disk-{{ ansible_loop.index }}.raw"
+      if [ ! -f "$OSD_DISK" ]; then
+        sudo qemu-img create -f raw "$OSD_DISK" {{ osd_disk_size }}
+        sudo chown lxd:lxd "$OSD_DISK" 2>/dev/null || true
+        echo "Created raw OSD disk: $OSD_DISK"
+      fi
+      lxc config unset $VM raw.qemu --project {{ lxd_project }} 2>/dev/null || true
+      lxc config device remove $VM osd-disk --project {{ lxd_project }} 2>/dev/null || true
+      lxc config device add $VM osd-disk disk source="$OSD_DISK" --project {{ lxd_project }}
+      echo "Attached OSD disk to $VM"
+    fi
+  loop: "{{ compute_vms }}"
+  loop_control:
+    extended: true
+  register: verify_osd
+  changed_when: "'creating OSD' in verify_osd.stdout or 'Attached' in verify_osd.stdout"
+
+- name: Start VMs via LXD for commissioning
+  delegate_to: localhost
+  shell: |
+    STARTED=0
+    for vm in {{ (control_vms + compute_vms) | map(attribute='name') | join(' ') }}; do
+      STATUS=$(lxc list $vm --project {{ lxd_project }} --format json 2>/dev/null | jq -r '.[].state.status' 2>/dev/null)
+      if [ "$STATUS" != "Running" ]; then
+        echo "Starting $vm via lxc"
+        lxc start $vm --project {{ lxd_project }} 2>/dev/null || true
+        STARTED=$((STARTED + 1))
+      else
+        echo "$vm already running"
+      fi
+    done
+    echo "Started $STARTED VMs"
+  register: start_vms_commission
+  changed_when: "'Starting' in start_vms_commission.stdout"
+
+- name: Wait for VMs to PXE boot and enlist in MAAS (120s)
+  pause:
+    seconds: 120
+  when: start_vms_commission.changed
+
+- name: Check VM status in MAAS after enlistment
+  shell: |
+    for vm in {{ (control_vms + compute_vms) | map(attribute='name') | join(' ') }}; do
+      INFO=$(maas maas-admin machines read hostname=$vm 2>/dev/null | jq -r '.[0] | "\(.hostname) - \(.status_name) - \(.system_id)"' 2>/dev/null)
+      if [ -n "$INFO" ] && [ "$INFO" != "null" ] && [ "$INFO" != " -  - " ]; then
+        echo "$vm: $INFO"
+      else
+        echo "$vm: NOT FOUND in MAAS (may have random hostname from PXE enlist)"
+      fi
+    done
+  register: maas_status
+  changed_when: false
+
+- name: Display MAAS VM status
+  debug:
+    msg: "{{ maas_status.stdout }}"
+
+- name: Rename VMs in MAAS to match expected hostnames
+  shell: |
+    SYSTEM_ID=$(maas maas-admin machines read hostname={{ item.name }} | jq -r '.[].system_id')
+    if [ -n "$SYSTEM_ID" ] && [ "$SYSTEM_ID" != "null" ]; then
+      CURRENT_HOSTNAME=$(maas maas-admin machine read $SYSTEM_ID | jq -r '.hostname')
+      if [ "$CURRENT_HOSTNAME" != "{{ item.name }}" ]; then
+        maas maas-admin machine update $SYSTEM_ID hostname={{ item.name }}
+        echo "Renamed $CURRENT_HOSTNAME -> {{ item.name }}"
+      else
+        echo "{{ item.name }} already has correct hostname"
+      fi
+    fi
+  loop: "{{ control_vms + compute_vms }}"
+  register: rename_result
+  changed_when: "'Renamed' in rename_result.stdout"
+  ignore_errors: true
+
+- name: Commission VMs in MAAS
+  shell: |
+    SYSTEM_ID=$(maas maas-admin machines read hostname={{ item.name }} | jq -r '.[].system_id')
+    STATUS=$(maas maas-admin machines read hostname={{ item.name }} | jq -r '.[].status_name')
+    if [ "$STATUS" = "New" ] || [ "$STATUS" = "Failed commissioning" ]; then
+      echo "Commissioning {{ item.name }}..."
+      maas maas-admin machine commission $SYSTEM_ID \
+        skip_networking=true skip_storage=true 2>/dev/null || \
+      maas maas-admin machine commission $SYSTEM_ID || true
+    else
+      echo "Machine {{ item.name }} is in $STATUS state, skipping commission"
+    fi
+  loop: "{{ control_vms + compute_vms }}"
+  register: commission_result
+  changed_when: "'Commissioning' in commission_result.stdout"
+  ignore_errors: true
+
+- name: Start VMs via LXD for commissioning (power control fallback)
+  delegate_to: localhost
+  shell: |
+    for vm in {{ (control_vms + compute_vms) | map(attribute='name') | join(' ') }}; do
+      STATUS=$(lxc list $vm --project {{ lxd_project }} --format json 2>/dev/null | jq -r '.[].state.status' 2>/dev/null)
+      if [ "$STATUS" != "Running" ]; then
+        echo "Starting $vm via lxc (commission fallback)"
+        lxc start $vm --project {{ lxd_project }} 2>/dev/null || true
+      fi
+    done
+  changed_when: true
+  ignore_errors: true
+
+- name: Wait for VMs to be Ready in MAAS
+  shell: |
+    READY=$(maas maas-admin machines read | jq -r '[.[] | select(.hostname | startswith("os-")) | select(.status_name == "Ready")] | length')
+    TOTAL={{ (control_vms + compute_vms) | length }}
+    echo "Ready: $READY / $TOTAL"
+    echo "$READY"
+  register: ready_count
+  until: ready_count.stdout_lines[-1] | int >= (control_vms | length + compute_vms | length)
+  retries: 60
+  delay: 30
+  changed_when: false
+
+- name: Deploy Ubuntu on all VMs
+  shell: |
+    SYSTEM_ID=$(maas maas-admin machines read hostname={{ item.name }} | jq -r '.[].system_id')
+    STATUS=$(maas maas-admin machines read hostname={{ item.name }} | jq -r '.[].status_name')
+    if [ "$STATUS" = "Ready" ]; then
+      echo "Deploying Ubuntu jammy on {{ item.name }}..."
+      maas maas-admin machine deploy $SYSTEM_ID distro_series=jammy
+    else
+      echo "Machine {{ item.name }} is in $STATUS state, skipping deploy"
+    fi
+  loop: "{{ control_vms + compute_vms }}"
+  register: deploy_result
+  changed_when: "'Deploying' in deploy_result.stdout"
+  ignore_errors: true
+
+- name: Start VMs via LXD for deployment (power control fallback)
+  delegate_to: localhost
+  shell: |
+    for vm in {{ (control_vms + compute_vms) | map(attribute='name') | join(' ') }}; do
+      STATUS=$(lxc list $vm --project {{ lxd_project }} --format json 2>/dev/null | jq -r '.[].state.status' 2>/dev/null)
+      if [ "$STATUS" != "Running" ]; then
+        echo "Starting $vm via lxc (deploy fallback)"
+        lxc start $vm --project {{ lxd_project }} 2>/dev/null || true
+      fi
+    done
+  changed_when: true
+  ignore_errors: true
+
+- name: Wait for VMs to be Deployed
+  shell: |
+    DEPLOYED=$(maas maas-admin machines read | jq -r '[.[] | select(.hostname | startswith("os-")) | select(.status_name == "Deployed")] | length')
+    TOTAL={{ (control_vms + compute_vms) | length }}
+    echo "Deployed: $DEPLOYED / $TOTAL"
+    echo "$DEPLOYED"
+  register: deployed_count
+  until: deployed_count.stdout_lines[-1] | int >= (control_vms | length + compute_vms | length)
+  retries: 90
+  delay: 30
+  changed_when: false
+
+- name: Get deployed VM IP addresses
+  shell: |
+    maas maas-admin machines read hostname={{ item.name }} | jq -r '.[].ip_addresses[0]'
+  loop: "{{ control_vms + compute_vms }}"
+  register: vm_ips
+  changed_when: false
+
+- name: Display deployed VM information
+  debug:
+    msg: |
+      Deployed VMs:
+      {% for result in vm_ips.results %}
+      {{ result.item.name }}: {{ result.stdout }}
+      {% endfor %}

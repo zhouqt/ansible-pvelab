@@ -1,0 +1,20 @@
+<network>
+  <name>{{ item.name }}</name>
+  <bridge name="{{ item.name }}" stp="on" delay="0"/>
+  <ip address="{{ item.ip }}" netmask="{{ item.netmask }}">
+{% if item.dhcp %}
+    <dhcp>
+      <range start="{{ item.dhcp_start | default(item.ip | regex_replace('\\.1$', '.2')) }}" end="{{ item.dhcp_end | default(item.ip | regex_replace('\\.1$', '.254')) }}"/>
+    </dhcp>
+{% endif %}
+  </ip>
+{% if item.nat %}
+  <forward mode="nat">
+    <nat>
+      <port start="1024" end="65535"/>
+    </nat>
+  </forward>
+{% else %}
+  <forward mode="bridge"/>
+{% endif %}
+</network>

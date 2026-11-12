@@ -1,0 +1,118 @@
+---
+
+- name: Wait for deployment to converge (up to 30 minutes)
+  shell: |
+    juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --format json 2>/dev/null | \
+      jq '[.applications[] | select(.["application-status"].current == "active")] | length'
+  register: active_apps
+  until: active_apps.stdout | int >= 10
+  retries: 60
+  delay: 30
+  changed_when: false
+
+- name: Display final deployment status
+  shell: juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --format short
+  register: final_status
+  changed_when: false
+
+- debug:
+    msg: |
+      OpenStack on LXD deployment complete!
+      {{ final_status.stdout }}
+
+      Network Spaces:
+        public:   192.168.122.0/24 (virbr0) - API endpoints, floating IPs
+        internal: 192.168.165.0/24 (virbr1) - management, DB, AMQP
+        data:     192.168.166.0/24 (virbr2) - OVN geneve tunnel
+        storage:  192.168.167.0/24 (virbr3) - Ceph OSD replication
+
+      Next steps:
+        - Configure OVN external network
+        - Test VM creation
+
+- name: Get ceph-mon machine number
+  shell: |
+    juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} ceph-mon --format json 2>/dev/null | \
+      jq -r '.applications["ceph-mon"].units["ceph-mon/0"]["machine"]'
+  register: ceph_mon_machine
+  changed_when: false
+
+- name: Generate OpenStack RC file for LXD deployment
+  shell: |
+    KEYSTONE_IP=$(juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} keystone --format json 2>/dev/null | \
+      jq -r '.applications.keystone.units | to_entries[0].value["public-address"]')
+    ADMIN_PASS=$(juju-29 run -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --unit keystone/leader 'leader-get admin_passwd' 2>/dev/null)
+    cat > {{ project_dir }}/credentials/admin-openrc-lxd-openstack.sh <<RCEOF
+    export OS_AUTH_URL="https://${KEYSTONE_IP}:5000/v3"
+    export OS_USERNAME=admin
+    export OS_PASSWORD="${ADMIN_PASS}"
+    export OS_PROJECT_NAME=admin
+    export OS_USER_DOMAIN_NAME=admin_domain
+    export OS_PROJECT_DOMAIN_NAME=admin_domain
+    export OS_IDENTITY_API_VERSION=3
+    export OS_AUTH_TYPE=password
+    export OS_REGION_NAME=RegionOne
+    export OS_CACERT={{ project_dir }}/credentials/vault-ca-lxd-openstack.crt
+    RCEOF
+  changed_when: true
+
+- name: Verify Ceph cluster is healthy
+  shell: |
+    MON_CONTAINER=$(lxc list --project {{ os_lxd_project }} -f csv -c n | grep "juju-.*-{{ ceph_mon_machine.stdout }}$" | head -1)
+    HEALTH=$(lxc exec "$MON_CONTAINER" --project {{ os_lxd_project }} -- ceph health 2>/dev/null)
+    echo "$HEALTH"
+    echo "$HEALTH" | grep -qE "HEALTH_OK|HEALTH_WARN"
+  register: ceph_health
+  retries: 12
+  delay: 10
+  until: ceph_health.rc == 0
+  changed_when: false
+
+- name: Display Ceph health
+  debug:
+    msg: "{{ ceph_health.stdout }}"
+
+- name: Verify Glance API is responsive
+  shell: |
+    source {{ project_dir }}/credentials/admin-openrc-lxd-openstack.sh
+    openstack image list -f value 2>/dev/null
+  register: glance_check
+  retries: 6
+  delay: 10
+  until: glance_check.rc == 0
+  changed_when: false
+
+- name: Create default flavors
+  shell: |
+    source {{ project_dir }}/credentials/admin-openrc-lxd-openstack.sh
+    openstack flavor show m1.tiny 2>/dev/null || \
+      openstack flavor create m1.tiny --ram 512 --vcpus 1 --disk 5 --public
+    openstack flavor show m1.small 2>/dev/null || \
+      openstack flavor create m1.small --ram 2048 --vcpus 1 --disk 20 --public
+  register: flavor_result
+  changed_when: "'Created' in flavor_result.stdout or 'created' in flavor_result.stdout"
+
+- name: Upload Cirros test image to Glance
+  shell: |
+    source {{ project_dir }}/credentials/admin-openrc-lxd-openstack.sh
+    openstack image show cirros 2>/dev/null && exit 0
+    openstack image create cirros \
+      --file {{ project_dir }}/cirros-0.5.2-x86_64-disk.img \
+      --disk-format qcow2 --container-format bare --public
+  register: image_result
+  changed_when: "'cirros' in image_result.stdout"
+
+- name: Add ICMP and SSH rules to default security group
+  shell: |
+    source {{ project_dir }}/credentials/admin-openrc-lxd-openstack.sh
+    EXISTING=$(openstack security group rule list default -f value 2>/dev/null)
+    if ! echo "$EXISTING" | grep -q "icmp"; then
+      openstack security group rule create --protocol icmp --ingress default
+      echo "added icmp"
+    fi
+    if ! echo "$EXISTING" | grep -q "22:22"; then
+      openstack security group rule create --protocol tcp --dst-port 22 --ingress default
+      echo "added ssh"
+    fi
+  register: sg_result
+  changed_when: "'added' in sg_result.stdout"

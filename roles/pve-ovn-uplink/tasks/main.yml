@@ -1,0 +1,209 @@
+---
+- name: Require OVN uplink mapping configuration to match the dedicated PVE NIC
+  ansible.builtin.assert:
+    that:
+      - pve_compute_uplink_bridge in pve_juju_network_spaces | map(attribute='bridge') | list
+      - pve_compute_uplink_guest_interface | length > 0
+      - pve_compute_uplink_ovn_mapping == 'br-ex:' ~ pve_compute_uplink_guest_interface
+      - pve_compute_uplink_ovn_bridge_mapping == 'physnet1:br-ex'
+      - pve_compute_uplink_vmids | sort == [1101, 1102, 1122]
+    fail_msg: "PVE OVN uplink NIC/bridge mapping variables are inconsistent; refusing to configure OVN."
+
+- name: Read OpenStack Juju application and machine inventory before OVN uplink configuration
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} status -m {{ pve_juju_controller_name }}:openstack --format json"
+  register: pve_ovn_uplink_status
+  changed_when: false
+
+- name: Require OVN and compute applications to be deployed
+  ansible.builtin.assert:
+    that:
+      - pve_ovn_uplink_status.rc == 0
+      - "'applications' in (pve_ovn_uplink_status.stdout | from_json)"
+      - "'machines' in (pve_ovn_uplink_status.stdout | from_json)"
+      - "'ovn-chassis' in (pve_ovn_uplink_status.stdout | from_json).applications"
+      - "'nova-compute' in (pve_ovn_uplink_status.stdout | from_json).applications"
+      - "'nova-compute-kvm' in (pve_ovn_uplink_status.stdout | from_json).applications"
+    fail_msg: >-
+      Phase 2 must deploy ovn-chassis and both nova-compute applications before --tags
+      pve-ovn-uplink. This role does not deploy charms or modify machine registration.
+
+- name: Require compute machine IDs to have the known PVE mapping
+  ansible.builtin.assert:
+    that:
+      - "'0' in (pve_ovn_uplink_status.stdout | from_json).machines"
+      - "'1' in (pve_ovn_uplink_status.stdout | from_json).machines"
+      - "'23' in (pve_ovn_uplink_status.stdout | from_json).machines"
+      - "'192.168.11.101' in (pve_ovn_uplink_status.stdout | from_json).machines['0'].get('ip-addresses', [])"
+      - "'192.168.11.102' in (pve_ovn_uplink_status.stdout | from_json).machines['1'].get('ip-addresses', [])"
+      - "'192.168.11.122' in (pve_ovn_uplink_status.stdout | from_json).machines['23'].get('ip-addresses', [])"
+      - >-
+        (((pve_ovn_uplink_status.stdout | from_json).applications['nova-compute'].get('units', {})
+          | dict2items | map(attribute='value.machine') | map('string') | unique | list | sort)
+        == ['0', '1'])
+      - >-
+        (((pve_ovn_uplink_status.stdout | from_json).applications['nova-compute-kvm'].get('units', {})
+          | dict2items | map(attribute='value.machine') | map('string') | unique | list | sort)
+        == ['23'])
+      - >-
+        (((pve_ovn_uplink_status.stdout | from_json).applications['ovn-chassis'].get('units', {})
+          | dict2items | map(attribute='value.machine') | map('string') | unique | list | sort)
+        == ['0', '1', '23'])
+    fail_msg: >-
+      Juju machines/app placements for 0/1/23 do not match compute CT 1101/1102 and KVM 1122,
+      or ovn-chassis is not related to all three. Refusing application-wide OVN NIC mapping.
+
+- name: Read PVE compute container configurations
+  ansible.builtin.command: "pct config {{ item }}"
+  register: pve_ovn_uplink_ct_configs
+  changed_when: false
+  loop: [1101, 1102]
+  loop_control:
+    label: "CT {{ item }}"
+
+- name: Verify compute CT net4 uses the dedicated no-L3 uplink
+  ansible.builtin.assert:
+    that:
+      - "item.stdout is search('(?m)^net4: .*name=' ~ pve_compute_uplink_guest_interface ~ '(?:,|$)')"
+      - "item.stdout is search('(?m)^net4: .*bridge=' ~ pve_compute_uplink_bridge ~ '(?:,|$)')"
+      - "item.stdout is search('(?m)^net4: .*ip=manual(?:,|$)')"
+      - "item.stdout is not search('(?m)^net4: .*gw=')"
+    fail_msg: "CT {{ item.item }} has no valid dedicated pub11 uplink NIC; rerun pve-machines after checking its runtime state."
+  loop: "{{ pve_ovn_uplink_ct_configs.results }}"
+  loop_control:
+    label: "CT {{ item.item }}"
+
+- name: Read KVM compute configuration
+  ansible.builtin.command: qm config 1122
+  register: pve_ovn_uplink_kvm_config
+  changed_when: false
+
+- name: Verify KVM compute net4 uses the dedicated no-L3 uplink
+  ansible.builtin.assert:
+    that:
+      - "pve_ovn_uplink_kvm_config.stdout is search('(?m)^net4: .*bridge=' ~ pve_compute_uplink_bridge ~ '(?:,|$)')"
+      - "pve_ovn_uplink_kvm_config.stdout is search('(?m)^ipconfig4: ip=manual$')"
+    fail_msg: "KVM VMID 1122 has no valid dedicated pub11 uplink NIC; rerun pve-machines after checking its runtime state."
+
+- name: Verify the uplink NIC is visible inside every Juju compute machine
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - >-
+        {{ pve_juju_bin }} ssh -m {{ pve_juju_controller_name }}:openstack {{ item }}
+        ip -o link show dev {{ pve_compute_uplink_guest_interface }}
+  register: pve_ovn_uplink_guest_link_checks
+  changed_when: false
+  loop: [0, 1, 23]
+  loop_control:
+    label: "Juju machine {{ item }}"
+
+- name: Require guest uplink interface to be visible before changing OVN
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - pve_compute_uplink_guest_interface in item.stdout
+    fail_msg: >-
+      Juju machine {{ item.item }} cannot see {{ pve_compute_uplink_guest_interface }}. Check the
+      fifth virtio NIC naming/configuration and guest state; refusing to set an application-wide
+      OVN bridge-interface-mappings value until every compute unit has the interface.
+  loop: "{{ pve_ovn_uplink_guest_link_checks.results }}"
+  loop_control:
+    label: "Juju machine {{ item.item }}"
+
+- name: Read configured OVN logical provider bridge mapping before changing interface mapping
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} config -m {{ pve_juju_controller_name }}:openstack ovn-chassis ovn-bridge-mappings"
+  register: pve_ovn_uplink_bridge_mapping_result
+  changed_when: false
+
+- name: Require OVN logical provider mapping before changing interface mapping
+  ansible.builtin.assert:
+    that:
+      - pve_ovn_uplink_bridge_mapping_result.stdout | trim == pve_compute_uplink_ovn_bridge_mapping
+    fail_msg: >-
+      ovn-bridge-mappings must already be {{ pve_compute_uplink_ovn_bridge_mapping }} before
+      changing bridge-interface-mappings; the two settings are separate and will not be conflated.
+
+- name: Copy OVN uplink mapping helper to PVE host
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/roles/pve-ovn-uplink/files/configure-ovn-uplink.sh"
+    dest: /root/configure-ovn-uplink.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install OVN uplink mapping helper in the Juju client container
+  ansible.builtin.command:
+    argv:
+      - pct
+      - push
+      - "{{ pve_juju_client_vmid }}"
+      - /root/configure-ovn-uplink.sh
+      - /tmp/configure-ovn-uplink.sh
+      - --perms
+      - "0700"
+
+- name: Configure and verify Juju OVN bridge-interface-mappings
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "JUJU_BIN={{ pve_juju_bin }} MODEL={{ pve_juju_controller_name }}:openstack EXPECTED_MAPPING={{ pve_compute_uplink_ovn_mapping }} bash /tmp/configure-ovn-uplink.sh"
+  register: pve_ovn_uplink_mapping_result
+  changed_when: >-
+    'OVN-UPLINK-MAPPING-OK changed=1' in pve_ovn_uplink_mapping_result.stdout
+
+- name: Verify OVN logical provider bridge mapping remains configured
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ pve_juju_client_vmid }}"
+      - --
+      - su
+      - -
+      - "{{ pve_juju_client_user }}"
+      - -c
+      - "{{ pve_juju_bin }} config -m {{ pve_juju_controller_name }}:openstack ovn-chassis ovn-bridge-mappings"
+  register: pve_ovn_uplink_bridge_mapping_after
+  changed_when: false
+
+- name: Require OVN logical provider mapping to remain physnet1:br-ex
+  ansible.builtin.assert:
+    that:
+      - pve_ovn_uplink_bridge_mapping_after.stdout | trim == pve_compute_uplink_ovn_bridge_mapping
+    fail_msg: >-
+      ovn-bridge-mappings must remain {{ pve_compute_uplink_ovn_bridge_mapping }} and is separate
+      from bridge-interface-mappings; correct the unexpected Juju configuration in a maintenance window.

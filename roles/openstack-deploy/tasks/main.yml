@@ -1,0 +1,203 @@
+---
+- name: Switch to openstack model
+  shell: "{{ juju_openstack_cmd }} switch {{ juju_controller_name }}:admin/{{ juju_model_name }}"
+  changed_when: false
+
+- name: Check current Juju machines count
+  shell: "{{ juju_openstack_cmd }} status --format json 2>/dev/null | jq '.machines | length'"
+  register: current_machine_count
+  changed_when: false
+
+- name: Query MAAS system IDs for OpenStack VMs
+  shell: |
+    for vm in {{ (control_vm_names + compute_vm_names) | join(' ') }}; do
+      SID=$(lxc exec maas-ha-1 --project maas-ha -- bash -c \
+        "maas maas-admin machines read hostname=$vm 2>/dev/null | jq -r '.[].system_id'" 2>/dev/null)
+      echo "$vm:$SID"
+    done
+  register: maas_system_ids
+  changed_when: false
+  when: current_machine_count.stdout | int < 5
+
+- name: Add specific MAAS machines to Juju model
+  shell: |
+    for line in {{ maas_system_ids.stdout_lines | join(' ') }}; do
+      vm=$(echo "$line" | cut -d: -f1)
+      sid=$(echo "$line" | cut -d: -f2)
+      if [ -n "$sid" ] && [ "$sid" != "null" ]; then
+        echo "Adding $vm (system_id: $sid) to Juju"
+        {{ juju_openstack_cmd }} add-machine maas:$sid --series jammy 2>/dev/null || true
+      else
+        echo "WARNING: Could not find system_id for $vm"
+      fi
+    done
+  when: current_machine_count.stdout | int < 5
+  register: add_machines
+  changed_when: true
+
+- name: Start VMs manually if needed (MAAS power fallback)
+  shell: |
+    for vm in {{ (control_vm_names + compute_vm_names) | join(' ') }}; do
+      STATUS=$(lxc list $vm --project {{ lxd_project }} --format json 2>/dev/null | jq -r '.[].state.status' 2>/dev/null)
+      if [ "$STATUS" != "Running" ]; then
+        echo "Starting $vm via lxc"
+        lxc start $vm --project {{ lxd_project }} 2>/dev/null || true
+      fi
+    done
+  changed_when: true
+  ignore_errors: true
+
+- name: Wait for machines to be ready in Juju
+  shell: >-
+    {{ juju_openstack_cmd }} status --format json 2>/dev/null |
+    jq '[.machines[] | select(.["juju-status"].current == "started")] | length'
+  register: started_machine_count
+  until: started_machine_count.stdout | int >= 5
+  retries: 60
+  delay: 30
+  changed_when: false
+
+- name: Get machine IP addresses
+  shell: "{{ juju_openstack_cmd }} status --format json 2>/dev/null | jq -r '.machines[] | .address'"
+  register: machine_ips
+  changed_when: false
+
+- name: Configure DNS on deployed machines
+  shell: |
+    for ip in {{ machine_ips.stdout_lines | join(' ') }}; do
+      [ -z "$ip" ] && continue
+      ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@$ip bash -s << 'SCRIPT'
+      MGMT_IFACE=$(ip -4 -o addr show | grep '192\.168\.165\.' | awk '{print $2}' | head -1)
+      [ -z "$MGMT_IFACE" ] && MGMT_IFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -v "^lo$" | head -1)
+      sudo resolvectl dns $MGMT_IFACE 8.8.8.8 8.8.4.4 2>/dev/null || true
+      sudo resolvectl domain $MGMT_IFACE ~ 2>/dev/null || true
+    SCRIPT
+    done
+  changed_when: false
+  ignore_errors: true
+
+- name: Display Juju machine status
+  shell: "{{ juju_openstack_cmd }} status"
+  register: machines_status
+  changed_when: false
+
+- debug:
+    msg: "{{ machines_status.stdout }}"
+
+- name: Check if bundle already deployed
+  shell: "{{ juju_openstack_cmd }} status --format json 2>/dev/null | jq '.applications | length'"
+  register: app_count
+  changed_when: false
+
+- name: Check for error state in deployed applications
+  shell: >-
+    {{ juju_openstack_cmd }} status --format json 2>/dev/null |
+    jq '[.applications[] | select(.["application-status"].current == "error")] | length'
+  register: error_count
+  changed_when: false
+
+- name: Destroy and recreate model if there are deployment errors
+  shell: |
+    {{ juju_openstack_cmd }} destroy-model {{ juju_model_name }} --destroy-storage -y --force
+    sleep 10
+    {{ juju_openstack_cmd }} add-model {{ juju_model_name }}
+    for vm in {{ (control_vm_names + compute_vm_names) | join(' ') }}; do
+      SID=$(lxc exec maas-ha-1 --project maas-ha -- bash -c \
+        "maas maas-admin machines read hostname=$vm 2>/dev/null | jq -r '.[].system_id'" 2>/dev/null)
+      if [ -n "$SID" ] && [ "$SID" != "null" ]; then
+        {{ juju_openstack_cmd }} add-machine maas:$SID --series jammy 2>/dev/null || true
+      fi
+    done
+    sleep 30
+  when: error_count.stdout | int > 0
+  register: recreate_model
+  changed_when: true
+
+- name: Wait for machines to be ready after recreation
+  shell: >-
+    {{ juju_openstack_cmd }} status --format json 2>/dev/null |
+    jq '[.machines[] | select(.["juju-status"].current == "started")] | length'
+  register: machine_ready_count
+  until: machine_ready_count.stdout | int >= 5
+  retries: 60
+  delay: 30
+  when: recreate_model.changed
+  changed_when: false
+
+- name: Configure DNS resolver for Juju charmhub access
+  become: true
+  shell: |
+    sudo mkdir -p /etc/systemd/resolved.conf.d
+    sudo tee /etc/systemd/resolved.conf.d/no-stub.conf << 'EOF'
+    [Resolve]
+    DNS=8.8.8.8 8.8.4.4
+    DNSStubListener=no
+    EOF
+    sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+    sudo systemctl restart systemd-resolved
+    sleep 3
+    host api.charmhub.io
+  when: app_count.stdout | int < 5 or recreate_model.changed
+  changed_when: true
+
+- name: Wait for DNS to stabilize
+  pause:
+    seconds: 10
+  when: app_count.stdout | int < 5 or recreate_model.changed
+
+- name: Discover machine role mapping for bundle deployment
+  shell: |
+    CTRL_IDS=""
+    COMP_IDS=""
+    for machine_id in $({{ juju_openstack_cmd }} status --format json 2>/dev/null | jq -r '.machines | keys[]'); do
+      hostname=$({{ juju_openstack_cmd }} status --format json 2>/dev/null | jq -r ".machines[\"$machine_id\"][\"dns-name\"]")
+      machine_hostname=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@$hostname "hostname" 2>/dev/null || echo "unknown")
+      if echo "$machine_hostname" | grep -q "control"; then
+        CTRL_IDS="$CTRL_IDS $machine_id"
+      elif echo "$machine_hostname" | grep -q "compute"; then
+        COMP_IDS="$COMP_IDS $machine_id"
+      fi
+    done
+    CTRL_SORTED=$(echo $CTRL_IDS | tr ' ' '\n' | sort -n | tr '\n' ' ')
+    COMP_SORTED=$(echo $COMP_IDS | tr ' ' '\n' | sort -n | tr '\n' ' ')
+    C1=$(echo $CTRL_SORTED | awk '{print $1}')
+    C2=$(echo $CTRL_SORTED | awk '{print $2}')
+    C3=$(echo $CTRL_SORTED | awk '{print $3}')
+    P1=$(echo $COMP_SORTED | awk '{print $1}')
+    P2=$(echo $COMP_SORTED | awk '{print $2}')
+    echo "existing,0=$C1,1=$C2,2=$C3,3=$P1,4=$P2"
+  register: machine_mapping
+  changed_when: false
+
+- name: Deploy OpenStack bundle on MAAS machines
+  shell: |
+    cd /home/zhouqt/machine-setup/ansible-homelab
+    {{ juju_openstack_cmd }} deploy ./bundles/openstack-bundle.yaml --map-machines={{ machine_mapping.stdout }}
+  when: app_count.stdout | int < 5 or recreate_model.changed
+  register: deploy_bundle
+  retries: 5
+  until: deploy_bundle.rc == 0
+  delay: 30
+  changed_when: deploy_bundle.rc == 0
+
+- name: Wait for initial deployment to stabilize
+  pause:
+    minutes: 5
+  when: app_count.stdout | int < 5 or recreate_model.changed
+
+- name: Monitor deployment status
+  shell: "{{ juju_openstack_cmd }} status"
+  register: deploy_status
+  changed_when: false
+
+- debug:
+    msg: "{{ deploy_status.stdout }}"
+
+- name: Configure ceph-osd charm OSD devices
+  shell: |
+    {{ juju_openstack_cmd }} config ceph-osd osd-devices="/dev/sdb"
+    echo "Configured ceph-osd to use /dev/sdb"
+  register: ceph_osd_config
+  changed_when: true
+  ignore_errors: true
+

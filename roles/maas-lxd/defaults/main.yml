@@ -1,0 +1,59 @@
+---
+lxd_project_name: "maas-ha"
+lxd_project_description: "MAAS HA test environment"
+lxd_storage_pool: "default"
+
+lxd_image_alias: "{{ ubuntu_version }}"
+lxd_image_source: "ubuntu:{{ version_matrix[ubuntu_version].ubuntu_release }}"
+
+apt_mirror: "cn.archive.ubuntu.com"
+
+lxd_networks:
+  - name: virbr0-net
+    parent: virbr0
+    cidr: "192.168.122"
+  - name: virbr1-net
+    parent: virbr1
+    cidr: "192.168.165"
+  - name: virbr2-net
+    parent: virbr2
+    cidr: "192.168.166"
+  - name: virbr3-net
+    parent: virbr3
+    cidr: "192.168.167"
+  - name: virbr4-net
+    parent: virbr4
+    cidr: "192.168.170"
+
+lxd_containers:
+  - name: maas-ha-1
+    ips:
+      virbr0: "192.168.122.10"
+      virbr1: "192.168.165.10"
+      virbr2: "192.168.166.10"
+      virbr3: "192.168.167.10"
+      virbr4: "192.168.170.10"
+  - name: maas-ha-2
+    ips:
+      virbr0: "192.168.122.11"
+      virbr1: "192.168.165.11"
+      virbr2: "192.168.166.11"
+      virbr3: "192.168.167.11"
+      virbr4: "192.168.170.11"
+  - name: maas-ha-3
+    ips:
+      virbr0: "192.168.122.12"
+      virbr1: "192.168.165.12"
+      virbr2: "192.168.166.12"
+      virbr3: "192.168.167.12"
+      virbr4: "192.168.170.12"
+
+lxd_gateway: "192.168.122.1"
+lxd_dns_servers:
+  - "8.8.8.8"
+  - "8.8.4.4"
+
+lxd_container_config:
+  "boot.autostart": "true"
+  "limits.cpu": "2"
+  "limits.memory": "2GB"

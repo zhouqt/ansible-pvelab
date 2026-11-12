@@ -1,0 +1,245 @@
+---
+
+- name: Check virbr0 bridge exists (192.168.122.x)
+  ansible.builtin.command: ip link show virbr0
+  register: virbr0_check
+  changed_when: false
+  failed_when: false
+
+- name: Create virbr0 from libvirt default network if missing
+  ansible.builtin.shell: |
+    virsh net-define /usr/share/libvirt/networks/default.xml 2>/dev/null || true
+    virsh net-start default 2>/dev/null || true
+    virsh net-autostart default
+  become: true
+  when: virbr0_check.rc != 0
+  register: virbr0_create
+
+- name: Check virbr1-3 bridges exist
+  ansible.builtin.command: ip link show {{ item }}
+  loop: [virbr1, virbr2, virbr3]
+  register: virbr_checks
+  changed_when: false
+  failed_when: false
+
+- name: Fail if virbr1-3 not found (need host-init role)
+  ansible.builtin.fail:
+    msg: |
+      {{ item.item }} bridge not found. Run host-init role first:
+        ansible-playbook -i inventory.yml site.yml --tags host,init
+  loop: "{{ virbr_checks.results }}"
+  when: item.rc != 0
+
+- name: Check LXD is installed
+  ansible.builtin.command: which lxc
+  register: lxc_check
+  changed_when: false
+  failed_when: false
+
+- name: Install LXD if not present
+  ansible.builtin.command: snap install lxd
+  become: true
+  when: lxc_check.rc != 0
+
+- name: Check LXD storage pool exists
+  ansible.builtin.command: lxc storage show default
+  register: lxd_storage_check
+  changed_when: false
+  failed_when: false
+
+- name: Initialize LXD with default storage pool if needed
+  ansible.builtin.command: lxd init --auto
+  become: true
+  when: lxd_storage_check.rc != 0
+
+- name: Check juju_openstack_cmd is available
+  ansible.builtin.command: which {{ juju_openstack_cmd }}
+  register: juju29_check
+  changed_when: false
+  failed_when: false
+
+- name: Install Juju 2.9 and create alias if not present
+  ansible.builtin.shell: |
+    snap install juju --channel={{ juju_channel }}
+    snap alias juju {{ juju_openstack_cmd }}
+  become: true
+  when: juju29_check.rc != 0
+
+- name: Check nested virtualization is enabled
+  ansible.builtin.shell: |
+    if [ -f /sys/module/kvm_intel/parameters/nested ]; then
+      cat /sys/module/kvm_intel/parameters/nested
+    elif [ -f /sys/module/kvm_amd/parameters/nested ]; then
+      cat /sys/module/kvm_amd/parameters/nested
+    else
+      echo "N"
+    fi
+  register: nested_virt_check
+  changed_when: false
+
+- name: Enable nested virtualization (Intel)
+  ansible.builtin.shell: |
+    echo 'options kvm_intel nested=1' > /etc/modprobe.d/kvm-nested.conf
+    modprobe -r kvm_intel && modprobe kvm_intel
+  become: true
+  when:
+    - nested_virt_check.stdout not in ['Y', '1']
+    - ansible_processor | select('match', '.*Intel.*') | list | length > 0
+  ignore_errors: true
+
+- name: Enable nested virtualization (AMD)
+  ansible.builtin.shell: |
+    echo 'options kvm_amd nested=1' > /etc/modprobe.d/kvm-nested.conf
+    modprobe -r kvm_amd && modprobe kvm_amd
+  become: true
+  when:
+    - nested_virt_check.stdout not in ['Y', '1']
+    - ansible_processor | select('match', '.*AMD.*') | list | length > 0
+  ignore_errors: true
+
+- name: Verify nested virtualization after enable attempt
+  ansible.builtin.shell: |
+    if [ -f /sys/module/kvm_intel/parameters/nested ]; then
+      cat /sys/module/kvm_intel/parameters/nested
+    elif [ -f /sys/module/kvm_amd/parameters/nested ]; then
+      cat /sys/module/kvm_amd/parameters/nested
+    else
+      echo "N"
+    fi
+  register: nested_virt_recheck
+  changed_when: false
+  when: nested_virt_check.stdout not in ['Y', '1']
+
+- name: Fail if nested virtualization still disabled
+  ansible.builtin.fail:
+    msg: |
+      Nested virtualization could not be enabled automatically.
+      This may require a reboot or BIOS settings change.
+      Check: cat /sys/module/kvm_intel/parameters/nested (or kvm_amd)
+  when:
+    - nested_virt_check.stdout not in ['Y', '1']
+    - nested_virt_recheck.stdout is defined
+    - nested_virt_recheck.stdout not in ['Y', '1']
+
+- name: Display prerequisites check passed
+  ansible.builtin.debug:
+    msg: "All prerequisites verified/installed. Proceeding with OpenStack LXD deployment."
+
+- name: Restrict virbr0 DHCP range to exclude FIP pool (200-250)
+  shell: |
+    CURRENT_END=$(virsh net-dumpxml default | grep -oP 'end="\K[^"]+')
+    if [ "$CURRENT_END" != "192.168.122.199" ]; then
+      virsh net-update default delete ip-dhcp-range \
+        "<range start='192.168.122.2' end='$CURRENT_END'/>" --live --config
+      virsh net-update default add ip-dhcp-range \
+        "<range start='192.168.122.2' end='192.168.122.199'/>" --live --config
+      echo "changed"
+    fi
+  register: dhcp_update
+  changed_when: "'changed' in dhcp_update.stdout"
+  become: true
+
+- name: Load required kernel modules on host
+  modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - vhost_net
+    - openvswitch
+  become: true
+
+- name: Ensure kernel modules persist across reboots
+  copy:
+    content: |
+      vhost_net
+      openvswitch
+    dest: /etc/modules-load.d/openstack-lxd.conf
+    mode: "0644"
+  become: true
+
+- name: Check if LXD project exists
+  command: lxc project show {{ os_lxd_project }}
+  register: project_check
+  changed_when: false
+  failed_when: false
+
+- name: Create LXD project
+  command: lxc project create {{ os_lxd_project }}
+  when: project_check.rc != 0
+
+- name: Set default profile - privileged
+  command: lxc profile set default --project {{ os_lxd_project }} security.privileged true
+  changed_when: true
+
+- name: Set default profile - nesting
+  command: lxc profile set default --project {{ os_lxd_project }} security.nesting true
+  changed_when: true
+
+- name: Set default profile - boot autostart
+  command: lxc profile set default --project {{ os_lxd_project }} boot.autostart true
+  changed_when: true
+
+- name: Set default profile - raw.lxc (AppArmor unconfined)
+  shell: |
+    lxc profile set default --project {{ os_lxd_project }} raw.lxc "lxc.apparmor.profile=unconfined
+    lxc.mount.auto=proc:rw sys:rw cgroup:rw
+    lxc.cgroup.devices.allow=a
+    lxc.cap.drop=
+    lxc.hook.mount="
+  changed_when: true
+
+- name: Add root disk device to default profile
+  command: >
+    lxc profile device add default root disk
+    pool=default path=/
+    --project {{ os_lxd_project }}
+  ignore_errors: true
+
+- name: Add eth0 (internet/public bridge) to default profile
+  command: >
+    lxc profile device add default eth0 nic
+    nictype=bridged parent={{ os_lxd_bridge_internet }} name=eth0
+    --project {{ os_lxd_project }}
+  ignore_errors: true
+
+- name: Add eth1 (management/internal bridge) to default profile
+  command: >
+    lxc profile device add default eth1 nic
+    nictype=bridged parent={{ os_lxd_bridge_mgmt }} name=eth1
+    --project {{ os_lxd_project }}
+  ignore_errors: true
+
+- name: Create data-net profile (eth2 → data network)
+  shell: |
+    lxc profile create data-net --project {{ os_lxd_project }} 2>/dev/null || true
+    lxc profile device add data-net eth2 nic \
+      nictype=bridged parent={{ os_lxd_bridge_data }} name=eth2 \
+      --project {{ os_lxd_project }} 2>/dev/null || true
+  changed_when: true
+
+- name: Create storage-net profile (eth3 → storage network)
+  shell: |
+    lxc profile create storage-net --project {{ os_lxd_project }} 2>/dev/null || true
+    lxc profile device add storage-net eth3 nic \
+      nictype=bridged parent={{ os_lxd_bridge_storage }} name=eth3 \
+      --project {{ os_lxd_project }} 2>/dev/null || true
+  changed_when: true
+
+- name: Create public-net profile (eth4 → public/Internet bridge for br-ex uplink on compute containers)
+  shell: |
+    lxc profile create public-net --project {{ os_lxd_project }} 2>/dev/null || true
+    lxc profile device add public-net eth4 nic \
+      nictype=bridged parent={{ os_lxd_bridge_internet }} name=eth4 \
+      --project {{ os_lxd_project }} 2>/dev/null || true
+  changed_when: true
+
+- name: Set cloud-init user-data with apt mirror on default profile
+  shell: |
+    lxc profile set default --project {{ os_lxd_project }} cloud-init.user-data "
+    apt:
+      primary:
+        - arches: [default]
+          uri: http://{{ apt_mirror }}/ubuntu
+    "
+  changed_when: true
+

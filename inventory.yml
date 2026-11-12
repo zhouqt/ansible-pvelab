@@ -1,0 +1,68 @@
+---
+all:
+  children:
+    openstack_control:
+      hosts:
+        os-control-1:
+          ansible_host: 192.168.122.96
+          hostname: os-control-1
+          ansible_user: ubuntu
+          ansible_ssh_private_key_file: /home/zhouqt/machine-setup/ansible-homelab/openstack_vm_key
+        os-control-2:
+          ansible_host: 192.168.122.246
+          hostname: os-control-2
+          ansible_user: ubuntu
+          ansible_ssh_private_key_file: /home/zhouqt/machine-setup/ansible-homelab/openstack_vm_key
+        os-control-3:
+          ansible_host: 192.168.122.5
+          hostname: os-control-3
+          ansible_user: ubuntu
+          ansible_ssh_private_key_file: /home/zhouqt/machine-setup/ansible-homelab/openstack_vm_key
+      vars:
+        ansible_python_interpreter: /usr/bin/python3
+
+    openstack_compute:
+      hosts:
+        os-compute-1:
+          ansible_host: 192.168.165.47
+          hostname: os-compute-1
+          ansible_user: ubuntu
+          ansible_ssh_private_key_file: /home/zhouqt/machine-setup/ansible-homelab/openstack_vm_key
+        os-compute-2:
+          ansible_host: 192.168.165.46
+          hostname: os-compute-2
+          ansible_user: ubuntu
+          ansible_ssh_private_key_file: /home/zhouqt/machine-setup/ansible-homelab/openstack_vm_key
+      vars:
+        ansible_python_interpreter: /usr/bin/python3
+
+    openstack_all:
+      children:
+        openstack_control:
+        openstack_compute:
+
+    maas_ha:
+      hosts:
+        maas-ha-1:
+          ansible_host: 192.168.122.10
+          node_id: 1000
+          hostname: maas-ha-1
+        maas-ha-2:
+          ansible_host: 192.168.122.11
+          node_id: 1001
+          hostname: maas-ha-2
+        maas-ha-3:
+          ansible_host: 192.168.122.12
+          node_id: 1002
+          hostname: maas-ha-3
+      vars:
+        ansible_user: root
+        ansible_python_interpreter: /usr/bin/python3
+
+    pve:
+      hosts:
+        pve-host:
+          ansible_host: 192.168.11.1
+          ansible_port: 2222
+          ansible_user: root
+          ansible_python_interpreter: /usr/bin/python3

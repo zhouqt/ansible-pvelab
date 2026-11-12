@@ -1,0 +1,405 @@
+---
+- name: Check if ubuntu-jammy image exists
+  shell: bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && openstack image show ubuntu-jammy -f value -c id 2>/dev/null'
+  register: ubuntu_img_check
+  ignore_errors: true
+  changed_when: false
+
+- name: Download ubuntu jammy cloud image
+  get_url:
+    url: "{{ k8s_ubuntu_image_url | default('https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img') }}"
+    dest: /tmp/ubuntu-jammy.img
+    mode: '0644'
+  when: ubuntu_img_check.rc != 0
+
+- name: Upload ubuntu-jammy image to Glance
+  shell: |
+    bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && \
+      openstack image create ubuntu-jammy \
+        --file /tmp/ubuntu-jammy.img \
+        --disk-format qcow2 --container-format bare \
+        --public'
+  when: ubuntu_img_check.rc != 0
+
+- name: Check if k8s model already exists
+  shell: "{{ juju_k8s_cmd }} models --controller {{ juju_controller_name }} --format json | jq -r '.models[].name' | grep -E \"(^|/){{ k8s_model_name }}$\" || echo not_found"
+  register: model_check
+  changed_when: false
+
+- name: Create k8s model on OpenStack cloud
+  shell: |
+    {{ juju_k8s_cmd }} add-model {{ k8s_model_name }} {{ openstack_cloud_name }}/{{ openstack_region }} \
+      --controller {{ juju_controller_name }} \
+      --credential {{ k8s_cloud_credential }} \
+      --config network={{ k8s_internal_network }} \
+      --config external-network={{ k8s_external_network }} \
+      --config use-default-secgroup=true
+  when: model_check.stdout == "not_found"
+  register: create_model
+  changed_when: create_model.rc == 0
+
+- name: Set model constraint for floating IP allocation (Juju 3.x)
+  shell: "{{ juju_k8s_cmd }} set-model-constraints -m {{ juju_controller_name }}:{{ k8s_model_name }} allocate-public-ip=true"
+  when: model_check.stdout == "not_found"
+  changed_when: true
+
+- name: Enable proxy-ssh for model (SSH via controller when no FIP on nodes)
+  shell: "{{ juju_k8s_cmd }} model-config -m {{ juju_controller_name }}:{{ k8s_model_name }} proxy-ssh={{ k8s_proxy_ssh | default(false) | lower }}"
+  when: k8s_proxy_ssh | default(false)
+  changed_when: true
+
+- name: Switch to k8s model
+  shell: "{{ juju_k8s_cmd }} switch {{ juju_controller_name }}:{{ k8s_model_name }}"
+  changed_when: true
+
+- name: Get ubuntu-jammy image ID from Glance
+  shell: bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && openstack image list --name ubuntu-jammy -f value -c ID'
+  register: ubuntu_image_id
+  changed_when: false
+
+- name: Verify ubuntu-jammy image is available in Glance
+  debug:
+    msg: "ubuntu-jammy image ID: {{ ubuntu_image_id.stdout }}"
+  when: ubuntu_image_id.stdout != ''
+
+- name: Check if charmed-kubernetes is already deployed
+  shell: "{{ juju_k8s_cmd }} status --format json 2>/dev/null | jq -r '.applications | keys[]' | grep '^kubernetes-control-plane$' || echo not_found"
+  register: k8s_deploy_check
+  changed_when: false
+
+- name: Deploy Charmed Kubernetes with OpenStack overlay
+  shell: |
+    {{ juju_k8s_cmd }} deploy charmed-kubernetes \
+      --channel {{ k8s_channel }} \
+      --overlay {{ project_dir }}/bundles/charmed-k8s-openstack-overlay.yaml \
+      --trust
+  when: k8s_deploy_check.stdout == "not_found"
+  register: k8s_deploy
+  changed_when: k8s_deploy.rc == 0
+
+- name: Fix calico ignore-loose-rpf config
+  shell: "{{ juju_k8s_cmd }} config calico ignore-loose-rpf=true"
+  changed_when: true
+  ignore_errors: true
+
+- name: Remove deprecated openstack relation from kubernetes-control-plane (CK 1.32+)
+  shell: "{{ juju_k8s_cmd }} remove-relation kubernetes-control-plane:openstack openstack-integrator:clients 2>/dev/null || true"
+  changed_when: false
+  ignore_errors: true
+
+- name: Grant trust to openstack-integrator
+  shell: "{{ juju_k8s_cmd }} trust openstack-integrator --scope=cluster"
+  changed_when: true
+  ignore_errors: true
+
+- name: Configure LoadBalancer support in openstack-integrator
+  shell: "{{ juju_k8s_cmd }} config openstack-integrator lb-enabled={{ k8s_lb_enabled | default(false) | lower }}"
+  changed_when: true
+  ignore_errors: true
+
+- name: Wait for K8s VMs to be ACTIVE (up to 10 min)
+  shell: |
+    bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && \
+      TOTAL=$(openstack server list --name "juju-.*-{{ k8s_model_name }}-" -f json 2>/dev/null | jq length) && \
+      ACTIVE=$(openstack server list --name "juju-.*-{{ k8s_model_name }}-" --status ACTIVE -f json 2>/dev/null | jq length) && \
+      echo "$ACTIVE/$TOTAL" && [ "$ACTIVE" -eq "$TOTAL" ] && [ "$TOTAL" -gt 0 ]'
+  register: vms_ready
+  until: vms_ready.rc == 0
+  retries: 20
+  delay: 30
+  changed_when: false
+
+- name: Get K8s VM instance IDs
+  shell: |
+    bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && \
+      openstack server list --name "juju-.*-{{ k8s_model_name }}-" -f value -c ID'
+  register: k8s_vm_ids
+  changed_when: false
+
+- name: Attach mgmt-net ports to K8s VMs
+  shell: |
+    bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && \
+      SERVER_ID="{{ item }}" && \
+      SHORT_ID=$(echo $SERVER_ID | cut -c1-8) && \
+      EXISTING=$(openstack port list --server $SERVER_ID --network {{ mgmt_net.name }} -f value -c ID 2>/dev/null) && \
+      if [ -n "$EXISTING" ]; then
+        echo "Server $SHORT_ID already has mgmt-net port: $EXISTING"
+      else
+        PORT_ID=$(openstack port create --network {{ mgmt_net.name }} mgmt-$SHORT_ID -f value -c id) && \
+        openstack server add port $SERVER_ID $PORT_ID && \
+        echo "Attached mgmt-net port $PORT_ID to server $SHORT_ID"
+      fi'
+  loop: "{{ k8s_vm_ids.stdout_lines }}"
+  changed_when: true
+  ignore_errors: true
+  when: k8s_attach_mgmt_net | default(true)
+
+- name: Wait for mgmt-net ports to be active
+  pause:
+    seconds: 15
+  when: k8s_attach_mgmt_net | default(true)
+
+- name: Wait for K8s VMs cloud-init to complete (SSH readiness)
+  shell: |
+    bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && \
+      ALL_READY=true && \
+      for SERVER_ID in $(openstack server list --name "juju-.*-{{ k8s_model_name }}-" -f value -c ID); do
+        FLOAT_IP=$(openstack server show $SERVER_ID -f json | jq -r "[.addresses[][] | select(startswith(\"192.168.122\"))] | first") && \
+        if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes ubuntu@$FLOAT_IP \
+          "cloud-init status --wait 2>/dev/null || test -f /var/lib/cloud/instance/boot-finished" 2>/dev/null; then
+          ALL_READY=false
+          echo "VM $FLOAT_IP not ready yet"
+        else
+          echo "VM $FLOAT_IP ready"
+        fi
+      done && \
+      $ALL_READY && echo "ALL_VMS_READY"'
+  register: cloud_init_wait
+  until: "'ALL_VMS_READY' in cloud_init_wait.stdout"
+  retries: 30
+  delay: 20
+  changed_when: false
+  ignore_errors: true
+
+- name: Configure mgmt-net NIC on each K8s VM
+  shell: |
+    bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && \
+      SERVER_ID="{{ item }}" && \
+      FLOAT_IP=$(openstack server show $SERVER_ID -f json | jq -r "[.addresses[][] | select(startswith(\"192.168.122\"))] | first") && \
+      PORT_JSON=$(openstack port list --server $SERVER_ID --network {{ mgmt_net.name }} -f json) && \
+      MGMT_IP=$(echo "$PORT_JSON" | jq -r ".[0][\"Fixed IP Addresses\"]" | grep -oP "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+") && \
+      MGMT_MAC=$(echo "$PORT_JSON" | jq -r ".[0][\"MAC Address\"]") && \
+      if [ -z "$FLOAT_IP" ] || [ -z "$MGMT_IP" ] || [ -z "$MGMT_MAC" ]; then
+        echo "Missing info for $SERVER_ID: float=$FLOAT_IP mgmt=$MGMT_IP mac=$MGMT_MAC"
+        exit 1
+      fi && \
+      echo "Configuring mgmt=$MGMT_IP (mac=$MGMT_MAC) on VM $FLOAT_IP" && \
+      ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ubuntu@$FLOAT_IP \
+        "NIC=\"\"; \
+         for i in \$(seq 1 12); do \
+           NIC=\$(ip -o link | grep $MGMT_MAC | awk -F\": \" \"{print \\\$2}\"); \
+           if [ -n \"\$NIC\" ]; then break; fi; \
+           echo \"Waiting for mgmt NIC (mac=$MGMT_MAC) to appear (attempt \$i/12)...\"; \
+           sleep 10; \
+         done && \
+         if [ -z \"\$NIC\" ]; then echo \"ERROR: NIC with MAC $MGMT_MAC not found\"; exit 1; fi && \
+         echo \"Found NIC: \$NIC\" && \
+         sudo ip link set \$NIC up; \
+         if ! ip addr show \$NIC | grep -q $MGMT_IP; then \
+           sudo ip addr add $MGMT_IP/24 dev \$NIC; \
+         fi; \
+         ip addr show \$NIC | grep inet"'
+  loop: "{{ k8s_vm_ids.stdout_lines }}"
+  changed_when: true
+  ignore_errors: true
+  when: k8s_attach_mgmt_net | default(true)
+
+- name: Apply route metrics to prevent mgmt-net from taking default route
+  shell: |
+    bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && \
+      SERVER_ID="{{ item }}" && \
+      FLOAT_IP=$(openstack server show $SERVER_ID -f json | jq -r "[.addresses[][] | select(startswith(\"192.168.122\"))] | first") && \
+      ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ubuntu@$FLOAT_IP \
+        "sudo bash -c '"'"'
+          cat > /etc/netplan/60-route-metric.yaml <<ENDOFNETPLAN
+    network:
+      version: 2
+      ethernets:
+        eth0:
+          dhcp4: true
+          dhcp4-overrides:
+            route-metric: 100
+        eth1:
+          dhcp4: true
+          dhcp4-overrides:
+            route-metric: 200
+    ENDOFNETPLAN
+          chmod 600 /etc/netplan/60-route-metric.yaml
+          netplan apply 2>&1
+        '"'"'
+        echo \"Route metrics applied\""'
+  loop: "{{ k8s_vm_ids.stdout_lines }}"
+  changed_when: true
+  ignore_errors: true
+  when: k8s_attach_mgmt_net | default(true)
+
+- name: Verify mgmt-net connectivity from first K8s VM
+  shell: |
+    bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && \
+      FIRST_VM=$(openstack server list --name "juju-.*-{{ k8s_model_name }}-" -f value -c ID | head -1) && \
+      FLOAT_IP=$(openstack server show $FIRST_VM -f json | jq -r "[.addresses[][] | select(startswith(\"192.168.122\"))] | first") && \
+      ssh -o StrictHostKeyChecking=no ubuntu@$FLOAT_IP "ping -c1 -W3 192.168.165.205 && echo CONTROLLER_REACHABLE"'
+  register: mgmt_verify
+  changed_when: false
+  ignore_errors: true
+  when: k8s_attach_mgmt_net | default(true)
+
+- name: Display mgmt-net connectivity result
+  debug:
+    msg: "{{ 'Mgmt-net connectivity OK' if 'CONTROLLER_REACHABLE' in mgmt_verify.stdout else 'WARNING: VMs cannot reach Juju controller via mgmt-net!' }}"
+  when: k8s_attach_mgmt_net | default(true)
+
+- name: Configure containerd proxy
+  shell: |
+    {{ juju_k8s_cmd }} config containerd \
+      http_proxy="{{ containerd_http_proxy }}" \
+      https_proxy="{{ containerd_https_proxy }}" \
+      no_proxy="{{ containerd_no_proxy }}"
+  when: containerd_http_proxy != ""
+  changed_when: true
+
+- name: Wait for OCCM DaemonSet to exist (up to 10 min)
+  shell: |
+    {{ juju_k8s_cmd }} ssh kubernetes-control-plane/leader -- \
+      sudo /snap/bin/kubectl --kubeconfig /root/.kube/config \
+      get ds openstack-cloud-controller-manager -n kube-system -o name 2>/dev/null
+  register: occm_ds
+  until: occm_ds.rc == 0
+  retries: 20
+  delay: 30
+  changed_when: false
+  ignore_errors: true
+  when: not (k8s_lb_enabled | default(false))
+
+- name: Patch OCCM to disable service-lb controller (no Octavia)
+  shell: |
+    {{ juju_k8s_cmd }} ssh kubernetes-control-plane/leader -- \
+      sudo /snap/bin/kubectl --kubeconfig /root/.kube/config \
+      patch ds openstack-cloud-controller-manager -n kube-system --type=json \
+      -p '[{"op":"replace","path":"/spec/template/spec/containers/0/args","value":["/bin/openstack-cloud-controller-manager","--v=1","--cluster-name=$(CLUSTER_NAME)","--cloud-config=$(CLOUD_CONFIG)","--cloud-provider=openstack","--use-service-account-credentials=true","--controllers=cloud-node,cloud-node-lifecycle,route"]}]'
+  when: not (k8s_lb_enabled | default(false)) and (occm_ds.rc | default(1)) == 0
+  register: occm_patch
+  changed_when: occm_patch.rc == 0
+  ignore_errors: true
+
+- name: Resolve any failed units during deployment
+  shell: |
+    ERRORS=$({{ juju_k8s_cmd }} status --format json 2>/dev/null | \
+      jq -r '.applications[].units // {} | to_entries[] | select(.value["workload-status"].current == "error") | .key')
+    for unit in $ERRORS; do
+      {{ juju_k8s_cmd }} resolved "$unit" 2>/dev/null || true
+    done
+    [ -n "$ERRORS" ] && echo "Resolved: $ERRORS" || echo "No errors"
+  changed_when: true
+  ignore_errors: true
+
+- name: Wait for Charmed Kubernetes deployment (up to 60 min)
+  shell: |
+    ERRORS=$({{ juju_k8s_cmd }} status --format json 2>/dev/null | \
+      jq -r '.applications[].units // {} | to_entries[] | select(.value["workload-status"].current == "error") | .key')
+    for unit in $ERRORS; do {{ juju_k8s_cmd }} resolved "$unit" 2>/dev/null || true; done
+    {{ juju_k8s_cmd }} status --format json | jq -r '
+      [.applications[].units[]? | select(.["workload-status"].current != "active")] | length
+    '
+  register: pending_units
+  until: pending_units.stdout | int == 0
+  retries: 120
+  delay: 30
+  changed_when: false
+  ignore_errors: true
+
+- name: Display Juju status
+  shell: "{{ juju_k8s_cmd }} status"
+  register: k8s_status
+  changed_when: false
+
+- name: Show deployment status
+  debug:
+    msg: "{{ k8s_status.stdout }}"
+
+- name: Get current K8s VM instance IDs (post-deploy)
+  shell: |
+    bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && \
+      openstack server list --name "juju-.*-{{ k8s_model_name }}-" -f value -c ID'
+  register: k8s_vm_ids_post
+  changed_when: false
+  when: k8s_attach_mgmt_net | default(true)
+
+- name: Attach mgmt-net ports to any new K8s VMs
+  shell: |
+    bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && \
+      SERVER_ID="{{ item }}" && \
+      SHORT_ID=$(echo $SERVER_ID | cut -c1-8) && \
+      EXISTING=$(openstack port list --server $SERVER_ID --network {{ mgmt_net.name }} -f value -c ID 2>/dev/null) && \
+      if [ -n "$EXISTING" ]; then
+        echo "Server $SHORT_ID already has mgmt-net port: $EXISTING"
+      else
+        PORT_ID=$(openstack port create --network {{ mgmt_net.name }} mgmt-$SHORT_ID -f value -c id) && \
+        openstack server add port $SERVER_ID $PORT_ID && \
+        echo "Attached mgmt-net port $PORT_ID to server $SHORT_ID"
+      fi'
+  loop: "{{ k8s_vm_ids_post.stdout_lines }}"
+  changed_when: true
+  ignore_errors: true
+  when: k8s_attach_mgmt_net | default(true)
+
+- name: Wait for mgmt-net ports (post-deploy)
+  pause:
+    seconds: 15
+  when: k8s_attach_mgmt_net | default(true)
+
+- name: Configure mgmt-net NIC on any new K8s VMs (post-deploy)
+  shell: |
+    bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && \
+      SERVER_ID="{{ item }}" && \
+      FLOAT_IP=$(openstack server show $SERVER_ID -f json | jq -r "[.addresses[][] | select(startswith(\"192.168.122\"))] | first") && \
+      PORT_JSON=$(openstack port list --server $SERVER_ID --network {{ mgmt_net.name }} -f json) && \
+      MGMT_IP=$(echo "$PORT_JSON" | jq -r ".[0][\"Fixed IP Addresses\"]" | grep -oP "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+") && \
+      MGMT_MAC=$(echo "$PORT_JSON" | jq -r ".[0][\"MAC Address\"]") && \
+      if [ -z "$FLOAT_IP" ] || [ -z "$MGMT_IP" ] || [ -z "$MGMT_MAC" ]; then
+        echo "Missing info for $SERVER_ID: float=$FLOAT_IP mgmt=$MGMT_IP mac=$MGMT_MAC"
+        exit 1
+      fi && \
+      echo "Configuring mgmt=$MGMT_IP (mac=$MGMT_MAC) on VM $FLOAT_IP" && \
+      ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ubuntu@$FLOAT_IP \
+        "NIC=\"\"; \
+         for i in \$(seq 1 12); do \
+           NIC=\$(ip -o link | grep $MGMT_MAC | awk -F\": \" \"{print \\\$2}\"); \
+           if [ -n \"\$NIC\" ]; then break; fi; \
+           echo \"Waiting for mgmt NIC (mac=$MGMT_MAC) to appear (attempt \$i/12)...\"; \
+           sleep 10; \
+         done && \
+         if [ -z \"\$NIC\" ]; then echo \"ERROR: NIC with MAC $MGMT_MAC not found\"; exit 1; fi && \
+         echo \"Found NIC: \$NIC\" && \
+         sudo ip link set \$NIC up; \
+         if ! ip addr show \$NIC | grep -q $MGMT_IP; then \
+           sudo ip addr add $MGMT_IP/24 dev \$NIC; \
+         fi; \
+         ip addr show \$NIC | grep inet"'
+  loop: "{{ k8s_vm_ids_post.stdout_lines }}"
+  changed_when: true
+  ignore_errors: true
+  when: k8s_attach_mgmt_net | default(true)
+
+- name: Apply route metrics to any new K8s VMs (post-deploy)
+  shell: |
+    bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && \
+      SERVER_ID="{{ item }}" && \
+      FLOAT_IP=$(openstack server show $SERVER_ID -f json | jq -r "[.addresses[][] | select(startswith(\"192.168.122\"))] | first") && \
+      ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ubuntu@$FLOAT_IP \
+        "sudo bash -c '"'"'
+          if [ ! -f /etc/netplan/60-route-metric.yaml ]; then
+            cat > /etc/netplan/60-route-metric.yaml <<ENDOFNETPLAN
+    network:
+      version: 2
+      ethernets:
+        eth0:
+          dhcp4: true
+          dhcp4-overrides:
+            route-metric: 100
+        eth1:
+          dhcp4: true
+          dhcp4-overrides:
+            route-metric: 200
+    ENDOFNETPLAN
+            chmod 600 /etc/netplan/60-route-metric.yaml
+            netplan apply 2>&1
+            echo Route metrics applied
+          else
+            echo Route metrics already configured
+          fi
+        '"'"'"'
+  loop: "{{ k8s_vm_ids_post.stdout_lines }}"
+  changed_when: true
+  ignore_errors: true
+  when: k8s_attach_mgmt_net | default(true)

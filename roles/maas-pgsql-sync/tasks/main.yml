@@ -1,0 +1,31 @@
+---
+- name: Check cluster status
+  command: crm_mon -1 -A
+  register: cluster_status
+  changed_when: false
+
+- name: Check for DISCONNECT nodes
+  shell: |
+    crm_mon -1 -A | grep -E "pgsql-data-status.*DISCONNECT" | wc -l
+  register: disconnect_count
+  changed_when: false
+
+- name: Display sync recommendation
+  debug:
+    msg:
+      - "=== Post-deployment Check ==="
+      - "{{ disconnect_count.stdout }} standby nodes need data sync"
+      - ""
+      - "To sync standby nodes, run:"
+      - "ansible-playbook -i inventory.yml utils/maas-pgsql-cluster-sync.yml"
+  when: disconnect_count.stdout | int > 0
+
+- name: Display success
+  debug:
+    msg:
+      - "=== MAAS HA Cluster Deployed Successfully ==="
+      - "All PostgreSQL nodes are in sync"
+      - ""
+      - "MAAS Web UI: http://{{ maas_vip }}/MAAS"
+      - "MAAS API: http://{{ maas_vip }}:5240/MAAS/api/2.0/"
+  when: disconnect_count.stdout | int == 0

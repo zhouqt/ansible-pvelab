@@ -1,0 +1,1160 @@
+---
+
+- name: "STEP 1: Load required kernel modules"
+  shell: |
+    modprobe vhost_net
+    modprobe openvswitch
+    modprobe iscsi_tcp 2>/dev/null || true
+  changed_when: true
+
+- name: "STEP 1: Set CPU governor to performance"
+  shell: |
+    for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+      if [ -f "$gov" ] && [ "$(cat $gov)" != "performance" ]; then
+        echo performance > "$gov"
+      fi
+    done
+  become: true
+  changed_when: true
+
+- name: "STEP 1: Setup OSD loopback devices"
+  shell: |
+    for i in 0 1; do
+      FILE="{{ os_lxd_osd_loopback_dir }}/ceph-osd-compute-${i}.img"
+      if [ -f "$FILE" ]; then
+        DEV=$(losetup -j "$FILE" -O NAME --noheadings | tr -d ' ')
+        if [ -z "$DEV" ]; then
+          DEV=$(losetup --find --show "$FILE")
+          echo "Attached $FILE to $DEV"
+        else
+          echo "Already attached: $FILE -> $DEV"
+        fi
+      fi
+    done
+  register: loopback_setup
+  changed_when: "'Attached' in loopback_setup.stdout"
+
+- name: "STEP 1: Setup iSCSI loopback device"
+  shell: |
+    FILE="/home/iscsi-storage-lxd-os.img"
+    if [ -f "$FILE" ]; then
+      DEV=$(losetup -j "$FILE" -O NAME --noheadings | tr -d ' ')
+      if [ -z "$DEV" ]; then
+        DEV=$(losetup --find --show "$FILE")
+        echo "Attached $FILE to $DEV"
+      else
+        echo "Already attached: $FILE -> $DEV"
+      fi
+      vgchange -ay cinder-iscsi-lxd 2>/dev/null || true
+    else
+      echo "SKIP: iSCSI storage file not found"
+    fi
+  register: iscsi_loopback_setup
+  changed_when: "'Attached' in iscsi_loopback_setup.stdout"
+  become: true
+
+- name: "STEP 2: Check if openstack LXD project exists"
+  shell: lxc project list --format json | jq -r '.[].name' | grep -qx "{{ os_lxd_project }}" && echo "1" || echo "0"
+  register: project_exists
+  changed_when: false
+
+- name: "STEP 2: Fail if project does not exist"
+  fail:
+    msg: "LXD project '{{ os_lxd_project }}' does not exist. Nothing to recover."
+  when: project_exists.stdout | int == 0
+
+- name: "STEP 2: List all containers in project"
+  shell: lxc list --project {{ os_lxd_project }} -f csv -c ns
+  register: container_list
+  changed_when: false
+
+- name: "STEP 2: Start all stopped containers"
+  shell: |
+    for container in $(lxc list --project {{ os_lxd_project }} -f csv -c n,s | grep ",STOPPED" | cut -d, -f1); do
+      echo "Starting $container..."
+      lxc start "$container" --project {{ os_lxd_project }} 2>/dev/null || true
+    done
+  register: start_result
+  changed_when: "'Starting' in start_result.stdout"
+
+- name: "STEP 2: Wait for containers to get IP addresses (60s)"
+  pause:
+    seconds: 60
+  when: start_result is changed
+
+- name: "STEP 2b: Load snap apparmor profiles in all containers"
+  shell: |
+    FIXED=""
+    for container in $(lxc list --project {{ os_lxd_project }} -f csv -c n,s | grep ",RUNNING" | cut -d, -f1); do
+      HAS_PROFILES=$(lxc exec "$container" --project {{ os_lxd_project }} -- \
+        ls /var/lib/snapd/apparmor/profiles/snap* 2>/dev/null | head -1)
+      if [ -n "$HAS_PROFILES" ]; then
+        lxc exec "$container" --project {{ os_lxd_project }} -- \
+          apparmor_parser -r /var/lib/snapd/apparmor/profiles/snap* 2>/dev/null
+        FIXED="$FIXED $container"
+      fi
+    done
+    if [ -n "$FIXED" ]; then
+      echo "LOADED profiles in:$FIXED"
+    else
+      echo "OK: no snap profiles to load"
+    fi
+  register: apparmor_fix
+  changed_when: "'LOADED' in apparmor_fix.stdout"
+
+- name: "STEP 3: Wait for Juju controller to be accessible"
+  become: false
+  shell: juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --format json 2>&1 | head -5
+  register: juju_check
+  until: juju_check.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+  ignore_errors: true
+
+- name: "STEP 3: Display Juju connection status"
+  debug:
+    msg: "{{ 'Juju API accessible' if juju_check.rc == 0 else 'Juju API not accessible - continuing anyway' }}"
+
+- name: "STEP 4: Get ceph-osd machine numbers"
+  become: false
+  shell: |
+    juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} ceph-osd --format json 2>/dev/null | \
+      jq -r '[.applications["ceph-osd"].units | to_entries[] | .value.machine] | sort | .[]'
+  register: ceph_osd_machines
+  changed_when: false
+  ignore_errors: true
+
+- name: "STEP 4: Resolve machine numbers to LXD container names"
+  become: false
+  shell: |
+    juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --format json 2>/dev/null | \
+      jq -r '.machines["{{ item }}"].hostname'
+  loop: "{{ ceph_osd_machines.stdout_lines | default([]) }}"
+  register: compute_hostnames
+  changed_when: false
+  when: ceph_osd_machines.stdout_lines | default([]) | length > 0
+
+- name: "STEP 4: Set compute container list"
+  set_fact:
+    compute_containers: "{{ compute_hostnames.results | default([]) | map(attribute='stdout') | list }}"
+
+- name: "STEP 4: Verify OSD loopback devices match LXD config"
+  shell: |
+    IDX=0
+    for container in {{ compute_containers | join(' ') }}; do
+      CURRENT_DEV=$(lxc config device get "$container" osd-loop source --project {{ os_lxd_project }} 2>/dev/null || echo "none")
+      if [ "$CURRENT_DEV" = "none" ]; then
+        echo "$container: NO osd-loop device"
+        continue
+      fi
+      if [ ! -b "$CURRENT_DEV" ]; then
+        FILE="{{ os_lxd_osd_loopback_dir }}/ceph-osd-compute-${IDX}.img"
+        NEW_DEV=$(losetup -j "$FILE" -O NAME --noheadings 2>/dev/null | tr -d ' ')
+        if [ -n "$NEW_DEV" ] && [ -b "$NEW_DEV" ]; then
+          lxc config device set "$container" osd-loop source="$NEW_DEV" --project {{ os_lxd_project }}
+          lxc config device set "$container" osd-loop mode=0660 uid=64045 gid=64045 --project {{ os_lxd_project }}
+          echo "$container: REATTACHED $CURRENT_DEV -> $NEW_DEV"
+        else
+          echo "$container: ERROR - no valid loop device for $FILE"
+        fi
+      else
+        CURRENT_MODE=$(lxc config device get "$container" osd-loop mode --project {{ os_lxd_project }} 2>/dev/null || echo "")
+        if [ "$CURRENT_MODE" != "0660" ]; then
+          lxc config device set "$container" osd-loop mode=0660 uid=64045 gid=64045 --project {{ os_lxd_project }}
+          echo "$container: FIXED device mode to 0660 uid=64045 gid=64045"
+        else
+          echo "$container: OK ($CURRENT_DEV)"
+        fi
+      fi
+      IDX=$((IDX + 1))
+    done
+  register: osd_reattach
+  changed_when: "'REATTACHED' in osd_reattach.stdout or 'FIXED' in osd_reattach.stdout"
+  when: compute_containers | default([]) | length > 0
+
+- name: "STEP 5: Fix LXCFS stale /proc/meminfo mount"
+  shell: |
+    for container in {{ compute_containers | join(' ') }}; do
+      lxc exec "$container" --project {{ os_lxd_project }} -- bash -c '
+        if ! cat /proc/meminfo > /dev/null 2>&1; then
+          umount /proc/meminfo 2>/dev/null || true
+          echo "Fixed stale /proc/meminfo in $HOSTNAME"
+        else
+          echo "OK: /proc/meminfo readable in $HOSTNAME"
+        fi
+      ' 2>/dev/null || true
+    done
+  register: lxcfs_fix
+  changed_when: "'Fixed' in lxcfs_fix.stdout"
+  when: compute_containers | default([]) | length > 0
+
+- name: "STEP 6: Check static IP configuration in containers"
+  shell: |
+    MISSING=""
+    for container in $(lxc list --project {{ os_lxd_project }} -f csv -c n | grep "juju-"); do
+      HAS_STATIC=$(lxc exec "$container" --project {{ os_lxd_project }} -- \
+        test -f /etc/netplan/150-static.yaml && echo "yes" || echo "no") 2>/dev/null
+      if [ "$HAS_STATIC" = "no" ]; then
+        MISSING="$MISSING $container"
+      fi
+    done
+    if [ -n "$MISSING" ]; then
+      echo "MISSING:$MISSING"
+    else
+      echo "OK: All containers have static IP config"
+    fi
+  register: static_ip_check
+  changed_when: false
+
+- name: "STEP 6: Display static IP status"
+  debug:
+    msg: "{{ static_ip_check.stdout }}"
+
+- name: "STEP 7: Get Vault unit IP address"
+  become: false
+  shell: |
+    juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} vault --format json 2>/dev/null | \
+      jq -r '.applications.vault.units["vault/0"]["public-address"]'
+  register: vault_ip
+  changed_when: false
+  ignore_errors: true
+
+- name: "STEP 7: Check Vault seal status"
+  shell: curl -sk http://{{ vault_ip.stdout }}:8200/v1/sys/seal-status 2>/dev/null | jq -r '.sealed'
+  register: vault_sealed
+  changed_when: false
+  when: vault_ip.stdout is defined and vault_ip.stdout != "" and vault_ip.stdout != "null"
+  ignore_errors: true
+
+- name: "STEP 7: Load Vault credentials"
+  shell: cat {{ project_dir }}/credentials/vault-unseal-lxd-openstack.json 2>/dev/null
+  register: vault_creds_raw
+  changed_when: false
+  when: vault_sealed.stdout is defined and vault_sealed.stdout == "true"
+  ignore_errors: true
+
+- name: "STEP 7: Unseal Vault"
+  shell: |
+    curl -sk http://{{ vault_ip.stdout }}:8200/v1/sys/unseal \
+      -X PUT -d '{"key": "{{ (vault_creds_raw.stdout | from_json).unseal_keys_b64[0] }}"}'
+  when:
+    - vault_sealed.stdout is defined
+    - vault_sealed.stdout == "true"
+    - vault_creds_raw.stdout is defined
+    - vault_creds_raw.stdout != ""
+  register: vault_unseal
+  changed_when: true
+
+- name: "STEP 7: Wait for Vault to unseal"
+  shell: curl -sk http://{{ vault_ip.stdout }}:8200/v1/sys/seal-status 2>/dev/null | jq -r '.sealed'
+  register: vault_unsealed
+  until: vault_unsealed.stdout == "false"
+  retries: 10
+  delay: 5
+  changed_when: false
+  when: vault_unseal is changed
+
+- name: "STEP 7: Display Vault status"
+  debug:
+    msg: "Vault status: {{ 'unsealed' if (vault_sealed.stdout | default('true')) == 'false' else ('just unsealed' if vault_unseal is changed else 'sealed or unavailable') }}"
+
+- name: "STEP 8: Get MySQL InnoDB Cluster status"
+  become: false
+  shell: |
+    juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} mysql-innodb-cluster --format json 2>/dev/null | \
+      jq -r '.applications["mysql-innodb-cluster"]["application-status"].current'
+  register: mysql_app_status
+  changed_when: false
+  ignore_errors: true
+
+- name: "STEP 8: Get MySQL primary unit (any active workload unit)"
+  become: false
+  shell: |
+    juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} mysql-innodb-cluster --format json 2>/dev/null | \
+      jq -r '.applications["mysql-innodb-cluster"].units | to_entries[] | select(.value["workload-status"].current == "active") | .key' | head -1
+  register: mysql_primary
+  changed_when: false
+  ignore_errors: true
+
+- name: "STEP 8: Check MySQL cluster health via cluster-status charm action"
+  become: false
+  shell: |
+    juju-29 run-action -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} \
+      --wait --unit {{ mysql_primary.stdout }} cluster-status 2>&1 | \
+      jq -r '.results["cluster-status"] // "null"'
+  register: mysql_cluster_health
+  changed_when: false
+  when: mysql_primary.stdout is defined and mysql_primary.stdout != ""
+  ignore_errors: true
+
+- name: "STEP 8: Display MySQL cluster status"
+  debug:
+    msg: "MySQL cluster: app={{ mysql_app_status.stdout | default('unknown') }}, health={{ mysql_cluster_health.stdout | default('unknown') }}"
+
+- name: "STEP 8: Recover MySQL cluster from complete outage via charm action"
+  become: false
+  shell: |
+    for unit in {{ mysql_primary.stdout }} {{ mysql_primary.stdout | regex_replace('/.*$', '') }}/0 {{ mysql_primary.stdout | regex_replace('/.*$', '') }}/1 {{ mysql_primary.stdout | regex_replace('/.*$', '') }}/2; do
+      RC=$(juju-29 run-action -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} \
+        --wait --unit "$unit" reboot-cluster-from-complete-outage 2>&1)
+      if echo "$RC" | grep -q '"outcome": "Success"'; then
+        echo "SUCCESS on $unit"
+        echo "$unit" > /tmp/mysql_recovery_unit
+        exit 0
+      fi
+    done
+    echo "FAILED to reboot cluster from any unit"
+    exit 1
+  register: mysql_reboot
+  changed_when: "'SUCCESS' in mysql_reboot.stdout"
+  ignore_errors: true
+  when:
+    - mysql_primary.stdout is defined
+    - mysql_primary.stdout != ""
+    - mysql_cluster_health.stdout is defined
+    - mysql_cluster_health.stdout in ['null', '', 'unknown']
+
+- name: "STEP 8: Rejoin other MySQL units to cluster via rejoin-instance action"
+  become: false
+  shell: |
+    RECOVERED_UNIT=$(cat /tmp/mysql_recovery_unit 2>/dev/null || echo "")
+    if [ -z "$RECOVERED_UNIT" ]; then
+      echo "SKIP: no recovered unit recorded"
+      exit 0
+    fi
+    juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} mysql-innodb-cluster --format json 2>/dev/null | \
+      jq -r '.applications["mysql-innodb-cluster"].units | to_entries[] | "\(.key) \(.value["public-address"])"' | \
+    while read unit addr; do
+      if [ "$unit" = "$RECOVERED_UNIT" ]; then
+        continue
+      fi
+      echo "Rejoin $unit at $addr..."
+      juju-29 run-action -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} \
+        --wait --unit "$unit" rejoin-instance address="$addr" 2>&1 | tail -2
+    done
+  register: mysql_rejoin
+  changed_when: "'Rejoin' in mysql_rejoin.stdout"
+  ignore_errors: true
+  when: mysql_reboot is changed
+
+- name: "STEP 9.0: Ensure public-net profile (eth4) is attached to compute containers"
+  shell: |
+    FIXED=""
+    for container in {{ compute_containers | join(' ') }}; do
+      if lxc config device show "$container" --project {{ os_lxd_project }} 2>/dev/null | grep -q "^eth4:"; then
+        echo "$container: eth4 already present"
+        continue
+      fi
+      lxc profile add "$container" public-net --project {{ os_lxd_project }} 2>/dev/null || true
+      if ! lxc config device show "$container" --project {{ os_lxd_project }} 2>/dev/null | grep -q "^eth4:"; then
+        lxc config device add "$container" eth4 nic \
+          nictype=bridged parent={{ os_lxd_bridge_internet | default('virbr0') }} name=eth4 \
+          --project {{ os_lxd_project }} 2>/dev/null || true
+      fi
+      lxc restart "$container" --project {{ os_lxd_project }}
+      FIXED="$FIXED $container"
+    done
+    if [ -n "$FIXED" ]; then
+      echo "ADDED eth4 to:$FIXED"
+    else
+      echo "OK: all compute containers have eth4"
+    fi
+  register: eth4_ensure
+  changed_when: "'ADDED eth4' in eth4_ensure.stdout"
+  when: compute_containers | default([]) | length > 0
+
+- name: "STEP 9: Fix br-ex IP on compute containers (remove eth4 IP, ensure IP on br-ex)"
+  shell: |
+    for container in {{ compute_containers | join(' ') }}; do
+      lxc exec "$container" --project {{ os_lxd_project }} -- bash -c '
+        BR_EX_NIC=""
+        for nic in eth4 eth0; do
+          if [ -d "/sys/class/net/$nic" ] && ovs-vsctl port-to-br "$nic" 2>/dev/null | grep -q br-ex; then
+            BR_EX_NIC="$nic"
+            break
+          fi
+        done
+        if [ -z "$BR_EX_NIC" ]; then
+          echo "$HOSTNAME: SKIP (no eth4/eth0 port in br-ex)"
+          exit 0
+        fi
+
+        GW=192.168.122.1
+
+        STATIC_IP_FULL=$(ip -4 -o addr show "$BR_EX_NIC" 2>/dev/null | awk "{print \$4}" | head -1)
+        STATIC_IP_ADDR=$(echo "$STATIC_IP_FULL" | cut -d/ -f1)
+
+        if [ -z "$STATIC_IP_FULL" ]; then
+          STATIC_IP_FULL=$(ip -4 -o addr show br-ex 2>/dev/null | grep -v "metric 100" | awk "{print \$4}" | head -1)
+          STATIC_IP_ADDR=$(echo "$STATIC_IP_FULL" | cut -d/ -f1)
+        fi
+
+        if [ -z "$STATIC_IP_FULL" ]; then
+          echo "$HOSTNAME: SKIP (no 192.168.122.x IP found)"
+          exit 0
+        fi
+
+        CHANGED=0
+
+        DHCP_SECONDARY=$(ip -4 -o addr show br-ex 2>/dev/null | grep "metric 100" | awk "{print \$4}")
+        if [ -n "$DHCP_SECONDARY" ]; then
+          ip addr del "$DHCP_SECONDARY" dev br-ex 2>/dev/null && CHANGED=1
+        fi
+
+        if ip -4 -o addr show "$BR_EX_NIC" 2>/dev/null | grep -q "$STATIC_IP_ADDR"; then
+          ip addr del "$STATIC_IP_FULL" dev "$BR_EX_NIC" 2>/dev/null && CHANGED=1
+        fi
+
+        if ! ip -4 -o addr show br-ex 2>/dev/null | grep -q "$STATIC_IP_ADDR"; then
+          ip addr add "$STATIC_IP_FULL" dev br-ex 2>/dev/null && CHANGED=1
+        fi
+
+        ip link set br-ex up
+        ip route replace default via $GW dev br-ex
+        ip route replace 192.168.122.0/24 dev br-ex proto kernel scope link src $STATIC_IP_ADDR
+
+        if [ -f /etc/netplan/99-juju.yaml ]; then
+          rm -f /etc/netplan/99-juju.yaml && CHANGED=1
+        fi
+
+        ETH0_IP=$(ip -4 -o addr show eth0 2>/dev/null | awk "{print \$4}" | head -1)
+        ETH1_IP=$(ip -4 -o addr show eth1 2>/dev/null | awk "{print \$4}" | head -1)
+
+        NETPLAN="/etc/netplan/150-static.yaml"
+        NEED_REWRITE=1
+        if [ -f "$NETPLAN" ] && grep -q "br-ex:" "$NETPLAN" && grep -q "$STATIC_IP_ADDR" "$NETPLAN" && grep -q "${BR_EX_NIC}:" "$NETPLAN"; then
+          NEED_REWRITE=0
+        fi
+
+        if [ "$NEED_REWRITE" = "1" ]; then
+          {
+            printf 'network:\n  version: 2\n  ethernets:\n'
+            if [ -n "$ETH0_IP" ]; then
+              printf '    eth0:\n      addresses: [%s]\n      routes:\n        - to: default\n          via: 192.168.122.1\n          metric: 100\n      nameservers:\n        addresses: [8.8.8.8, 8.8.4.4]\n      dhcp4: false\n' "$ETH0_IP"
+            else
+              printf '    eth0:\n      dhcp4: false\n'
+            fi
+            if [ -n "$ETH1_IP" ]; then
+              printf '    eth1:\n      addresses: [%s]\n      routes:\n        - to: 192.168.165.0/24\n          via: 192.168.165.1\n          metric: 200\n      dhcp4: false\n' "$ETH1_IP"
+            fi
+            printf '    %s:\n      dhcp4: false\n' "$BR_EX_NIC"
+            printf '  bridges:\n    br-ex:\n      addresses: [%s]\n      routes:\n        - to: default\n          via: %s\n      nameservers:\n        addresses: [8.8.8.8, 8.8.4.4]\n      dhcp4: false\n' "$STATIC_IP_FULL" "$GW"
+          } > "$NETPLAN"
+          chmod 600 "$NETPLAN"
+          CHANGED=1
+        fi
+
+        netplan apply 2>/dev/null || true
+
+        if [ "$CHANGED" = "1" ]; then
+          echo "$HOSTNAME: FIXED (IP=$STATIC_IP_ADDR on br-ex, $BR_EX_NIC cleared, 99-juju.yaml removed)"
+        else
+          echo "$HOSTNAME: OK (IP=$STATIC_IP_ADDR already on br-ex)"
+        fi
+      ' 2>/dev/null || true
+    done
+  register: brex_migrate
+  changed_when: "'FIXED' in brex_migrate.stdout"
+  when: compute_containers | default([]) | length > 0
+
+- name: "STEP 9b: Restart ovn-chassis services via charm action"
+  become: false
+  shell: |
+    FAILED=0
+    for unit in $(juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} ovn-chassis --format json 2>/dev/null | \
+      jq -r '.applications["ovn-chassis"].units | to_entries[] | select(.value["workload-status"].current == "active") | .key'); do
+      echo "Restarting $unit via charm action..."
+      RC=$(juju-29 run-action -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --wait --unit "$unit" restart-services 2>&1)
+      if echo "$RC" | grep -q '"outcome": "Success"'; then
+        echo "RESTARTED $unit via action"
+      else
+        echo "Action failed on $unit, falling back to systemctl"
+        FAILED=1
+      fi
+    done
+    if [ "$FAILED" = "1" ]; then
+      exit 1
+    fi
+  register: ovn_restart
+  changed_when: "'RESTARTED' in ovn_restart.stdout"
+  ignore_errors: true
+  when: compute_containers | default([]) | length > 0
+
+- name: "STEP 9b: Fallback - systemctl restart ovn-controller"
+  shell: |
+    for container in {{ compute_containers | join(' ') }}; do
+      lxc exec "$container" --project {{ os_lxd_project }} -- bash -c '
+        systemctl restart ovn-controller 2>/dev/null && echo "RESTARTED ovn-controller in $HOSTNAME" || echo "SKIP: ovn-controller not present in $HOSTNAME"
+      ' 2>/dev/null || true
+    done
+  register: ovn_restart_fallback
+  changed_when: "'RESTARTED' in ovn_restart_fallback.stdout"
+  when:
+    - compute_containers | default([]) | length > 0
+    - ovn_restart is failed
+
+- name: "STEP 9b: Restart nova-compute and libvirtd on compute containers"
+  shell: |
+    for container in {{ compute_containers | join(' ') }}; do
+      lxc exec "$container" --project {{ os_lxd_project }} -- bash -c '
+        systemctl restart libvirtd nova-compute 2>/dev/null && echo "RESTARTED nova-compute+libvirtd in $HOSTNAME" || echo "SKIP: services not present in $HOSTNAME"
+      ' 2>/dev/null || true
+    done
+  register: nova_restart
+  changed_when: "'RESTARTED' in nova_restart.stdout"
+  when: compute_containers | default([]) | length > 0
+
+- name: "STEP 10: Check and apply neutron metadata agent patch"
+  shell: |
+    for container in {{ compute_containers | join(' ') }}; do
+      if ! lxc exec "$container" --project {{ os_lxd_project }} -- \
+        test -f /usr/lib/python3/dist-packages/neutron/agent/ovn/metadata/agent.py 2>/dev/null; then
+        echo "$container: SKIP (no metadata agent)"
+        continue
+      fi
+      PATCHED=$(lxc exec "$container" --project {{ os_lxd_project }} -- \
+        grep -c "subprocess.run.*ip.*netns.*exec" /usr/lib/python3/dist-packages/neutron/agent/ovn/metadata/agent.py 2>/dev/null || echo "0")
+      if [ "$PATCHED" -gt 0 ]; then
+        echo "$container: OK (already patched)"
+      else
+        echo "$container: NEEDS_PATCH (run openstack-lxd-services to apply)"
+      fi
+    done
+  register: metadata_patch_result
+  changed_when: false
+  when: compute_containers | default([]) | length > 0
+
+- name: "STEP 10: Restart neutron-ovn-metadata-agent on compute containers"
+  shell: |
+    for container in {{ compute_containers | join(' ') }}; do
+      lxc exec "$container" --project {{ os_lxd_project }} -- bash -c '
+        if systemctl list-unit-files neutron-ovn-metadata-agent.service >/dev/null 2>&1; then
+          systemctl reset-failed neutron-ovn-metadata-agent 2>/dev/null || true
+          systemctl restart neutron-ovn-metadata-agent 2>/dev/null
+          echo "RESTARTED neutron-ovn-metadata-agent in $HOSTNAME"
+        else
+          echo "SKIP: neutron-ovn-metadata-agent not present in $HOSTNAME"
+        fi
+      ' 2>/dev/null || true
+    done
+  register: metadata_agent_restart
+  changed_when: "'RESTARTED' in metadata_agent_restart.stdout"
+  when: compute_containers | default([]) | length > 0
+
+- name: "STEP 11: Check Ceph OSD status"
+  shell: |
+    for container in {{ compute_containers | join(' ') }}; do
+      STATUS=$(lxc exec "$container" --project {{ os_lxd_project }} -- \
+        bash -c 'systemctl is-active ceph-osd@* 2>/dev/null || echo "inactive"') 2>/dev/null
+      echo "$container: $STATUS"
+    done
+  register: osd_status
+  changed_when: false
+  when: compute_containers | default([]) | length > 0
+
+- name: "STEP 11: Remove eth4 secondary IP from OSD containers (routing bug)"
+  shell: |
+    for container in {{ compute_containers | join(' ') }}; do
+      ETH4_IP=$(lxc exec "$container" --project {{ os_lxd_project }} -- \
+        bash -c 'ip -4 -o addr show eth4 2>/dev/null | grep "192.168.122" | awk "{print \$4}" | cut -d/ -f1') 2>/dev/null
+      if [ -z "$ETH4_IP" ]; then
+        echo "SKIP $container: no eth4 122.x IP"
+        continue
+      fi
+      ETH0_IP=$(lxc exec "$container" --project {{ os_lxd_project }} -- \
+        bash -c 'ip -4 -o addr show eth0 2>/dev/null | grep "192.168.122" | awk "{print \$4}" | cut -d/ -f1') 2>/dev/null
+      if [ "$ETH4_IP" = "$ETH0_IP" ]; then
+        echo "SKIP $container: eth4 IP same as eth0"
+        continue
+      fi
+      lxc exec "$container" --project {{ os_lxd_project }} -- \
+        bash -c "ip addr del $ETH4_IP/24 dev eth4 2>/dev/null && echo 'DELETED eth4 $ETH4_IP on $container' || echo 'DEL_FAILED'" 2>/dev/null
+      lxc exec "$container" --project {{ os_lxd_project }} -- \
+        bash -c "ip route del 192.168.122.0/24 dev eth4 proto kernel 2>/dev/null || true" 2>/dev/null
+    done
+  register: osd_eth4_cleanup
+  changed_when: "'DELETED' in osd_eth4_cleanup.stdout"
+  when: compute_containers | default([]) | length > 0
+
+- name: "STEP 11: Fix cluster_addr to use internal network (192.168.165.x)"
+  shell: |
+    for container in {{ compute_containers | join(' ') }}; do
+      lxc exec "$container" --project {{ os_lxd_project }} -- bash -c '
+        CURRENT_CLUSTER_ADDR=$(grep "^cluster addr" /etc/ceph/ceph.conf 2>/dev/null | awk -F"= " "{print \$2}" | tr -d " ")
+        INTERNAL_IP=$(ip -4 -o addr show eth1 2>/dev/null | awk "{print \$4}" | cut -d/ -f1)
+        if [ -z "$INTERNAL_IP" ]; then
+          echo "SKIP $HOSTNAME: no eth1"
+          continue
+        fi
+        if [ "$CURRENT_CLUSTER_ADDR" = "$INTERNAL_IP" ]; then
+          echo "OK $HOSTNAME: cluster_addr=$INTERNAL_IP"
+        else
+          PUBLIC_IP=$(grep "^public addr" /etc/ceph/ceph.conf 2>/dev/null | awk -F"= " "{print \$2}" | tr -d " ")
+          if [ -n "$PUBLIC_IP" ]; then
+            sed -i "s|^cluster addr = $PUBLIC_IP|cluster addr = $INTERNAL_IP|" /etc/ceph/ceph.conf
+            echo "FIXED $HOSTNAME: cluster_addr $CURRENT_CLUSTER_ADDR -> $INTERNAL_IP"
+          else
+            echo "SKIP $HOSTNAME: no public addr in ceph.conf"
+          fi
+        fi
+      ' 2>/dev/null || true
+    done
+  register: osd_cluster_addr_fix
+  changed_when: "'FIXED' in osd_cluster_addr_fix.stdout"
+  when: compute_containers | default([]) | length > 0
+
+- name: "STEP 11: Restart Ceph OSDs after cluster_addr fix"
+  shell: |
+    for container in {{ compute_containers | join(' ') }}; do
+      lxc exec "$container" --project {{ os_lxd_project }} -- bash -c '
+        OSD_ID=$(ls /var/lib/ceph/osd/ceph-*/whoami 2>/dev/null | head -1 | xargs cat 2>/dev/null)
+        if [ -n "$OSD_ID" ]; then
+          systemctl restart ceph-osd@$OSD_ID 2>/dev/null
+          echo "RESTARTED OSD.$OSD_ID in $HOSTNAME"
+        fi
+      ' 2>/dev/null || true
+    done
+  register: osd_restart_after_addr_fix
+  changed_when: "'RESTARTED' in osd_restart_after_addr_fix.stdout"
+  when:
+    - osd_cluster_addr_fix is changed
+    - compute_containers | default([]) | length > 0
+
+- name: "STEP 11: Activate Ceph OSDs via charm action (osd-in)"
+  become: false
+  shell: |
+    ACTION_OK=1
+    for unit in $(juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} ceph-osd --format json 2>/dev/null | \
+      jq -r '.applications["ceph-osd"].units | to_entries[] | select(.value["workload-status"].current == "blocked") | .key'); do
+      echo "Running osd-in on $unit..."
+      RC=$(juju-29 run-action -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --wait --unit "$unit" osd-in 2>&1)
+      if echo "$RC" | grep -q '"outcome": "Success"'; then
+        echo "OSD-IN OK: $unit"
+      else
+        echo "OSD-IN failed on $unit: $RC"
+        ACTION_OK=0
+      fi
+    done
+    exit $((1 - ACTION_OK))
+  register: osd_activate
+  changed_when: "'OSD-IN OK' in osd_activate.stdout"
+  ignore_errors: true
+  when: compute_containers | default([]) | length > 0
+
+- name: "STEP 11: Fallback - activate Ceph OSDs via systemctl"
+  shell: |
+    for container in {{ compute_containers | join(' ') }}; do
+      lxc exec "$container" --project {{ os_lxd_project }} -- bash -c '
+        OSD_DIR=$(ls -d /var/lib/ceph/osd/ceph-* 2>/dev/null | head -1)
+        if [ -z "$OSD_DIR" ]; then
+          echo "SKIP: No OSD data directory in $HOSTNAME"
+        else
+          OSD_ID=$(cat "$OSD_DIR/whoami")
+          if systemctl is-active ceph-osd@$OSD_ID > /dev/null 2>&1; then
+            echo "OK: OSD.$OSD_ID already active in $HOSTNAME"
+          else
+            systemctl start ceph-osd@$OSD_ID 2>/dev/null
+            if systemctl is-active ceph-osd@$OSD_ID > /dev/null 2>&1; then
+              echo "ACTIVATED OSD.$OSD_ID in $HOSTNAME"
+            else
+              echo "FAILED: OSD.$OSD_ID in $HOSTNAME"
+            fi
+          fi
+        fi
+      ' 2>/dev/null || true
+    done
+  register: osd_activate_fallback
+  changed_when: "'ACTIVATED' in osd_activate_fallback.stdout"
+  when:
+    - compute_containers | default([]) | length > 0
+    - osd_activate is failed
+
+- name: "STEP 11: Wait for OSDs to settle before checking cluster"
+  pause:
+    seconds: 15
+  when: compute_containers | default([]) | length > 0
+
+- name: "STEP 11: Get ceph-mon container name for cluster status check"
+  become: false
+  shell: |
+    {{ juju_openstack_cmd }} status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} ceph-mon --format json 2>/dev/null | \
+      python3 -c "
+    import sys, json
+    d = json.load(sys.stdin)
+    units = d['applications']['ceph-mon']['units']
+    for u, info in units.items():
+        print(d['machines'][info['machine']]['hostname'])
+        break
+    "
+  register: ceph_mon_container
+  changed_when: false
+  ignore_errors: true
+  when: compute_containers | default([]) | length > 0
+
+- name: "STEP 11: Fix ceph-mon service start (store.db ownership corrupted to root after reboot)"
+  become: false
+  shell: |
+    C={{ ceph_mon_container.stdout | default('') }}
+    if [ -z "$C" ]; then
+      echo "SKIP: no ceph-mon container"
+      exit 0
+    fi
+    MON_DATA=$(lxc exec "$C" --project {{ os_lxd_project }} -- \
+      bash -c 'ls -d /var/lib/ceph/mon/ceph-* 2>/dev/null | head -1')
+    [ -z "$MON_DATA" ] && { echo "SKIP: no mon data dir"; exit 0; }
+    ROOT_FILES=$(lxc exec "$C" --project {{ os_lxd_project }} -- \
+      find "$MON_DATA/store.db" -maxdepth 1 -user root 2>/dev/null | head -20)
+    if [ -n "$ROOT_FILES" ]; then
+      echo "FOUND root-owned store.db files:"
+      echo "$ROOT_FILES"
+      lxc exec "$C" --project {{ os_lxd_project }} -- \
+        sudo chown -R ceph:ceph "$MON_DATA/store.db"
+      echo "FIXED: chowned $MON_DATA/store.db to ceph:ceph"
+    else
+      echo "OK: store.db ownership correct"
+    fi
+    lxc exec "$C" --project {{ os_lxd_project }} -- \
+      bash -c 'sudo systemctl reset-failed ceph-mon@$(hostname) 2>/dev/null || true'
+    lxc exec "$C" --project {{ os_lxd_project }} -- \
+      bash -c 'sudo systemctl is-active ceph-mon@$(hostname) >/dev/null 2>&1 || sudo systemctl start ceph-mon@$(hostname) || true'
+    sleep 3
+    lxc exec "$C" --project {{ os_lxd_project }} -- \
+      bash -c 'sudo systemctl is-active ceph-mon@$(hostname)'
+  register: ceph_mon_start_fix
+  changed_when: "'FOUND root-owned' in ceph_mon_start_fix.stdout or 'FIXED' in ceph_mon_start_fix.stdout"
+  when:
+    - compute_containers | default([]) | length > 0
+    - ceph_mon_container.stdout | default('') | length > 0
+
+- name: "STEP 11: Check Ceph cluster health via ceph-mon get-health charm action"
+  become: false
+  shell: |
+    HEALTH_JSON=$(juju-29 run-action -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} \
+      --wait --unit ceph-mon/0 get-health 2>&1)
+    if echo "$HEALTH_JSON" | jq -e '.results.health' > /dev/null 2>&1; then
+      echo "Health: $(echo "$HEALTH_JSON" | jq -r '.results.health')"
+      echo "PGs: $(echo "$HEALTH_JSON" | jq -r '.results["pg-state"] // "n/a"')"
+    else
+      echo "Health: action failed, falling back"
+      exit 1
+    fi
+  register: ceph_health_action
+  changed_when: false
+  ignore_errors: true
+  when: compute_containers | default([]) | length > 0
+
+- name: "STEP 11: Fallback - check Ceph cluster health via ceph CLI"
+  shell: |
+    if [ -z "{{ ceph_mon_container.stdout | default('') }}" ]; then
+      echo "SKIP: no ceph-mon container found"
+      exit 0
+    fi
+    lxc exec {{ ceph_mon_container.stdout }} --project {{ os_lxd_project }} -- sudo ceph -s 2>&1 | head -25
+    echo "---"
+    HEALTH=$(lxc exec {{ ceph_mon_container.stdout }} --project {{ os_lxd_project }} -- sudo ceph health 2>&1 | tail -1)
+    PG_SUMMARY=$(lxc exec {{ ceph_mon_container.stdout }} --project {{ os_lxd_project }} -- sudo ceph pg stat 2>&1 | tail -1)
+    echo "Health: $HEALTH"
+    echo "PGs: $PG_SUMMARY"
+  register: ceph_status_check
+  changed_when: false
+  ignore_errors: true
+  when:
+    - compute_containers | default([]) | length > 0
+    - ceph_health_action is failed
+
+- name: "STEP 11: Display Ceph cluster status"
+  debug:
+    msg: |
+      Ceph Status (action): {{ ceph_health_action.stdout_lines | default(['N/A']) | join(' | ') }}
+      Ceph Status (cli): {{ ceph_status_check.stdout_lines | default(['N/A']) | select('match', '^(Health|PGs|HEALTH_|active\\+clean|peering|down|osds?:)') | list | join(' / ') }}
+
+- name: "STEP 12: Check if iSCSI storage file exists"
+  stat:
+    path: /home/iscsi-storage-lxd-os.img
+  register: iscsi_storage_check
+
+- name: "STEP 12: Get cinder container name from Juju"
+  become: false
+  shell: |
+    juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} cinder --format json | \
+    python3 -c "import sys,json; d=json.load(sys.stdin); units=list(d['applications']['cinder']['units'].items()); u=units[0]; print(u[0], d['machines'][u[1]['machine']]['hostname'])"
+  register: iscsi_recovery_cinder_info
+  changed_when: false
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 12: Set cinder unit and container facts"
+  set_fact:
+    iscsi_recovery_unit: "{{ iscsi_recovery_cinder_info.stdout.split()[0] }}"
+    iscsi_recovery_container: "{{ iscsi_recovery_cinder_info.stdout.split()[1] }}"
+    iscsi_recovery_template_dir: "/var/lib/juju/agents/unit-{{ iscsi_recovery_cinder_info.stdout.split()[0] | replace('/', '-') }}/charm/templates"
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 12: Verify iSCSI loop device in cinder container"
+  shell: |
+    EXPECTED_FILE="/home/iscsi-storage-lxd-os.img"
+    CURRENT_DEV=$(lxc config device get {{ iscsi_recovery_container }} loop-storage source --project openstack 2>/dev/null || echo "none")
+    if [ "$CURRENT_DEV" = "none" ]; then
+      echo "SKIP: No loop-storage device configured"
+    elif [ ! -b "$CURRENT_DEV" ]; then
+      NEW_DEV=$(losetup -j "$EXPECTED_FILE" -O NAME --noheadings 2>/dev/null | tr -d ' ')
+      if [ -n "$NEW_DEV" ] && [ -b "$NEW_DEV" ]; then
+        lxc config device set {{ iscsi_recovery_container }} loop-storage source="$NEW_DEV" path="$NEW_DEV" --project openstack
+        echo "REATTACHED: $CURRENT_DEV -> $NEW_DEV"
+      else
+        echo "ERROR: No valid loop device for $EXPECTED_FILE"
+      fi
+    else
+      BACKING_FILE=$(losetup -j "$CURRENT_DEV" --noheadings -O BACK-FILE 2>/dev/null | tr -d ' ')
+      if [ -z "$BACKING_FILE" ] || [ "$BACKING_FILE" != "$EXPECTED_FILE" ]; then
+        NEW_DEV=$(losetup -j "$EXPECTED_FILE" -O NAME --noheadings 2>/dev/null | tr -d ' ')
+        if [ -n "$NEW_DEV" ] && [ -b "$NEW_DEV" ]; then
+          lxc config device set {{ iscsi_recovery_container }} loop-storage source="$NEW_DEV" path="$NEW_DEV" --project openstack
+          echo "FIXED: $CURRENT_DEV (backing=$BACKING_FILE) -> $NEW_DEV ($EXPECTED_FILE)"
+        else
+          echo "ERROR: No valid loop device for $EXPECTED_FILE"
+        fi
+      else
+        echo "OK: loop-storage device $CURRENT_DEV -> $BACKING_FILE"
+      fi
+    fi
+  register: iscsi_loop_reattach
+  changed_when: "'REATTACHED' in iscsi_loop_reattach.stdout or 'FIXED' in iscsi_loop_reattach.stdout"
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 12: Restart cinder container if loop-storage source was changed"
+  shell: "lxc restart {{ iscsi_recovery_container }} --project openstack"
+  when:
+    - iscsi_storage_check.stat.exists
+    - iscsi_loop_reattach is changed
+  register: iscsi_cinder_restart
+
+- name: "STEP 12: Wait for cinder container to be ready after restart"
+  shell: "lxc exec {{ iscsi_recovery_container }} --project openstack -- systemctl is-system-running --wait"
+  retries: 12
+  delay: 5
+  register: iscsi_cinder_ready
+  until: iscsi_cinder_ready.rc == 0
+  failed_when: false
+  when: iscsi_cinder_restart is changed
+
+- name: "STEP 12: Verify loop-storage inside cinder container after restart"
+  shell: |
+    lxc exec {{ iscsi_recovery_container }} --project openstack -- bash -c '
+      DEV=$(findmnt -n -o SOURCE /var/lib/cinder 2>/dev/null || lsblk -n -o NAME,MOUNTPOINT | awk "/cinder/ {print \$1}" | head -1)
+      BLKID=$(blkid /dev/loop20 2>/dev/null | grep -o "TYPE=\"[^\"]*\"" || true)
+      echo "loop20 TYPE: $BLKID"
+    '
+  register: iscsi_loop_verify
+  changed_when: false
+  when: iscsi_cinder_restart is changed
+
+- name: "STEP 12: Activate VG inside cinder container"
+  shell: |
+    lxc exec {{ iscsi_recovery_container }} --project openstack -- bash -c '
+      vgscan --mknodes 2>/dev/null
+      if vgchange -ay cinder-iscsi-lxd 2>/dev/null; then
+        echo "ACTIVATED VG cinder-iscsi-lxd"
+      else
+        echo "FAILED: could not activate VG cinder-iscsi-lxd"
+      fi'
+  register: iscsi_vg_activate
+  changed_when: "'ACTIVATED' in iscsi_vg_activate.stdout"
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 12: Detect OpenStack release for charm template path"
+  shell: |
+    lxc exec {{ iscsi_recovery_container }} --project openstack -- \
+      dpkg -l python3-cinder 2>/dev/null | awk '/^ii/ {print $3}' | sed 's/^[0-9]*://' | cut -d. -f1
+  register: iscsi_recovery_cinder_ver
+  changed_when: false
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 12: Set charm template path"
+  set_fact:
+    iscsi_recovery_release: >-
+      {%- set ver = iscsi_recovery_cinder_ver.stdout | int -%}
+      {%- if ver >= 18 -%}yoga
+      {%- elif ver >= 17 -%}xena
+      {%- elif ver >= 16 -%}ussuri
+      {%- elif ver >= 15 -%}train
+      {%- else -%}queens
+      {%- endif -%}
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 12: Get cinder container portal IPs"
+  shell: |
+    lxc exec {{ iscsi_recovery_container }} --project openstack -- \
+      ip -4 -o addr show | awk '/eth[0-9]/ {split($4,a,"/"); print $2, a[1]}'
+  register: iscsi_recovery_ips
+  changed_when: false
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 12: Set portal IP facts"
+  set_fact:
+    iscsi_recovery_portal_ip_1: "{{ iscsi_recovery_ips.stdout_lines | select('match', '^eth1') | first | split() | last }}"
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 12: Restore lvm-iscsi in backends template"
+  shell: |
+    lxc exec {{ iscsi_recovery_container }} --project openstack -- \
+      grep -q ',lvm-iscsi' {{ iscsi_recovery_template_dir }}/parts/backends || \
+    lxc exec {{ iscsi_recovery_container }} --project openstack -- \
+      sed -i 's/enabled_backends = {{ '{{' }} backends {{ '}}' }}/enabled_backends = {{ '{{' }} backends {{ '}}' }},lvm-iscsi/' \
+      {{ iscsi_recovery_template_dir }}/parts/backends
+  register: iscsi_backends_restore
+  changed_when: iscsi_backends_restore.rc == 0
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 12: Restore verify_glance_signatures in charm template"
+  shell: |
+    lxc exec {{ iscsi_recovery_container }} --project openstack -- \
+      grep -q 'verify_glance_signatures' {{ iscsi_recovery_template_dir }}/{{ iscsi_recovery_release }}/cinder.conf || \
+    lxc exec {{ iscsi_recovery_container }} --project openstack -- \
+      sed -i '/osapi_volume_listen = {{ '{{' }} bind_host {{ '}}' }}/a verify_glance_signatures = disabled' \
+      {{ iscsi_recovery_template_dir }}/{{ iscsi_recovery_release }}/cinder.conf
+  register: iscsi_verify_restore
+  changed_when: iscsi_verify_restore.rc == 0
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 12: Restore [lvm-iscsi] section in charm template"
+  shell: |
+    lxc exec {{ iscsi_recovery_container }} --project openstack -- \
+      grep -q '^\[lvm-iscsi\]' {{ iscsi_recovery_template_dir }}/{{ iscsi_recovery_release }}/cinder.conf || \
+    lxc exec {{ iscsi_recovery_container }} --project openstack -- bash -c '
+    cat >> {{ iscsi_recovery_template_dir }}/{{ iscsi_recovery_release }}/cinder.conf << EOF
+
+    [lvm-iscsi]
+    volume_driver = cinder.volume.drivers.lvm.LVMVolumeDriver
+    volume_group = cinder-iscsi-lxd
+    target_protocol = iscsi
+    target_helper = tgtadm
+    volume_backend_name = LVM_iSCSI
+    target_ip_address = {{ iscsi_recovery_portal_ip_1 }}
+    lvm_type = default
+    EOF'
+  register: iscsi_section_restore
+  changed_when: iscsi_section_restore.rc == 0
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 12: Re-trigger charm config-changed to re-render cinder.conf"
+  become: false
+  shell: >
+    juju-29 run -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }}
+    --unit {{ iscsi_recovery_unit }} "hooks/config-changed"
+  changed_when: false
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 12: Restart tgt service in cinder container"
+  shell: >
+    lxc exec {{ iscsi_recovery_container }} --project openstack --
+    systemctl restart tgt
+  changed_when: false
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 12: Restart cinder-volume to load lvm-iscsi backend"
+  shell: >
+    lxc exec {{ iscsi_recovery_container }} --project openstack --
+    systemctl restart cinder-volume
+  changed_when: false
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 12: Verify cinder.conf has lvm-iscsi backend"
+  shell: |
+    lxc exec {{ iscsi_recovery_container }} --project openstack -- \
+      grep -q 'enabled_backends.*lvm-iscsi' /etc/cinder/cinder.conf
+  retries: 3
+  delay: 5
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 12: Verify lvm-iscsi backend initialized (no 'uninitialized' warning)"
+  shell: |
+    lxc exec {{ iscsi_recovery_container }} --project openstack -- bash -c '
+      for i in $(seq 1 6); do
+        if ! journalctl -u cinder-volume --since "-2 minutes" --no-pager 2>/dev/null | grep -q "is uninitialized"; then
+          if cinder-manage service list 2>/dev/null | grep -q lvm-iscsi; then
+            echo "INITIALIZED"
+            exit 0
+          fi
+        fi
+        sleep 5
+      done
+      echo "FAILED: lvm-iscsi backend not initialized"
+      journalctl -u cinder-volume --since "-2 minutes" --no-pager 2>/dev/null | tail -20
+      exit 1
+    '
+  register: iscsi_backend_check
+  changed_when: false
+  failed_when: false
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 12: Show lvm-iscsi backend status"
+  debug:
+    msg: "lvm-iscsi backend: {{ iscsi_backend_check.stdout }}"
+  when: iscsi_storage_check.stat.exists
+
+- name: "STEP 13: Get Juju status summary"
+  become: false
+  shell: |
+    juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --format json 2>/dev/null | \
+      jq -r '
+        .applications | to_entries[] |
+        "\(.key): \(.value["application-status"].current // "unknown")"
+      ' | sort
+  register: juju_app_status
+  changed_when: false
+  ignore_errors: true
+
+- name: "STEP 13: Test OpenStack API access"
+  shell: |
+    bash -c 'source {{ project_dir }}/credentials/admin-openrc-lxd-openstack.sh 2>/dev/null && \
+    openstack token issue -f value -c id 2>/dev/null | head -c 20'
+  register: os_token
+  changed_when: false
+  ignore_errors: true
+
+- name: "STEP 13: List hypervisors"
+  shell: |
+    bash -c 'source {{ project_dir }}/credentials/admin-openrc-lxd-openstack.sh 2>/dev/null && \
+    openstack hypervisor list -f value -c "Hypervisor Hostname" -c State 2>/dev/null'
+  register: hypervisor_list
+  changed_when: false
+  ignore_errors: true
+
+- name: "STEP 13b: Run disposable-VM end-to-end verification"
+  include_tasks: smoke-test.yml
+  vars:
+    recovery_smoke_userdata_file: "/tmp/openstack-recovery-smoke-user-data"
+- name: "STEP 14: Find units in error state"
+  become: false
+  shell: |
+    juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --format json 2>/dev/null | \
+      jq -r '.applications[].units // {} | to_entries[] | select(.value["workload-status"].current == "error" or .value["juju-status"].current == "error") | .key'
+  register: error_units
+  changed_when: false
+  ignore_errors: true
+
+- name: "STEP 14: Resolve error units"
+  become: false
+  shell: |
+    for unit in {{ error_units.stdout_lines | join(' ') }}; do
+      echo "Resolving $unit..."
+      juju-29 resolved -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} "$unit" --no-retry 2>/dev/null || true
+    done
+  when: error_units.stdout_lines | default([]) | length > 0
+  register: resolve_result
+  changed_when: true
+
+- name: "STEP 15: Check if LMA model exists"
+  become: false
+  shell: juju-29 models -m {{ os_lxd_juju_controller }} --format json 2>/dev/null | jq -r '.models[].name' | grep -qx lma && echo "1" || echo "0"
+  register: lma_exists
+  changed_when: false
+  ignore_errors: true
+
+- name: "STEP 15: Get Nagios container name"
+  become: false
+  shell: |
+    juju-29 status -m {{ os_lxd_juju_controller }}:lma nagios --format json 2>/dev/null | \
+      jq -r '.machines | to_entries[0].value.hostname'
+  register: nagios_container
+  changed_when: false
+  when: lma_exists.stdout | default('0') == '1'
+  ignore_errors: true
+
+- name: "STEP 15: Fix Nagios container eth1 default route"
+  shell: |
+    lxc exec {{ nagios_container.stdout }} --project {{ os_lxd_project }} -- bash -c '
+      if ip route show default | grep -q eth1; then
+        ip route del default dev eth1 2>/dev/null || true
+        echo "FIXED: removed eth1 default route"
+      else
+        echo "OK: no eth1 default route"
+      fi'
+  register: nagios_route_fix
+  changed_when: "'FIXED' in nagios_route_fix.stdout"
+  when:
+    - lma_exists.stdout | default('0') == '1'
+    - nagios_container.stdout is defined
+    - nagios_container.stdout != ""
+  ignore_errors: true
+
+- name: "STEP 16: Get list of NRPE units"
+  become: false
+  shell: |
+    {{ juju_openstack_cmd }} status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --format json 2>/dev/null | \
+      python3 -c "
+    import json, sys
+    data = json.load(sys.stdin)
+    for app, info in data.get('applications', {}).items():
+      for unit, uinfo in info.get('units', {}).items():
+        for sub, sinfo in uinfo.get('subordinates', {}).items():
+          if sub.startswith('nrpe/'):
+            print(sub)
+    "
+  register: nrpe_units
+  changed_when: false
+  ignore_errors: true
+
+- name: "STEP 16: Run ack-reboot on all NRPE units"
+  become: false
+  shell: |
+    {{ juju_openstack_cmd }} run-action -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --wait {{ item }} ack-reboot 2>&1
+  loop: "{{ nrpe_units.stdout_lines | default([]) }}"
+  register: ack_reboot_results
+  changed_when: true
+  ignore_errors: true
+  when: nrpe_units.stdout_lines | default([]) | length > 0
+
+- name: Display recovery summary
+  debug:
+    msg: |
+      ========================================
+      OpenStack on LXD Recovery Completed!
+      ========================================
+
+      Compute Containers: {{ compute_containers | default([]) | join(', ') }}
+
+      Recovery Steps Performed:
+        1. Kernel modules loaded + CPU governor set to performance
+        2. OSD loopback: {{ loopback_setup.stdout_lines | default(['N/A']) | join(', ') }}
+       2b. Snap apparmor: {{ apparmor_fix.stdout | default('Skipped') | regex_replace('\n', ', ') }}
+        3. Containers started: {{ start_result.stdout_lines | default(['None']) | length }} operations
+        4. OSD reattach: {{ osd_reattach.stdout | default('Skipped') | regex_replace('\n', ', ') }}
+        5. LXCFS fix: {{ 'Applied' if (lxcfs_fix.stdout | default('')) is search('Fixed') else 'Not needed' }}
+        6. Static IPs: {{ static_ip_check.stdout | default('Unknown') }}
+        7. Vault: {{ 'Unsealed' if (vault_sealed.stdout | default('true')) == 'false' else ('Just unsealed' if vault_unseal is changed else 'Sealed/Unavailable') }}
+        8. MySQL cluster: {{ mysql_cluster_health.stdout | default('Unknown') }} {{ '(rebooted+rejoined)' if mysql_reboot is changed else '' }}
+       9.0. eth4 NIC ensured: {{ eth4_ensure.stdout | default('Skipped') | regex_replace('\n', ', ') }}
+        9. br-ex IP migration: {{ 'Done' if (brex_migrate.stdout | default('')) is search('FIXED') else 'Not needed' }}
+       9b. OVN restart: {{ ovn_restart.stdout | default('Skipped') | regex_replace('\n', ', ') }}
+       10. Metadata patch: {{ metadata_patch_result.stdout | default('Skipped') | regex_replace('\n', ', ') }}
+       10b. Metadata agent restart: {{ metadata_agent_restart.stdout | default('Skipped') | regex_replace('\n', ', ') }}
+       11. Ceph OSD: {{ osd_activate.stdout | default('Skipped') | regex_replace('\n', ', ') }} {{ '(fallback)' if osd_activate_fallback is changed else '' }}
+       11b. Ceph cluster_addr fix: {{ osd_cluster_addr_fix.stdout | default('Skipped') | regex_replace('\n', ', ') }}
+       11c. Ceph health (action): {{ ceph_health_action.stdout_lines | default(['N/A']) | join(' | ') }}
+       11d. Ceph health (cli): {{ ceph_status_check.stdout_lines | default(['N/A']) | select('match', '^(Health|PGs|HEALTH_|active\\+clean|peering|down|osds?:)') | list | join(' / ') }}
+       12. iSCSI cinder-native: {{ 'Restored' if iscsi_storage_check.stat.exists | default(false) else 'N/A (no iSCSI storage)' }}
+       13-14. Service verification + error resolution
+       13b. End-to-end VM smoke test: {{ recovery_smoke_result | default('Not run') }}
+       15. LMA Nagios: {{ nagios_route_fix.stdout | default('Skipped') | regex_replace('\n', ', ') }}
+       16. NRPE ack-reboot: {{ ack_reboot_results.results | default([]) | length }} units acknowledged
+
+      Juju Application Status:
+      {{ juju_app_status.stdout | default('Unable to get status') }}
+
+      OpenStack API: {{ 'Working' if os_token.rc == 0 else 'Not accessible' }}
+
+      Hypervisors:
+      {{ hypervisor_list.stdout | default('Unable to list') }}
+
+      Error Units Resolved: {{ error_units.stdout_lines | default([]) | length }}
+
+      ========================================
+      Next Steps (if issues persist):
+        - Vault not unsealed: Check credentials/vault-unseal-lxd-openstack.json
+        - MySQL issues: juju-29 run-action --wait mysql-innodb-cluster/leader reboot-cluster-from-complete-outage
+        - Static IPs missing: Re-run openstack-lxd-containers role
+        - br-ex issues: Check OVN chassis bridge-interface-mappings
+        - Metadata patch needed: Re-run openstack-lxd-services role
+      ========================================

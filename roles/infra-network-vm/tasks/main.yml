@@ -1,0 +1,109 @@
+---
+- name: Get control VM IPs
+  shell: |
+    for vm in {{ control_vms | join(' ') }}; do
+      ip=$(lxc list $vm --project {{ lxd_project }} --format json 2>/dev/null | \
+           jq -r '[.[].state.network | to_entries[] | select(.key != "lo") | .value.addresses[] | select(.family=="inet" and (.address | startswith("192.168.165.")))] | .[0].address' 2>/dev/null)
+      echo "$vm:$ip"
+    done
+  register: control_vm_ips
+  changed_when: false
+
+- name: Get compute VM IPs
+  shell: |
+    for vm in {{ compute_vms | join(' ') }}; do
+      ip=$(lxc list $vm --project {{ lxd_project }} --format json 2>/dev/null | \
+           jq -r '[.[].state.network | to_entries[] | select(.key != "lo") | .value.addresses[] | select(.family=="inet" and (.address | startswith("192.168.165.")))] | .[0].address' 2>/dev/null)
+      echo "$vm:$ip"
+    done
+  register: compute_vm_ips
+  changed_when: false
+
+- name: Configure br-internet bridge on control VMs via netplan
+  shell: |
+    vm_ip=$(echo "{{ item }}" | cut -d: -f2)
+    [ -z "$vm_ip" ] && exit 0
+    ssh -o StrictHostKeyChecking=no ubuntu@$vm_ip bash -s << 'SCRIPT'
+    MGMT_IFACE=$(ip -4 -o addr show | grep '192\.168\.165\.' | awk '{print $2}' | head -1)
+    VIRBR0_IFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -v "^lo$" | grep -v "^$MGMT_IFACE$" | grep -v "^br-" | head -1)
+    if [ -z "$VIRBR0_IFACE" ]; then
+      echo "ERROR: Could not find virbr0 interface on $(hostname)"
+      exit 1
+    fi
+    echo "Management NIC: $MGMT_IFACE, virbr0 NIC: $VIRBR0_IFACE"
+    sudo tee /etc/netplan/60-br-internet.yaml << EOF
+    network:
+      version: 2
+      ethernets:
+        $VIRBR0_IFACE:
+          dhcp4: false
+      bridges:
+        br-internet:
+          interfaces: [$VIRBR0_IFACE]
+          dhcp4: true
+          parameters:
+            stp: false
+            forward-delay: 0
+    EOF
+    sudo chmod 600 /etc/netplan/60-br-internet.yaml
+    sudo netplan apply 2>/dev/null || true
+    sleep 5
+    echo "br-internet configured on $(hostname) using $VIRBR0_IFACE"
+    ip addr show br-internet 2>/dev/null | grep "inet " || echo "Waiting for DHCP..."
+    SCRIPT
+  loop: "{{ control_vm_ips.stdout_lines }}"
+  changed_when: true
+  ignore_errors: true
+
+- name: Configure virbr0 NIC on compute VMs via netplan
+  shell: |
+    vm_ip=$(echo "{{ item }}" | cut -d: -f2)
+    [ -z "$vm_ip" ] && exit 0
+    ssh -o StrictHostKeyChecking=no ubuntu@$vm_ip bash -s << 'SCRIPT'
+    MGMT_IFACE=$(ip -4 -o addr show | grep '192\.168\.165\.' | awk '{print $2}' | head -1)
+    VIRBR0_IFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -v "^lo$" | grep -v "^$MGMT_IFACE$" | grep -v "^br-" | head -1)
+    if [ -z "$VIRBR0_IFACE" ]; then
+      echo "ERROR: Could not find virbr0 interface on $(hostname)"
+      exit 1
+    fi
+    echo "Management NIC: $MGMT_IFACE, virbr0 NIC: $VIRBR0_IFACE"
+    sudo tee /etc/netplan/60-virbr0-nic.yaml << EOF
+    network:
+      version: 2
+      ethernets:
+        $VIRBR0_IFACE:
+          dhcp4: true
+          dhcp4-overrides:
+            use-routes: false
+          routes:
+            - to: default
+              via: 192.168.122.1
+              metric: 100
+    EOF
+    sudo chmod 600 /etc/netplan/60-virbr0-nic.yaml
+    sudo netplan apply 2>/dev/null || true
+    sleep 3
+    echo "virbr0 NIC ($VIRBR0_IFACE) configured on $(hostname)"
+    ip addr show $VIRBR0_IFACE 2>/dev/null | grep "inet " || echo "Waiting for DHCP..."
+    SCRIPT
+  loop: "{{ compute_vm_ips.stdout_lines }}"
+  changed_when: true
+  ignore_errors: true
+
+- name: Verify internet connectivity from VMs
+  shell: |
+    for line in {{ (control_vm_ips.stdout_lines + compute_vm_ips.stdout_lines) | join(' ') }}; do
+      vm=$(echo "$line" | cut -d: -f1)
+      ip=$(echo "$line" | cut -d: -f2)
+      [ -z "$ip" ] && continue
+      result=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@$ip "ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1 && echo OK || echo FAIL" 2>/dev/null)
+      echo "$vm ($ip): $result"
+    done
+  register: connectivity_check
+  changed_when: false
+  ignore_errors: true
+
+- name: Display VM connectivity status
+  debug:
+    msg: "{{ connectivity_check.stdout }}"
+

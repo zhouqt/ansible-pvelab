@@ -1,0 +1,14 @@
+[Unit]
+Description=Setup loopback device for Ceph OSD
+DefaultDependencies=no
+After=local-fs.target
+Before=lvm2-activation.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c 'losetup -j {{ osd_storage_file }} --noheadings | grep -q . || losetup --find --show {{ osd_storage_file }}'
+ExecStop=/bin/bash -c 'losetup -d $(losetup -j {{ osd_storage_file }} -O NAME --noheadings) 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target

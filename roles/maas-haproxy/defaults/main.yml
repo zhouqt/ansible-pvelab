@@ -1,0 +1,9 @@
+---
+haproxy_config_path: /etc/haproxy/haproxy.cfg
+haproxy_mode: "http"
+haproxy_connect_timeout: "5000ms"
+haproxy_client_timeout: "50000ms"
+haproxy_server_timeout: "900s"
+haproxy_retries: 3
+haproxy_balance_algorithm: "source"
+haproxy_hash_type: "consistent"

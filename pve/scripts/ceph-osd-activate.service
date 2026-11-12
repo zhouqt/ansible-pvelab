@@ -1,0 +1,12 @@
+[Unit]
+Description=Activate Ceph OSDs (LVM in-container node fixup)
+After=local-fs.target network.target
+ConditionPathExists=/dev/osd-block
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ceph-osd-boot-activate.sh
+
+[Install]
+WantedBy=multi-user.target

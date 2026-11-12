@@ -1,0 +1,17 @@
+---
+- name: Enable IP forwarding
+  sysctl:
+    name: net.ipv4.ip_forward
+    value: 1
+    state: present
+    reload: yes
+
+- name: Ensure forwarding rules for virbr0 traffic
+  shell: |
+    iptables -C FORWARD -s 192.168.122.0/24 -j ACCEPT 2>/dev/null || \
+    iptables -I FORWARD 1 -s 192.168.122.0/24 -j ACCEPT
+
+    iptables -C FORWARD -d 192.168.122.0/24 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+    iptables -I FORWARD 1 -d 192.168.122.0/24 -m state --state RELATED,ESTABLISHED -j ACCEPT
+  changed_when: false
+

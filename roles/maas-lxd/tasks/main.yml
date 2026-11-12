@@ -1,0 +1,413 @@
+---
+
+- name: Check LXD socket exists
+  stat:
+    path: /var/snap/lxd/common/lxd/unix.socket
+  register: lxd_socket
+  tags: lxd
+
+- name: Fail if LXD socket not found
+  fail:
+    msg: "LXD socket not found at /var/snap/lxd/common/lxd/unix.socket"
+  when: not lxd_socket.stat.exists
+  tags: lxd
+
+- name: Check if maas-ha project exists
+  uri:
+    url: "http://localhost/1.0/projects/maas-ha"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: GET
+    return_content: yes
+  register: project_check
+  failed_when: false
+  tags: lxd
+
+- name: Create maas-ha project if not exists
+  uri:
+    url: "http://localhost/1.0/projects"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: POST
+    body:
+      name: "{{ lxd_project_name }}"
+      description: "{{ lxd_project_description }}"
+    body_format: json
+    status_code: [201, 400, 409]
+  register: project_create
+  when: project_check.status != 200
+  tags: lxd
+
+- name: Check for Ubuntu {{ lxd_image_alias }} image in project
+  uri:
+    url: "http://localhost/1.0/images?project={{ lxd_project_name }}&recursion=1"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: GET
+    return_content: yes
+  register: images_check
+  tags: lxd
+
+- name: Check if matching image exists in project
+  set_fact:
+    matching_image_exists: "{{ images_check.json.metadata | selectattr('properties.release', 'defined') | selectattr('properties.release', 'equalto', lxd_image_alias) | list | length > 0 }}"
+  tags: lxd
+
+- name: Set image fingerprint from existing matching image
+  set_fact:
+    lxd_image_fingerprint: "{{ (images_check.json.metadata | selectattr('properties.release', 'defined') | selectattr('properties.release', 'equalto', lxd_image_alias) | first).fingerprint }}"
+  when: matching_image_exists | bool
+  tags: lxd
+
+- name: Copy Ubuntu {{ lxd_image_alias }} image from ubuntu remote to project
+  uri:
+    url: "http://localhost/1.0/images?project={{ lxd_project_name }}"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: POST
+    body:
+      source:
+        type: image
+        mode: pull
+        server: https://cloud-images.ubuntu.com/releases
+        protocol: simplestreams
+        alias: "{{ lxd_image_alias }}"
+      auto_update: true
+    body_format: json
+    status_code: [202]
+  register: image_copy
+  when: not (matching_image_exists | bool)
+  tags: lxd
+
+- name: Wait for image copy to complete
+  uri:
+    url: "http://localhost{{ image_copy.json.operation }}"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: GET
+    return_content: yes
+  register: image_copy_status
+  until: image_copy_status.json.status == "Success" or image_copy_status.json.error_code == 404
+  retries: 60
+  delay: 5
+  when: image_copy.json.operation is defined
+  failed_when: image_copy_status.json.status != "Success" and image_copy_status.json.error_code != 404
+  tags: lxd
+
+- name: Get image fingerprint from project after copy
+  uri:
+    url: "http://localhost/1.0/images?project={{ lxd_project_name }}&recursion=1"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: GET
+    return_content: yes
+  register: images_after
+  when: not (matching_image_exists | bool)
+  tags: lxd
+
+- name: Set image fingerprint from newly copied image
+  set_fact:
+    lxd_image_fingerprint: "{{ (images_after.json.metadata | selectattr('properties.release', 'defined') | selectattr('properties.release', 'equalto', lxd_image_alias) | first).fingerprint }}"
+  when: not (matching_image_exists | bool) and images_after.json.metadata | length > 0
+  tags: lxd
+
+- name: Create containers with multiple network interfaces
+  uri:
+    url: "http://localhost/1.0/instances?project={{ lxd_project_name }}"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: POST
+    body:
+      name: "{{ item.name }}"
+      source:
+        type: image
+        fingerprint: "{{ lxd_image_fingerprint }}"
+      config:
+        boot.autostart: "true"
+        limits.cpu: "2"
+        limits.memory: "2GB"
+        "cloud-init.network-config": |
+          network:
+            version: 2
+            ethernets:
+              eth0:
+                addresses:
+                  - {{ item.ips.virbr0 }}/24
+                routes:
+                  - to: default
+                    via: {{ lxd_gateway }}
+                nameservers:
+                  addresses: {{ lxd_dns_servers }}
+              eth1:
+                addresses:
+                  - {{ item.ips.virbr1 }}/24
+              eth2:
+                addresses:
+                  - {{ item.ips.virbr2 }}/24
+              eth3:
+                addresses:
+                  - {{ item.ips.virbr3 }}/24
+              eth4:
+                addresses:
+                  - {{ item.ips.virbr4 }}/24
+      devices:
+        eth0:
+          type: nic
+          nictype: bridged
+          parent: "{{ lxd_networks[0].parent }}"
+        eth1:
+          type: nic
+          nictype: bridged
+          parent: "{{ lxd_networks[1].parent }}"
+        eth2:
+          type: nic
+          nictype: bridged
+          parent: "{{ lxd_networks[2].parent }}"
+        eth3:
+          type: nic
+          nictype: bridged
+          parent: "{{ lxd_networks[3].parent }}"
+        eth4:
+          type: nic
+          nictype: bridged
+          parent: "{{ lxd_networks[4].parent }}"
+        root:
+          type: disk
+          path: /
+          pool: "{{ lxd_storage_pool }}"
+    body_format: json
+    status_code: [202, 400]
+  loop: "{{ lxd_containers }}"
+  register: container_create
+  tags: lxd
+
+- name: Wait for container creation operations to complete
+  uri:
+    url: "http://localhost{{ item.json.operation }}"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: GET
+    return_content: yes
+  loop: "{{ container_create.results }}"
+  register: creation_status
+  until: creation_status.json.status == "Success" or creation_status.json.error_code == 404
+  retries: 30
+  delay: 5
+  failed_when: creation_status.json.status != "Success" and creation_status.json.error_code != 404
+  when: item.json.operation is defined
+  tags: lxd
+
+- name: Start containers
+  uri:
+    url: "http://localhost/1.0/instances/{{ item.name }}/state?project={{ lxd_project_name }}"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: PUT
+    body:
+      action: start
+      timeout: 60
+    body_format: json
+    status_code: [202, 400]
+  loop: "{{ lxd_containers }}"
+  register: container_start
+  tags: lxd
+
+- name: Wait for containers to be running
+  uri:
+    url: "http://localhost/1.0/instances/{{ item.name }}?project={{ lxd_project_name }}"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: GET
+    return_content: yes
+  loop: "{{ lxd_containers }}"
+  register: container_status
+  until: container_status.json.metadata.status == "Running"
+  retries: 30
+  delay: 5
+  tags: lxd
+
+- name: Wait for containers to get IP addresses on eth0
+  uri:
+    url: "http://localhost/1.0/instances/{{ item.name }}/state?project={{ lxd_project_name }}"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: GET
+    return_content: yes
+  loop: "{{ lxd_containers }}"
+  register: container_ips
+  until: >-
+    container_ips.json.metadata.network is defined and
+    container_ips.json.metadata.network.eth0 is defined and
+    (container_ips.json.metadata.network.eth0.addresses | selectattr('family', 'equalto', 'inet') | list | length > 0)
+  retries: 30
+  delay: 10
+  tags: lxd
+
+- name: Display container IPs
+  debug:
+    msg: "{{ item.item.name }}: {{ (item.json.metadata.network.eth0.addresses | selectattr('family', 'equalto', 'inet') | first).address }}"
+  loop: "{{ container_ips.results }}"
+  tags: lxd
+
+- name: Set hostname in containers
+  uri:
+    url: "http://localhost/1.0/instances/{{ item.name }}/exec?project={{ lxd_project_name }}"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: POST
+    body:
+      command: ["hostnamectl", "set-hostname", "{{ item.name }}"]
+      environment: {}
+      wait-for-websocket: false
+      record-output: true
+    body_format: json
+    status_code: [202]
+  loop: "{{ lxd_containers }}"
+  tags: lxd
+
+- name: List all containers
+  uri:
+    url: "http://localhost/1.0/instances?project={{ lxd_project_name }}&recursion=1"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: GET
+    return_content: yes
+  register: final_list
+  tags: lxd
+
+- name: Show running containers
+  debug:
+    msg: "Running containers: {{ final_list.json.metadata | map(attribute='name') | list }}"
+  tags: lxd
+
+- name: Configure apt repositories in containers
+  uri:
+    url: "http://localhost/1.0/instances/{{ item.name }}/exec?project={{ lxd_project_name }}"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: POST
+    body:
+      command:
+        - bash
+        - -c
+        - |
+          sed -i 's|http://archive.ubuntu.com/ubuntu|http://{{ apt_mirror }}/ubuntu|g' /etc/apt/sources.list
+          sed -i 's|http://security.ubuntu.com/ubuntu|http://{{ apt_mirror }}/ubuntu|g' /etc/apt/sources.list
+          sed -i 's|http://archive.ubuntu.com/ubuntu|http://{{ apt_mirror }}/ubuntu|g' /etc/apt/sources.list.d/*.list 2>/dev/null || true
+          sed -i 's|http://security.ubuntu.com/ubuntu|http://{{ apt_mirror }}/ubuntu|g' /etc/apt/sources.list.d/*.list 2>/dev/null || true
+          apt update
+      environment: {}
+      wait-for-websocket: false
+      record-output: true
+    body_format: json
+    status_code: [202]
+  loop: "{{ lxd_containers }}"
+  tags: lxd
+
+- name: Wait for apt update to complete
+  pause:
+    seconds: 10
+  tags: lxd
+
+- name: Wait for cloud-init to complete
+  uri:
+    url: "http://localhost/1.0/instances/{{ item.name }}/exec?project={{ lxd_project_name }}"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: POST
+    body:
+      command: ["bash", "-c", "cloud-init status --wait 2>/dev/null || true"]
+      environment: {}
+      wait-for-websocket: false
+      record-output: true
+    body_format: json
+    status_code: [202]
+  loop: "{{ lxd_containers }}"
+  tags: lxd
+
+- name: Wait for cloud-init to finish
+  pause:
+    seconds: 30
+  tags: lxd
+
+- name: Create .ssh directory in containers
+  uri:
+    url: "http://localhost/1.0/instances/{{ item.name }}/exec?project={{ lxd_project_name }}"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: POST
+    body:
+      command: ["bash", "-c", "mkdir -p /root/.ssh && chmod 700 /root/.ssh"]
+      environment: {}
+      wait-for-websocket: false
+      record-output: true
+    body_format: json
+    status_code: [202]
+  loop: "{{ lxd_containers }}"
+  tags: lxd
+
+- name: Get local SSH public key
+  set_fact:
+    local_ssh_pubkey: "{{ lookup('file', lookup('env', 'HOME') + '/.ssh/id_rsa.pub') }}"
+  when: lookup('file', lookup('env', 'HOME') + '/.ssh/id_rsa.pub', errors='ignore') | default('')
+  tags: lxd
+
+- name: Get local SSH public key (ed25519 fallback)
+  set_fact:
+    local_ssh_pubkey: "{{ lookup('file', lookup('env', 'HOME') + '/.ssh/id_ed25519.pub') }}"
+  when: local_ssh_pubkey is not defined and lookup('file', lookup('env', 'HOME') + '/.ssh/id_ed25519.pub', errors='ignore') | default('')
+  tags: lxd
+
+- name: Push SSH public key to containers
+  uri:
+    url: "http://localhost/1.0/instances/{{ item.name }}/files?project={{ lxd_project_name }}&path=/root/.ssh/authorized_keys"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: POST
+    body: "{{ local_ssh_pubkey }}"
+    body_format: raw
+    headers:
+      Content-Type: "application/octet-stream"
+    status_code: [200, 201]
+  loop: "{{ lxd_containers }}"
+  when: local_ssh_pubkey is defined
+  tags: lxd
+
+- name: Set authorized_keys permissions
+  uri:
+    url: "http://localhost/1.0/instances/{{ item.name }}/exec?project={{ lxd_project_name }}"
+    unix_socket: /var/snap/lxd/common/lxd/unix.socket
+    method: POST
+    body:
+      command: ["bash", "-c", "chmod 600 /root/.ssh/authorized_keys && chown root:root /root/.ssh/authorized_keys"]
+      environment: {}
+      wait-for-websocket: false
+      record-output: true
+    body_format: json
+    status_code: [202]
+  loop: "{{ lxd_containers }}"
+  tags: lxd
+
+- name: Clean old SSH known_hosts entries
+  shell: |
+    ssh-keygen -f "{{ lookup('env', 'HOME') }}/.ssh/known_hosts" -R "{{ item.ips.virbr0 }}" || true
+  loop: "{{ lxd_containers }}"
+  changed_when: false
+  tags: lxd
+
+- name: Clean old SSH known_hosts entries (hostnames)
+  shell: |
+    ssh-keygen -f "{{ lookup('env', 'HOME') }}/.ssh/known_hosts" -R "{{ item.name }}" || true
+  loop: "{{ lxd_containers }}"
+  changed_when: false
+  tags: lxd
+
+- name: Wait for SSH to be available
+  wait_for:
+    host: "{{ item.ips.virbr0 }}"
+    port: 22
+    delay: 5
+    timeout: 120
+  loop: "{{ lxd_containers }}"
+  delegate_to: localhost
+  tags: lxd
+
+- name: Scan and add new SSH host keys
+  local_action:
+    module: shell
+    cmd: "ssh-keyscan -H {{ item.ips.virbr0 }} >> {{ lookup('env', 'HOME') + '/.ssh/known_hosts' }} 2>/dev/null"
+  loop: "{{ lxd_containers }}"
+  changed_when: false
+  tags: lxd
+
+- name: Display container access info
+  debug:
+    msg:
+      - "=== LXD Containers Ready ==="
+      - "{% for c in lxd_containers %}{{ c.name }}: {{ c.ips.virbr0 }}{% if not loop.last %}, {% endif %}{% endfor %}"
+      - ""
+      - "Run: ansible-playbook -i inventory.yml site.yml"
+  tags: lxd

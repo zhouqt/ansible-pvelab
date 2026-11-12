@@ -1,0 +1,665 @@
+---
+
+- name: Load juju SSH public key for VM injection
+  ansible.builtin.set_fact:
+    nck_juju_ssh_pubkey: "{{ lookup('file', nck_juju_ssh_pubkey_path) }}"
+
+- name: Display nova-compute-kvm configuration
+  ansible.builtin.debug:
+    msg: |
+      App:        {{ nck_app }}
+      VM:         {{ nck_vm_name }} ({{ nck_vm_cpu }} CPU, {{ nck_vm_memory }})
+      Network:    enp5s0=br-ex-enslaved ({{ nck_eth0_bridge }}),
+                  enp6s0={{ nck_eth1_ip }} ({{ nck_eth1_bridge }}),
+                  br-ex={{ nck_br_ex_ip }}
+      Aggregate:  {{ nck_aggregate_name }} (AZ={{ nck_availability_zone }})
+      iSCSI:      {{ nck_sim_iscsi_target_ip }}:3260
+
+- name: Verify juju command is available
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} version"
+  register: nck_juju_version_check
+  become: false
+  changed_when: false
+  failed_when: nck_juju_version_check.rc != 0
+
+- name: Verify Juju controller is accessible
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} show-controller {{ juju_controller_name }}"
+  register: nck_controller_check
+  become: false
+  changed_when: false
+  failed_when: nck_controller_check.rc != 0
+
+- name: Verify OpenStack model exists
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} show-model {{ juju_controller_name }}:{{ juju_model_name }}"
+  register: nck_model_check
+  become: false
+  changed_when: false
+  failed_when: nck_model_check.rc != 0
+
+- name: Check required upstream services are active
+  ansible.builtin.shell: |
+    {{ juju_openstack_cmd }} status -m {{ juju_controller_name }}:{{ juju_model_name }} --format=json | \
+    python3 -c "
+    import sys, json
+    data = json.load(sys.stdin)
+    apps = data.get('applications', {})
+    required = ['mysql-innodb-cluster', 'rabbitmq-server', 'keystone', 'glance',
+                'nova-cloud-controller', 'cinder', 'ceph-mon', 'vault',
+                'neutron-api-plugin-ovn']
+    inactive = []
+    for r in required:
+        if r not in apps:
+            inactive.append(f'{r}=MISSING')
+        elif apps[r].get('application-status', {}).get('current') != 'active':
+            inactive.append(f'{r}={apps[r][\"application-status\"][\"current\"]}')
+    if inactive:
+        print('NOT_READY: ' + ', '.join(inactive))
+        sys.exit(1)
+    print('OK')
+    "
+  register: nck_prereq_check
+  become: false
+  changed_when: false
+
+- name: Fail if upstream services not ready
+  ansible.builtin.fail:
+    msg: |
+      Required upstream services not active: {{ nck_prereq_check.stdout }}
+      Run openstack-lxd-services role first.
+  when: nck_prereq_check.rc != 0
+
+- name: Check current nova-compute-kvm status
+  ansible.builtin.shell: |
+    {{ juju_openstack_cmd }} status -m {{ juju_controller_name }}:{{ juju_model_name }} {{ nck_app }} --format=json | \
+    python3 -c "
+    import sys, json
+    try:
+        d = json.load(sys.stdin)
+    except Exception:
+        print('NOT_DEPLOYED')
+        sys.exit(1)
+    apps = d.get('applications', {})
+    app = apps.get('{{ nck_app }}', {})
+    status = app.get('application-status', {}).get('current', '')
+    if status == 'active':
+        print('ACTIVE')
+        sys.exit(0)
+    if app:
+        print('PRESENT_BUT_' + status.upper())
+        sys.exit(0)
+    print('NOT_DEPLOYED')
+    sys.exit(1)
+    "
+  register: nck_status_check
+  become: false
+  changed_when: false
+  failed_when: false
+
+- name: Parse nova-compute-kvm current state
+  ansible.builtin.set_fact:
+    nck_already_deployed: "{{ nck_status_check.stdout == 'ACTIVE' }}"
+
+- name: Display idempotency decision
+  ansible.builtin.debug:
+    msg: >-
+      nova-compute-kvm already deployed and active: {{ nck_already_deployed }}.
+      {% if nck_already_deployed %}Skipping deploy/relate, going to verify.{% else %}Proceeding with fresh deploy.{% endif %}
+
+- name: Check if nova-compute-kvm already exists in LXD
+  ansible.builtin.command:
+    cmd: "lxc list {{ nck_vm_name }} --project {{ nck_lxd_project }} -f csv -c n"
+  register: nck_lxc_check
+  become: false
+  changed_when: false
+
+- name: Verify focal-vm LXD image alias exists
+  ansible.builtin.command:
+    cmd: "lxc image list {{ nck_lxd_image_alias }} -f csv -c l"
+  register: nck_image_check
+  become: false
+  changed_when: false
+  failed_when: nck_image_check.stdout.strip() == ""
+
+- name: Create nova-compute-kvm KVM VM
+  ansible.builtin.command:
+    cmd: >-
+      lxc init {{ nck_lxd_image_alias }} {{ nck_vm_name }} --vm
+      --project {{ nck_lxd_project }}
+      -c limits.cpu={{ nck_vm_cpu }}
+      -c limits.memory={{ nck_vm_memory }}
+  register: nck_lxc_init
+  become: false
+  changed_when: nck_lxc_init.rc == 0
+  failed_when: nck_lxc_init.rc != 0 and 'already exists' not in nck_lxc_init.stderr
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Override root disk size on nova-compute-kvm
+  ansible.builtin.command:
+    cmd: "lxc config device override {{ nck_vm_name }} root size={{ nck_vm_root_disk }} --project {{ nck_lxd_project }}"
+  register: nck_lxc_rootdisk
+  become: false
+  changed_when: nck_lxc_rootdisk.rc == 0
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Render cloud-init user-data for nova-compute-kvm
+  ansible.builtin.template:
+    src: user-data.j2
+    dest: "/tmp/{{ nck_vm_name }}-user-data"
+    mode: '0644'
+  become: false
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Inject cloud-init user-data into nova-compute-kvm
+  ansible.builtin.command:
+    cmd: "lxc config set {{ nck_vm_name }} user.user-data=\"$(cat /tmp/{{ nck_vm_name }}-user-data)\" --project {{ nck_lxd_project }}"
+  register: nck_lxc_userdata
+  become: false
+  changed_when: nck_lxc_userdata.rc == 0
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Add bridged NIC enp5s0 (lxdbr165, internal) to nova-compute-kvm
+  ansible.builtin.command:
+    cmd: >-
+      lxc config device add {{ nck_vm_name }} eth0 nic
+      nictype=bridged parent={{ nck_eth0_bridge }} name=eth0
+      --project {{ nck_lxd_project }}
+  register: nck_lxc_eth0
+  become: false
+  changed_when: nck_lxc_eth0.rc == 0
+  failed_when: nck_lxc_eth0.rc != 0 and 'already exists' not in nck_lxc_eth0.stderr
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Add bridged NIC enp6s0 (lxdbr122, public) to nova-compute-kvm
+  ansible.builtin.command:
+    cmd: >-
+      lxc config device add {{ nck_vm_name }} eth1 nic
+      nictype=bridged parent={{ nck_eth1_bridge }} name=eth1
+      --project {{ nck_lxd_project }}
+  register: nck_lxc_eth1
+  become: false
+  changed_when: nck_lxc_eth1.rc == 0
+  failed_when: nck_lxc_eth1.rc != 0 and 'already exists' not in nck_lxc_eth1.stderr
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Pass through /dev/kvm to nova-compute-kvm (for nested libvirt)
+  ansible.builtin.command:
+    cmd: >-
+      lxc config device add {{ nck_vm_name }} kvm unix-char
+      source=/dev/kvm path=/dev/kvm
+      --project {{ nck_lxd_project }}
+  register: nck_lxc_kvm
+  become: false
+  changed_when: nck_lxc_kvm.rc == 0
+  failed_when: nck_lxc_kvm.rc != 0 and 'already exists' not in nck_lxc_kvm.stderr
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Pass through /dev/vhost-net to nova-compute-kvm
+  ansible.builtin.command:
+    cmd: >-
+      lxc config device add {{ nck_vm_name }} vhost-net unix-char
+      source=/dev/vhost-net path=/dev/vhost-net
+      --project {{ nck_lxd_project }}
+  register: nck_lxc_vhost_net
+  become: false
+  changed_when: nck_lxc_vhost_net.rc == 0
+  failed_when: nck_lxc_vhost_net.rc != 0 and 'already exists' not in nck_lxc_vhost_net.stderr
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Start nova-compute-kvm
+  ansible.builtin.command:
+    cmd: "lxc start {{ nck_vm_name }} --project {{ nck_lxd_project }}"
+  register: nck_lxc_start
+  become: false
+  changed_when: nck_lxc_start.rc == 0
+  failed_when: nck_lxc_start.rc != 0
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Wait for nova-compute-kvm to be reachable on enp6s0 IP
+  ansible.builtin.command:
+    cmd: "ping -c 1 -W 2 {{ nck_eth1_ip }}"
+  register: nck_vm_ping
+  become: false
+  until: nck_vm_ping.rc == 0
+  retries: "{{ (nck_vm_boot_timeout / nck_vm_boot_poll_interval) | int }}"
+  delay: "{{ nck_vm_boot_poll_interval }}"
+  changed_when: false
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Remove conflicting cloud-init netplan in nova-compute-kvm
+  ansible.builtin.command:
+    cmd: "lxc exec {{ nck_vm_name }} --project {{ nck_lxd_project }} -- rm -f /etc/netplan/50-cloud-init.yaml /etc/netplan/50-lxd.yaml /etc/netplan/99-static.yaml"
+  register: nck_vm_rm_netplan
+  become: false
+  changed_when: nck_vm_rm_netplan.rc == 0
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Disable cloud-init network management in nova-compute-kvm
+  ansible.builtin.command:
+    cmd: >-
+      lxc exec {{ nck_vm_name }} --project {{ nck_lxd_project }} --
+      bash -c "mkdir -p /etc/cloud/cloud.cfg.d && \
+               echo 'network: {config: disabled}' > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg"
+  register: nck_vm_disable_cloud_init_net
+  become: false
+  changed_when: nck_vm_disable_cloud_init_net.rc == 0
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Disable broken udev rename rules in nova-compute-kvm
+  ansible.builtin.shell: |
+    lxc exec {{ nck_vm_name }} --project {{ nck_lxd_project }} -- bash -c "
+      if compgen -G '/etc/systemd/network/10-rename-*.link' > /dev/null; then
+        mv /etc/systemd/network/10-rename-enp5s0.link /etc/systemd/network/10-rename-enp5s0.link.disabled 2>/dev/null || true
+        mv /etc/systemd/network/10-rename-enp6s0.link /etc/systemd/network/10-rename-enp6s0.link.disabled 2>/dev/null || true
+        mv /etc/systemd/network/10-rename-eth*.link /etc/systemd/network/10-rename-eth.disabled 2>/dev/null || true
+        echo 'link-disabled'
+      else
+        echo 'no-link-rules'
+      fi
+    "
+  register: nck_vm_disable_link_rules
+  become: false
+  changed_when: "'link-disabled' in nck_vm_disable_link_rules.stdout"
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Write 99-static.yaml netplan in nova-compute-kvm
+  ansible.builtin.shell: |
+    lxc exec {{ nck_vm_name }} --project {{ nck_lxd_project }} -- bash -c "
+      cat > /etc/netplan/99-static.yaml <<'NETPLAN'
+    network:
+      version: 2
+      ethernets:
+        enp5s0:
+          dhcp4: false
+        enp6s0:
+          dhcp4: false
+          addresses: [{{ nck_eth1_ip }}/24]
+          routes:
+            - {to: {{ nck_internal_cidr }}, via: {{ nck_internal_gw }}
+      bridges:
+        br-ex:
+          addresses: [{{ nck_br_ex_ip }}/24]
+          interfaces: [enp5s0]
+          routes:
+            - {to: default, via: {{ nck_external_gw }}
+            - {to: {{ nck_external_cidr }}, via: {{ nck_external_gw }}
+          nameservers: {addresses: [{{ nck_external_gw }}, 8.8.8.8]}
+    NETPLAN
+      netplan generate && netplan apply
+      systemctl enable --now iscsid
+    "
+  register: nck_vm_static_ip
+  become: false
+  changed_when: nck_vm_static_ip.rc == 0
+  failed_when: nck_vm_static_ip.rc != 0
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Write 10-enp6s0.network systemd-networkd unit for persistence
+  ansible.builtin.shell: |
+    lxc exec {{ nck_vm_name }} --project {{ nck_lxd_project }} -- bash -c "
+      cat > /etc/systemd/network/10-enp6s0.network <<'NETUNIT'
+    [Match]
+    Name=enp6s0
+
+    [Network]
+    DHCP=no
+    IPv6AcceptRA=no
+    ConfigureWithoutCarrier=yes
+
+    [Address]
+    Address={{ nck_eth1_ip }}/24
+
+    [Route]
+    Destination={{ nck_internal_cidr }}
+    Gateway={{ nck_internal_gw }}
+    NETUNIT
+      chmod 0644 /etc/systemd/network/10-enp6s0.network
+      systemctl restart systemd-networkd
+    "
+  register: nck_vm_persist_net
+  become: false
+  changed_when: nck_vm_persist_net.rc == 0
+  failed_when: nck_vm_persist_net.rc != 0
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Wait for SSH to be ready inside nova-compute-kvm
+  ansible.builtin.command:
+    cmd: "ssh -i {{ nck_juju_ssh_key_path }} -o StrictHostKeyChecking=no -o ConnectTimeout=3 ubuntu@{{ nck_eth1_ip }} true"
+  register: nck_vm_ssh
+  become: false
+  until: nck_vm_ssh.rc == 0
+  retries: 30
+  delay: 5
+  changed_when: false
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Verify iscsid is active inside nova-compute-kvm
+  ansible.builtin.command:
+    cmd: "ssh -i {{ nck_juju_ssh_key_path }} -o StrictHostKeyChecking=no ubuntu@{{ nck_eth1_ip }} 'sudo systemctl is-active iscsid'"
+  register: nck_vm_iscsid_active
+  become: false
+  changed_when: false
+  failed_when: nck_vm_iscsid_active.stdout.strip() != "active"
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Verify iscsiadm can discover simulator targets
+  ansible.builtin.command:
+    cmd: "ssh -i {{ nck_juju_ssh_key_path }} -o StrictHostKeyChecking=no ubuntu@{{ nck_eth1_ip }} 'sudo iscsiadm -m discovery -t sendtargets -p {{ nck_sim_iscsi_target_ip }}:3260'"
+  register: nck_vm_iscsi_discovery
+  become: false
+  changed_when: false
+  failed_when: nck_vm_iscsi_discovery.rc != 0
+  when: nck_lxc_check.stdout.strip() == ""
+
+- name: Patch LVM config in nova-compute-kvm to disable udev sync
+  ansible.builtin.shell: |
+    lxc exec {{ nck_vm_name }} --project {{ nck_lxd_project }} -- bash -c "
+      sed -i 's/udev_sync = 1/udev_sync = 0/' /etc/lvm/lvm.conf
+      sed -i 's/udev_rules = 1/udev_rules = 0/' /etc/lvm/lvm.conf
+      sed -i 's/obtain_device_list_from_udev = 1/obtain_device_list_from_udev = 0/' /etc/lvm/lvm.conf
+    "
+  register: nck_lvm_patch
+  become: false
+  changed_when: nck_lvm_patch.rc == 0
+  when: not nck_already_deployed
+
+- name: Add nova-compute-kvm host SSH key to known_hosts
+  ansible.builtin.command:
+    cmd: "ssh-keyscan -H {{ nck_eth1_ip }} >> ~/.ssh/known_hosts"
+  become: false
+  changed_when: false
+  when: not nck_already_deployed
+
+- name: Add nova-compute-kvm as a juju machine
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} add-machine -m {{ juju_controller_name }}:{{ juju_model_name }} ssh:ubuntu@{{ nck_eth1_ip }}"
+  register: nck_add_machine
+  become: false
+  changed_when: nck_add_machine.rc == 0
+  when: not nck_already_deployed
+
+- name: Get nova-compute-kvm machine id
+  ansible.builtin.shell: |
+    {{ juju_openstack_cmd }} status -m {{ juju_controller_name }}:{{ juju_model_name }} {{ nck_app }} --format=json | \
+    python3 -c "
+    import sys, json
+    d = json.load(sys.stdin)
+    units = d.get('applications', {}).get('{{ nck_app }}', {}).get('units', {})
+    if units:
+        print(list(units.values())[0]['machine'])
+    else:
+        machines = d.get('machines', {})
+        m_ids = sorted(machines.keys(), key=int)
+        print(m_ids[-1] if m_ids else '')
+    "
+  register: nck_machine_id_raw
+  become: false
+  changed_when: false
+  when: not nck_already_deployed
+
+- name: Set nck_machine_id fact
+  ansible.builtin.set_fact:
+    nck_machine_id: "{{ nck_machine_id_raw.stdout }}"
+  when: not nck_already_deployed
+
+- name: Deploy nova-compute-kvm
+  ansible.builtin.command:
+    cmd: >-
+      {{ juju_openstack_cmd }} deploy -m {{ juju_controller_name }}:{{ juju_model_name }}
+      nova-compute {{ nck_app }}
+      --series {{ nck_series }}
+      --to {{ nck_machine_id }}
+      --channel {{ nck_channel }}
+      --config config-flags="default_ephemeral_format=ext4"
+      --config enable-live-migration=true
+      --config enable-resize=true
+      --config migration-auth-type=ssh
+      --bind "public cloud-compute=internal amqp=internal ceph=storage ceph-access=storage"
+  register: nck_deploy
+  become: false
+  changed_when: nck_deploy.rc == 0
+  failed_when: nck_deploy.rc != 0 and 'already exists' not in nck_deploy.stderr
+  when: not nck_already_deployed
+
+- name: Deploy ntp subordinate
+  ansible.builtin.command:
+    cmd: >-
+      {{ juju_openstack_cmd }} deploy -m {{ juju_controller_name }}:{{ juju_model_name }}
+      ntp --series {{ nck_series }} --channel {{ nck_ntp_channel }}
+  register: nck_deploy_ntp
+  become: false
+  changed_when: nck_deploy_ntp.rc == 0
+  failed_when: nck_deploy_ntp.rc != 0 and 'already exists' not in nck_deploy_ntp.stderr
+  when: not nck_already_deployed
+
+- name: Deploy nrpe subordinate
+  ansible.builtin.command:
+    cmd: >-
+      {{ juju_openstack_cmd }} deploy -m {{ juju_controller_name }}:{{ juju_model_name }}
+      nrpe --series {{ nck_series }} --channel {{ nck_nrpe_channel }}
+  register: nck_deploy_nrpe
+  become: false
+  changed_when: nck_deploy_nrpe.rc == 0
+  failed_when: nck_deploy_nrpe.rc != 0 and 'already exists' not in nck_deploy_nrpe.stderr
+  when: not nck_already_deployed
+
+- name: Deploy ovn-chassis subordinate
+  ansible.builtin.command:
+    cmd: >-
+      {{ juju_openstack_cmd }} deploy -m {{ juju_controller_name }}:{{ juju_model_name }}
+      ovn-chassis --series {{ nck_series }} --channel {{ nck_ovn_chassis_channel }}
+  register: nck_deploy_ovn
+  become: false
+  changed_when: nck_deploy_ovn.rc == 0
+  failed_when: nck_deploy_ovn.rc != 0 and 'already exists' not in nck_deploy_ovn.stderr
+  when: not nck_already_deployed
+
+- name: Add relation nova-compute-kvm:amqp → rabbitmq-server:amqp
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} add-relation -m {{ juju_controller_name }}:{{ juju_model_name }} {{ nck_app }}:amqp rabbitmq-server:amqp"
+  register: nck_rel_amqp
+  become: false
+  changed_when: nck_rel_amqp.rc == 0
+  failed_when: nck_rel_amqp.rc != 0 and 'already exists' not in nck_rel_amqp.stderr
+  when: not nck_already_deployed
+
+- name: Add relation nova-compute-kvm:image-service → glance:image-service
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} add-relation -m {{ juju_controller_name }}:{{ juju_model_name }} {{ nck_app }}:image-service glance:image-service"
+  register: nck_rel_glance
+  become: false
+  changed_when: nck_rel_glance.rc == 0
+  failed_when: nck_rel_glance.rc != 0 and 'already exists' not in nck_rel_glance.stderr
+  when: not nck_already_deployed
+
+- name: Add relation nova-compute-kvm:cloud-compute → nova-cloud-controller:cloud-compute
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} add-relation -m {{ juju_controller_name }}:{{ juju_model_name }} {{ nck_app }}:cloud-compute nova-cloud-controller:cloud-compute"
+  register: nck_rel_cloud_compute
+  become: false
+  changed_when: nck_rel_cloud_compute.rc == 0
+  failed_when: nck_rel_cloud_compute.rc != 0 and 'already exists' not in nck_rel_cloud_compute.stderr
+  when: not nck_already_deployed
+
+- name: Add relation nova-compute-kvm:ceph → ceph-mon
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} add-relation -m {{ juju_controller_name }}:{{ juju_model_name }} {{ nck_app }}:ceph ceph-mon"
+  register: nck_rel_ceph
+  become: false
+  changed_when: nck_rel_ceph.rc == 0
+  failed_when: nck_rel_ceph.rc != 0 and 'already exists' not in nck_rel_ceph.stderr
+  when: not nck_already_deployed
+
+- name: Add relation nova-compute-kvm:ceph-access → cinder-ceph:ceph-access
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} add-relation -m {{ juju_controller_name }}:{{ juju_model_name }} {{ nck_app }}:ceph-access cinder-ceph:ceph-access"
+  register: nck_rel_ceph_access
+  become: false
+  changed_when: nck_rel_ceph_access.rc == 0
+  failed_when: nck_rel_ceph_access.rc != 0 and 'already exists' not in nck_rel_ceph_access.stderr
+  when: not nck_already_deployed
+
+- name: Add relation nova-compute-kvm:storage-backend → cinder:storage-backend
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} add-relation -m {{ juju_controller_name }}:{{ juju_model_name }} {{ nck_app }}:storage-backend cinder:storage-backend"
+  register: nck_rel_storage_backend
+  become: false
+  changed_when: nck_rel_storage_backend.rc == 0
+  failed_when: nck_rel_storage_backend.rc != 0 and 'already exists' not in nck_rel_storage_backend.stderr
+  when: not nck_already_deployed
+
+- name: Add relation nova-compute-kvm:neutron-plugin → neutron-api-plugin-ovn:neutron-plugin
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} add-relation -m {{ juju_controller_name }}:{{ juju_model_name }} {{ nck_app }}:neutron-plugin neutron-api-plugin-ovn:neutron-plugin"
+  register: nck_rel_neutron_plugin
+  become: false
+  changed_when: nck_rel_neutron_plugin.rc == 0
+  failed_when: nck_rel_neutron_plugin.rc != 0 and 'already exists' not in nck_rel_neutron_plugin.stderr
+  when: not nck_already_deployed
+
+- name: Add relation nova-compute-kvm:cloud-credentials → keystone:identity-credentials
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} add-relation -m {{ juju_controller_name }}:{{ juju_model_name }} {{ nck_app }}:cloud-credentials keystone:identity-credentials"
+  register: nck_rel_keystone_creds
+  become: false
+  changed_when: nck_rel_keystone_creds.rc == 0
+  failed_when: nck_rel_keystone_creds.rc != 0 and 'already exists' not in nck_rel_keystone_creds.stderr
+  when: not nck_already_deployed
+
+- name: Add relation ovn-chassis:ovsdb → neutron-api-plugin-ovn:ovsdb (BEFORE principal binding)
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} add-relation -m {{ juju_controller_name }}:{{ juju_model_name }} ovn-chassis:ovsdb neutron-api-plugin-ovn:ovsdb"
+  register: nck_rel_ovn_chassis_ovsdb
+  become: false
+  changed_when: nck_rel_ovn_chassis_ovsdb.rc == 0
+  failed_when: nck_rel_ovn_chassis_ovsdb.rc != 0 and 'already exists' not in nck_rel_ovn_chassis_ovsdb.stderr
+  when: not nck_already_deployed
+
+- name: Add subordinate relation nrpe → nova-compute-kvm
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} add-relation -m {{ juju_controller_name }}:{{ juju_model_name }} nrpe {{ nck_app }}"
+  register: nck_rel_nrpe
+  become: false
+  changed_when: nck_rel_nrpe.rc == 0
+  failed_when: nck_rel_nrpe.rc != 0 and 'already exists' not in nck_rel_nrpe.stderr
+  when: not nck_already_deployed
+
+- name: Add subordinate relation ntp → nova-compute-kvm
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} add-relation -m {{ juju_controller_name }}:{{ juju_model_name }} ntp {{ nck_app }}"
+  register: nck_rel_ntp
+  become: false
+  changed_when: nck_rel_ntp.rc == 0
+  failed_when: nck_rel_ntp.rc != 0 and 'already exists' not in nck_rel_ntp.stderr
+  when: not nck_already_deployed
+
+- name: Add subordinate relation ovn-chassis → nova-compute-kvm
+  ansible.builtin.command:
+    cmd: "{{ juju_openstack_cmd }} add-relation -m {{ juju_controller_name }}:{{ juju_model_name }} ovn-chassis {{ nck_app }}"
+  register: nck_rel_ovn_chassis
+  become: false
+  changed_when: nck_rel_ovn_chassis.rc == 0
+  failed_when: nck_rel_ovn_chassis.rc != 0 and 'already exists' not in nck_rel_ovn_chassis.stderr
+  when: not nck_already_deployed
+
+- name: Wait for nova-compute-kvm to reach active status
+  ansible.builtin.shell: |
+    {{ juju_openstack_cmd }} status -m {{ juju_controller_name }}:{{ juju_model_name }} {{ nck_app }} --format=json | \
+    python3 -c "
+    import sys, json
+    try:
+        d = json.load(sys.stdin)
+    except Exception:
+        print('WAITING')
+        sys.exit(1)
+    status = d.get('applications', {}).get('{{ nck_app }}', {}).get('application-status', {}).get('current', '')
+    msg = d.get('applications', {}).get('{{ nck_app }}', {}).get('application-status', {}).get('message', '')
+    if status == 'active':
+        print('ACTIVE')
+        sys.exit(0)
+    print('WAITING: ' + status + (' / ' + msg if msg else ''))
+    sys.exit(1)
+    "
+  register: nck_active_check
+  become: false
+  until: nck_active_check.stdout == 'ACTIVE' or ansible_check_mode
+  retries: "{{ nck_active_wait_retries }}"
+  delay: "{{ nck_active_wait_delay }}"
+  changed_when: false
+
+- name: Capture nova-compute-kvm status for summary
+  ansible.builtin.shell: |
+    {{ juju_openstack_cmd }} status -m {{ juju_controller_name }}:{{ juju_model_name }} {{ nck_app }} --format=json | \
+    python3 -c "
+    import sys, json
+    d = json.load(sys.stdin)
+    print(d['applications']['{{ nck_app }}']['application-status']['current'])
+    "
+  register: nck_app_status
+  become: false
+  changed_when: false
+
+- name: Create nova aggregate {{ nck_aggregate_name }} with AZ {{ nck_availability_zone }}
+  ansible.builtin.shell: |
+    bash {{ playbook_dir }}/openstack-wrapper.sh openstack aggregate create \
+      --zone {{ nck_availability_zone }} {{ nck_aggregate_name }} || true
+  register: nck_aggregate_create
+  become: false
+  changed_when: "'Created' in nck_aggregate_create.stdout or 'created' in nck_aggregate_create.stdout"
+
+- name: Get nova-compute-kvm service host name (juju host)
+  ansible.builtin.shell: |
+    {{ juju_openstack_cmd }} status -m {{ juju_controller_name }}:{{ juju_model_name }} {{ nck_app }} --format=json | \
+    python3 -c "
+    import sys, json
+    d = json.load(sys.stdin)
+    print(list(d['applications']['{{ nck_app }}']['units'].keys())[0])
+    "
+  register: nck_service_host
+  become: false
+  changed_when: false
+
+- name: Add nova-compute-kvm to aggregate {{ nck_aggregate_name }}
+  ansible.builtin.shell: |
+    bash {{ playbook_dir }}/openstack-wrapper.sh openstack aggregate add host \
+      {{ nck_aggregate_name }} {{ nck_service_host.stdout }} || true
+  register: nck_aggregate_add
+  become: false
+  changed_when: nck_aggregate_add.rc == 0
+
+- name: Verify nova-compute-kvm registered as compute service
+  ansible.builtin.shell: |
+    bash {{ playbook_dir }}/openstack-wrapper.sh openstack compute service list \
+      -c Host -c Zone -c Status 2>&1 | grep {{ nck_service_host.stdout }} || echo "NOT_FOUND"
+  register: nck_compute_service_check
+  become: false
+  changed_when: false
+  failed_when: "'NOT_FOUND' in nck_compute_service_check.stdout"
+
+- name: Verify aggregate {{ nck_aggregate_name }} contains nova-compute-kvm
+  ansible.builtin.shell: |
+    bash {{ playbook_dir }}/openstack-wrapper.sh openstack aggregate show {{ nck_aggregate_name }} \
+      -c name -c availability_zone -c hosts 2>&1
+  register: nck_aggregate_show
+  become: false
+  changed_when: false
+  failed_when: nck_service_host.stdout not in nck_aggregate_show.stdout
+
+- name: Display nova-compute-kvm deployment summary
+  ansible.builtin.debug:
+    msg: |
+      nova-compute-kvm deployment complete.
+        App:        {{ nck_app }} status={{ nck_app_status.stdout }}
+        Compute:    {{ nck_compute_service_check.stdout }}
+        Aggregate:  {{ nck_aggregate_show.stdout_lines | default([]) | join(' | ') }}
+
+      End-to-end boot-from-volume test (run manually):
+        bash openstack-wrapper.sh openstack server create \\
+          --flavor m1.small \\
+          --volume oceanstor-boot-vol \\
+          --availability-zone {{ nck_availability_zone }} \\
+          --network int-net \\
+          --wait \\
+          oceanstor-boot-vm

@@ -1,0 +1,317 @@
+---
+
+openstack_series: "focal"
+openstack_version: "ussuri"
+juju_channel: "2.9/stable"
+
+juju_openstack_cmd: "juju-29"
+juju_k8s_cmd: "juju-36"
+
+maas_api_url: "http://192.168.122.10:5240/MAAS/api/2.0/"
+maas_api_key: "mDokAqxvV7XXhOBXd7:sCPM681aA6r3q2F8gu:PCogeKWkIkD0mIeDIQI3K7RWlqshYMZ1"
+maas_vm_host_id: 5
+
+control_plane_nodes:
+  - name: "openstack-control-1"
+    memory: 16384
+    cores: 4
+    disk: 80
+  - name: "openstack-control-2"
+    memory: 16384
+    cores: 4
+    disk: 80
+  - name: "openstack-control-3"
+    memory: 16384
+    cores: 4
+    disk: 80
+
+compute_nodes:
+  - name: "openstack-compute-1"
+    memory: 32768
+    cores: 4
+    disk: 100
+    nested_vmx: true
+  - name: "openstack-compute-2"
+    memory: 32768
+    cores: 4
+    disk: 100
+    nested_vmx: true
+
+network_fabrics:
+  external:
+    fabric_id: 0
+    cidr: "192.168.122.0/24"
+    bridge: "virbr0"
+    purpose: "Internet access (libvirt NAT), floating IPs via OVN br-ex"
+  management:
+    fabric_id: 1
+    cidr: "192.168.165.0/24"
+    bridge: "virbr1"
+    purpose: "MAAS PXE/DHCP, OpenStack internal API/management"
+
+openstack_admin_password: "openstack123"
+openstack_demo_password: "demo123"
+openstack_region: "RegionOne"
+
+juju_controller_name: "os-controller"
+juju_openstack_model: "openstack"
+project_dir: "/home/zhouqt/ansible-homelab"
+
+mgmt_net:
+  name: "mgmt-net"
+  subnet_name: "mgmt-subnet"
+  cidr: "192.168.165.0/24"
+  gateway: "192.168.165.1"
+  allocation_pool_start: "192.168.165.100"
+  allocation_pool_end: "192.168.165.150"
+  physical_network: "physnet2"
+  ovs_bridge: "br-mgmt"
+
+k8s_juju_controller_name: "os-k8s-controller"
+k8s_model_name: "k8s-132"
+k8s_channel: "1.32/stable"
+k8s_cloud_name: "openstack"
+k8s_cloud_credential: "admin"
+k8s_internal_network: "int-net"
+k8s_external_network: "ext-net"
+calico_cidr: "10.244.0.0/16"
+k8s_test_image: "nginx:latest"
+
+containerd_http_proxy: "http://192.168.122.1:12345"
+containerd_https_proxy: "http://192.168.122.1:12345"
+containerd_no_proxy: "127.0.0.1,localhost,10.0.0.0/8,192.168.0.0/16,.svc,.cluster.local,rocks.canonical.com"
+
+os_quota_secgroups: 50
+os_quota_secgroup_rules: 500
+os_quota_instances: 30
+os_quota_cores: 40
+os_quota_ram: 102400
+os_quota_floating_ips: 50
+os_quota_ports: 200
+
+nova_cpu_allocation_ratio: "8.0"
+nova_disk_allocation_ratio: "3.0"
+
+k8s_lxd_project: "k8s1"
+k8s_lxd_bridge_internet: "virbr0"
+k8s_lxd_bridge_pod: "virbr1"
+k8s_lxd_juju_controller: "ck8s-controller"
+k8s_lxd_juju_agent_version: "3.6.8"
+k8s_lxd_juju_db_channel: "4.4/stable"
+k8s_lxd_model_name: "ck8s"
+k8s_lxd_profile_name: "juju-ck8s"
+k8s_lxd_control_plane_units: 1
+k8s_lxd_worker_units: 2
+k8s_lxd_etcd_units: 1
+
+compute_vm_names:
+  - "os-comp-v2-1"
+  - "os-comp-v2-2"
+
+iscsi_rabbit_password: "krspYfCNpR2pR7Tws5LVgR24zFj9nkrg2Th59MMbYZ8b5xwf9FyCP5gp5WyNgCY6"
+iscsi_rabbitmq_host: "192.168.165.7"
+iscsi_mysql_password: "X9zrw7zLhGJSM6h6mWHMKFPVbPX4Nzh8"
+iscsi_mysql_host: "192.168.165.217"
+iscsi_keystone_url: "https://192.168.165.206:5000/v3"
+iscsi_keystone_admin_url: "https://192.168.165.206:35357/v3"
+iscsi_cinder_username: "cinderv3"
+iscsi_cinder_password: "XpVwFPcHccN4hTjpqMrkXhr5JRtm669yCyfGX9FW72VpZdzTYTPZspwt4hhZLNkT"
+iscsi_glance_api: "https://192.168.165.203:9292"
+iscsi_mysql_root_password: "NwpzsT8hWsHmwH2x295qCc6s54fJffr6f2PC"
+
+ubuntu_version: "noble"
+
+version_matrix:
+  jammy:
+    ubuntu_release: "22.04"
+    postgresql_version: "14"
+    maas_supported: ["3.4", "3.5"]
+  noble:
+    ubuntu_release: "24.04"
+    postgresql_version: "16"
+    maas_supported: ["3.6", "3.7"]
+
+postgresql_version: "{{ version_matrix[ubuntu_version].postgresql_version }}"
+
+maas_vip: "192.168.165.15"
+pgsql_vip: "192.168.165.16"
+
+node_ips:
+  maas-ha-1: "192.168.122.10"
+  maas-ha-2: "192.168.122.11"
+  maas-ha-3: "192.168.122.12"
+
+maas_version: "3.7"
+
+apt_mirror: "cn.archive.ubuntu.com"
+
+corosync_token: 3000
+corosync_token_retransmits: 10
+corosync_join: 60
+corosync_consensus: 3600
+
+replication_user: "replicator"
+replication_pass: "replicator123"
+replication_mode: "sync"
+max_wal_senders: 10
+max_replication_slots: 10
+wal_keep_size: "256MB"
+postgresql_max_connections: 200
+
+haproxy_timeout_connect: "5000ms"
+haproxy_timeout_client: "50000ms"
+haproxy_timeout_server: "900s"
+
+pacemaker_stonith_enabled: false
+pacemaker_no_quorum_policy: "stop"
+
+maas_database_name: "maasdb"
+maas_admin_user: "admin"
+maas_admin_pass: "admin"
+maas_admin_email: "admin@example.com"
+maas_ssh_public_key: ""
+
+maas_dhcp_networks:
+  - name: "virbr1"
+    fabric: "virbr1"
+    cidr: "192.168.165.0/24"
+    gateway: "192.168.165.1"
+    dns_servers: ["{{ maas_vip }}"]
+    dhcp_range_start: "192.168.165.100"
+    dhcp_range_end: "192.168.165.200"
+  - name: "virbr2"
+    fabric: "virbr2"
+    cidr: "192.168.166.0/24"
+    gateway: "192.168.166.1"
+    dns_servers: ["{{ maas_vip }}"]
+    dhcp_range_start: "192.168.166.100"
+    dhcp_range_end: "192.168.166.200"
+  - name: "virbr3"
+    fabric: "virbr3"
+    cidr: "192.168.167.0/24"
+    gateway: "192.168.167.1"
+    dns_servers: ["{{ maas_vip }}"]
+    dhcp_range_start: "192.168.167.100"
+    dhcp_range_end: "192.168.167.200"
+  - name: "virbr4"
+    fabric: "virbr4"
+    cidr: "192.168.170.0/24"
+    gateway: "192.168.170.1"
+    dns_servers: ["{{ maas_vip }}"]
+    dhcp_range_start: "192.168.170.100"
+    dhcp_range_end: "192.168.170.200"
+
+os_lxd_project: "openstack"
+os_lxd_juju_controller: "lxd-os-ctrl"
+os_lxd_juju_agent_version: "2.9.59"
+os_lxd_model_name: "openstack"
+os_lxd_bridge_internet: "lxdbr122"
+os_lxd_bridge_mgmt: "lxdbr165"
+os_lxd_bridge_data: "lxdbr166"
+os_lxd_bridge_storage: "lxdbr167"
+os_lxd_compute_mem: "8G"
+os_lxd_compute_cores: 2
+os_lxd_osd_disk_size: "30G"
+os_lxd_osd_loopback_dir: "/home"
+os_lxd_vault_shares: 1
+os_lxd_vault_threshold: 1
+
+lma_nrpe_targets:
+  - nova-compute
+  - nova-compute-kvm
+  - ceph-osd
+  - ceph-mon
+  - keystone
+  - cinder
+  - glance
+  - neutron-api
+  - nova-cloud-controller
+  - rabbitmq-server
+  - mysql-innodb-cluster
+  - vault
+  - openstack-dashboard
+  - placement
+  - ovn-central
+
+lma_nagios_public_ip: "192.168.122.53"
+lma_nagios_internal_ip: "192.168.165.109"
+lma_nagios_public_gw: "192.168.122.1"
+lma_nagios_internal_gw: "192.168.165.1"
+
+lma_grafana_dashboard_sources: []
+
+lma_prometheus_app: "prometheus2"
+lma_prometheus_channel: "stable"
+lma_prometheus_revision: 60
+
+lma_grafana_agent_channel: "stable"
+lma_grafana_agent_revision: 843
+
+lma_grafana_agent_principal: "nova-cloud-controller"
+
+pve_host: pve-host
+pve_ssh_port: 2222
+pve_storage: pve-thin-pool
+pve_maas_vmid: 1000
+pve_maas_ip: 192.168.11.3
+pve_maas_data_mount: pve-thin-pool:vm-1000-disk-1
+pve_maas_script: "{{ playbook_dir }}/pve/scripts/setup-maas-ct.sh"
+pve_maas_admin_password: "{{ vault_pve_maas_admin_password | default('') }}"
+pve_maas_root_password: "{{ vault_pve_maas_root_password | default('') }}"
+pve_maas_ssh_pubkey: "{{ lookup('file', lookup('env', 'HOME') + '/.ssh/id_ed25519.pub', errors='ignore') | default('', true) }}"
+pve_maas_http_proxy: "http://192.168.11.2:12345"
+pve_maas_https_proxy: "http://192.168.11.2:12345"
+pve_maas_no_proxy: "127.0.0.1,localhost,192.168.11.0/24"
+pve_juju_controller_vmid: 1001
+pve_juju_controller_name: pve-ctrl
+pve_juju_controller_ip: 192.168.11.11
+pve_juju_client_vmid: 1000
+pve_juju_client_user: ubuntu
+pve_juju_bin: /snap/bin/juju
+pve_juju_db_channel: 4.4.30/stable
+pve_juju_public_cidr: "192.168.11.0/24"
+pve_juju_public_native_space: "alpha"
+pve_juju_network_spaces:
+  - name: alpha
+    bridge: pub11
+    cidr: "192.168.11.0/24"
+    net_index: 0
+    public_native: true
+  - name: oam
+    bridge: pub12
+    cidr: "192.168.12.0/24"
+    net_index: 1
+  - name: internal
+    bridge: int13
+    cidr: "192.168.13.0/24"
+    net_index: 2
+  - name: storage
+    bridge: int14
+    cidr: "192.168.14.0/24"
+    net_index: 3
+pve_juju_default_space: internal
+pve_compute_uplink_bridge: pub11
+pve_compute_uplink_pve_net_index: 4
+pve_compute_uplink_guest_interface: ens22
+pve_compute_uplink_ovn_mapping: "br-ex:{{ pve_compute_uplink_guest_interface }}"
+pve_compute_uplink_ovn_bridge_mapping: "physnet1:br-ex"
+pve_compute_uplink_vmids: [1101, 1102, 1122]
+pve_start_existing_compute_after_uplink: false
+pve_workload_secondary_network_ips: {}
+pve_focal_template: local:vztmpl/ubuntu-focal-cloudimg-rootfs_20.04-6_amd64.tar.xz
+pve_focal_rootfs_sha256: "{{ vault_pve_focal_rootfs_sha256 | default('') }}"
+pve_run_host_baseline: false
+pve_run_template_repack: false
+pve_create_kvm_1122: true
+pve_keystone_admin_password: "{{ vault_pve_keystone_admin_password | default('') }}"
+pve_vault_root_token: "{{ vault_pve_vault_root_token | default('') }}"
+pve_workload_start_vmid: 1101
+pve_workload_end_vmid: 1127
+pve_workload_openstack_first_ip_octet: 101
+pve_workload_openstack_last_ip_octet: 123
+pve_workload_lma_first_ip_octet: 124
+pve_workload_lma_last_ip_octet: 127
+pve_workload_kvm_machine_id: 23
+pve_allow_machine21_gap_recreation: false
+pve_workload_gap_marker: /var/lib/ansible-pve/openstack-machine21-gap-created
+pve_deploy_control_template: deploy-control-plane.sh.j2

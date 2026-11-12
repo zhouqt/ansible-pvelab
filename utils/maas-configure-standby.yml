@@ -1,0 +1,111 @@
+---
+
+- name: Configure PostgreSQL standby nodes
+  hosts: maas_ha[1:]
+  become: true
+  tags: standby
+  serial: 1
+
+  tasks:
+    - name: Stop and disable systemd PostgreSQL (prevent conflict with Pacemaker)
+      systemd:
+        name: postgresql
+        state: stopped
+        enabled: no
+      tags: standby
+
+    - name: Remove PGSQL.lock file if exists
+      file:
+        path: /var/lib/pgsql/tmp/PGSQL.lock
+        state: absent
+      ignore_errors: yes
+      tags: standby
+
+    - name: Backup existing data directory
+      command: mv /var/lib/postgresql/{{ postgresql_version }}/main /var/lib/postgresql/{{ postgresql_version }}/main.bak.{{ ansible_date_time.epoch }}
+      ignore_errors: yes
+      tags: standby
+
+    - name: Create new data directory
+      file:
+        path: /var/lib/postgresql/{{ postgresql_version }}/main
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: '0700'
+      tags: standby
+
+    - name: Take base backup from Primary
+      become_user: postgres
+      shell: >
+        PGPASSWORD={{ replication_pass }} pg_basebackup
+        -h {{ pgsql_vip }}
+        -p 5432
+        -U {{ replication_user }}
+        -D /var/lib/postgresql/{{ postgresql_version }}/main
+        -Fp -Xs -P -R
+      environment:
+        PGPASSWORD: "{{ replication_pass }}"
+      tags: standby
+
+    - name: Configure postgresql.auto.conf
+      copy:
+        dest: /var/lib/postgresql/{{ postgresql_version }}/main/postgresql.auto.conf
+        content: |
+          primary_conninfo = 'host={{ pgsql_vip }} port=5432 user={{ replication_user }} password={{ replication_pass }} application_name={{ inventory_hostname }}'
+          primary_slot_name = 'standby{{ groups["maas_ha"].index(inventory_hostname) }}'
+        owner: postgres
+        group: postgres
+        mode: '0600'
+      tags: standby
+
+    - name: Ensure standby.signal exists
+      file:
+        path: /var/lib/postgresql/{{ postgresql_version }}/main/standby.signal
+        state: touch
+        owner: postgres
+        group: postgres
+        mode: '0600'
+      tags: standby
+
+    - name: Create symlink to postgresql.conf in data directory
+      file:
+        src: "/etc/postgresql/{{ postgresql_version }}/main/postgresql.conf"
+        dest: "/var/lib/postgresql/{{ postgresql_version }}/main/postgresql.conf"
+        state: link
+        force: yes
+      tags: standby
+
+    - name: Create symlink to pg_hba.conf in data directory
+      file:
+        src: "/etc/postgresql/{{ postgresql_version }}/main/pg_hba.conf"
+        dest: "/var/lib/postgresql/{{ postgresql_version }}/main/pg_hba.conf"
+        state: link
+        force: yes
+      tags: standby
+
+    - name: Cleanup Pacemaker resource
+      delegate_to: "{{ groups['maas_ha'][0] }}"
+      command: crm resource cleanup ms_pgsql {{ inventory_hostname }}
+      ignore_errors: yes
+      tags: standby
+
+    - name: Wait for PostgreSQL to start
+      wait_for:
+        port: 5432
+        host: "0.0.0.0"
+        delay: 10
+        timeout: 120
+      tags: standby
+
+    - name: Verify replication status
+      become_user: postgres
+      command: psql -c "SELECT pg_is_in_recovery();"
+      register: recovery_status
+      changed_when: false
+      tags: standby
+
+    - name: Show recovery status
+      debug:
+        msg: "{{ inventory_hostname }} replication status: {{ recovery_status.stdout }}"
+      tags: standby

@@ -1,0 +1,299 @@
+---
+
+- name: Check if loopback storage file exists
+  stat:
+    path: "{{ iscsi_storage_file }}"
+  register: storage_file
+
+- name: Create sparse loopback storage file
+  shell: "truncate -s {{ iscsi_storage_size }} {{ iscsi_storage_file }}"
+  when: not storage_file.stat.exists
+
+- name: Check if VG {{ iscsi_vg_name }} exists
+  shell: "vgs {{ iscsi_vg_name }} 2>/dev/null"
+  register: vg_check
+  failed_when: false
+  changed_when: false
+
+- name: Setup loop device and create VG
+  shell: |
+    DEV=$(losetup -j {{ iscsi_storage_file }} -O NAME --noheadings | tr -d ' ')
+    if [ -z "$DEV" ]; then
+      DEV=$(losetup --find --show {{ iscsi_storage_file }})
+    fi
+    pvcreate -f "$DEV"
+    vgcreate {{ iscsi_vg_name }} "$DEV"
+  when: vg_check.rc != 0
+
+- name: Deploy iscsi-loopback systemd service
+  template:
+    src: iscsi-loopback.service.j2
+    dest: "/etc/systemd/system/iscsi-loopback-{{ iscsi_vg_name }}.service"
+    mode: "0644"
+
+- name: Enable iscsi-loopback service
+  systemd:
+    name: "iscsi-loopback-{{ iscsi_vg_name }}"
+    enabled: true
+    daemon_reload: true
+
+- name: Check if container {{ iscsi_container_name }} exists
+  shell: "lxc info {{ iscsi_container_name }} --project {{ iscsi_container_project }} 2>/dev/null"
+  register: container_check
+  failed_when: false
+  changed_when: false
+
+- name: Create LXD container
+  shell: |
+    lxc init ubuntu:22.04 {{ iscsi_container_name }} --project {{ iscsi_container_project }} \
+      -c security.privileged=true \
+      -c security.nesting=true
+  when: container_check.rc != 0
+
+- name: Configure container NIC eth0 (virbr1 — iSCSI portal 1)
+  shell: >
+    lxc config device override {{ iscsi_container_name }} eth0
+    --project {{ iscsi_container_project }}
+    nictype=bridged parent={{ iscsi_portal_bridge_1 }}
+  failed_when: false
+  changed_when: false
+
+- name: Add container NIC eth1 (virbr2 — iSCSI portal 2)
+  shell: >
+    lxc config device add {{ iscsi_container_name }} eth1 nic
+    nictype=bridged parent={{ iscsi_portal_bridge_2 }}
+    --project {{ iscsi_container_project }}
+  failed_when: false
+  changed_when: false
+
+- name: Add container NIC eth2 (virbr0 — internet)
+  shell: >
+    lxc config device add {{ iscsi_container_name }} eth2 nic
+    nictype=bridged parent={{ iscsi_internet_bridge }}
+    --project {{ iscsi_container_project }}
+  failed_when: false
+  changed_when: false
+
+- name: Configure cgroup device access for device-mapper and loop devices
+  shell: |
+    lxc config set {{ iscsi_container_name }} --project {{ iscsi_container_project }} raw.lxc "lxc.cgroup2.devices.allow = b 253:* rwm
+    lxc.cgroup2.devices.allow = b 7:* rwm
+    lxc.cgroup2.devices.allow = c 10:236 rwm
+    lxc.mount.entry = /dev/mapper dev/mapper none bind,create=dir 0 0"
+
+- name: Start container
+  shell: "lxc start {{ iscsi_container_name }} --project {{ iscsi_container_project }}"
+  failed_when: false
+  changed_when: false
+
+- name: Wait for container to be ready
+  shell: "lxc exec {{ iscsi_container_name }} --project {{ iscsi_container_project }} -- systemctl is-system-running --wait"
+  retries: 10
+  delay: 3
+  register: container_ready
+  until: container_ready.rc == 0
+  failed_when: false
+
+- name: Get loop device for storage file
+  shell: "losetup -j {{ iscsi_storage_file }} -O NAME --noheadings | tr -d ' '"
+  register: loop_device
+  changed_when: false
+
+- name: Pass through loop device to container
+  shell: >
+    lxc config device add {{ iscsi_container_name }} loop-storage unix-block
+    source={{ loop_device.stdout }} path={{ loop_device.stdout }}
+    --project {{ iscsi_container_project }}
+  failed_when: false
+  changed_when: false
+
+- name: Pass through /dev/mapper/control to container
+  shell: >
+    lxc config device add {{ iscsi_container_name }} dm unix-block
+    source=/dev/mapper/control path=/dev/mapper/control
+    --project {{ iscsi_container_project }}
+  failed_when: false
+  changed_when: false
+
+- name: Deploy netplan configuration to container
+  shell: |
+    lxc exec {{ iscsi_container_name }} --project {{ iscsi_container_project }} -- bash -c '
+    cat > /etc/netplan/99-static.yaml << EOF
+    {{ lookup("template", "netplan-iscsi-container.yaml.j2") }}
+    EOF
+    chmod 600 /etc/netplan/99-static.yaml
+    rm -f /etc/netplan/50-cloud-init.yaml
+    netplan apply'
+  changed_when: false
+
+- name: Fix DNS resolution in container
+  shell: |
+    lxc exec {{ iscsi_container_name }} --project {{ iscsi_container_project }} -- bash -c '
+    rm -f /etc/resolv.conf
+    cat > /etc/resolv.conf << EOF
+    nameserver {{ iscsi_gateway }}
+    nameserver 8.8.8.8
+    EOF'
+  changed_when: false
+
+- name: Install packages in container
+  shell: |
+    lxc exec {{ iscsi_container_name }} --project {{ iscsi_container_project }} -- bash -c '
+    apt-get update -qq && apt-get install -y -qq lvm2 tgt cinder-volume python3-pymysql'
+  register: pkg_install
+  changed_when: "'newly installed' in pkg_install.stdout"
+
+- name: Disable udev sync in container lvm.conf (required for LVM in LXD)
+  shell: |
+    lxc exec {{ iscsi_container_name }} --project {{ iscsi_container_project }} -- bash -c '
+    sed -i "s/udev_sync = 1/udev_sync = 0/" /etc/lvm/lvm.conf
+    sed -i "s/udev_rules = 1/udev_rules = 0/" /etc/lvm/lvm.conf
+    sed -i "s/obtain_device_list_from_udev = 1/obtain_device_list_from_udev = 0/" /etc/lvm/lvm.conf'
+  changed_when: false
+
+- name: Get Vault CA certificate from existing cinder unit
+  shell: >
+    {{ iscsi_juju_cmd }} ssh -m {{ iscsi_juju_model }} cinder/1
+    'sudo cat /usr/local/share/ca-certificates/vault_juju_ca_cert.crt'
+    2>/dev/null
+  register: vault_ca_cert
+  changed_when: false
+
+- name: Install Vault CA certificate in container
+  shell: |
+    echo '{{ vault_ca_cert.stdout }}' | \
+    lxc exec {{ iscsi_container_name }} --project {{ iscsi_container_project }} -- \
+    tee /usr/local/share/ca-certificates/vault_juju_ca_cert.crt > /dev/null
+    lxc exec {{ iscsi_container_name }} --project {{ iscsi_container_project }} -- update-ca-certificates
+  when: vault_ca_cert.stdout | length > 0
+
+- name: Get cinder.conf from existing deployment for credentials
+  shell: >
+    {{ iscsi_juju_cmd }} ssh -m {{ iscsi_juju_model }} cinder/0
+    'sudo cat /etc/cinder/cinder.conf' 2>/dev/null
+  register: existing_cinder_conf
+  changed_when: false
+  when: iscsi_rabbit_password is not defined
+
+- name: Parse credentials from existing cinder.conf
+  set_fact:
+    iscsi_rabbit_password: "{{ existing_cinder_conf.stdout | regex_search('transport_url\\s*=\\s*rabbit://cinder:([^@]+)@', '\\1') | first }}"
+    iscsi_rabbitmq_host: "{{ existing_cinder_conf.stdout | regex_search('transport_url\\s*=\\s*rabbit://[^@]+@([^:]+):', '\\1') | first }}"
+    iscsi_mysql_password: "{{ existing_cinder_conf.stdout | regex_search('connection\\s*=\\s*mysql\\+pymysql://cinder:([^@]+)@', '\\1') | first }}"
+    iscsi_mysql_host: "{{ existing_cinder_conf.stdout | regex_search('connection\\s*=\\s*mysql\\+pymysql://[^@]+@([^/]+)/', '\\1') | first }}"
+    iscsi_keystone_url: "{{ existing_cinder_conf.stdout | regex_search('auth_uri\\s*=\\s*(\\S+)', '\\1') | first }}"
+    iscsi_keystone_admin_url: "{{ existing_cinder_conf.stdout | regex_search('auth_url\\s*=\\s*(\\S+)', '\\1') | first }}"
+    iscsi_cinder_username: "{{ existing_cinder_conf.stdout | regex_search('username\\s*=\\s*(\\S+)', '\\1') | first }}"
+    iscsi_cinder_password: "{{ existing_cinder_conf.stdout | regex_search('\\npassword\\s*=\\s*(\\S+)', '\\1') | first }}"
+    iscsi_glance_api: "{{ existing_cinder_conf.stdout | regex_search('glance_api_servers\\s*=\\s*(\\S+)', '\\1') | first }}"
+  when: iscsi_rabbit_password is not defined
+
+- name: Get MySQL root password for GRANT
+  shell: |
+    {{ iscsi_juju_cmd }} ssh -m {{ iscsi_juju_model }} {{ iscsi_mysql_juju_unit }} \
+    'sudo cat /var/lib/mysql-cluster-data/mysql-admin-password 2>/dev/null || \
+     sudo mysql -u root -e "SELECT 1" --socket=/var/run/mysqld/mysqld.sock >/dev/null 2>&1 && echo "__NO_PASSWORD__"' 2>/dev/null
+  register: _mysql_root_pw
+  changed_when: false
+  when: iscsi_mysql_root_password is not defined
+
+- name: Set MySQL root password fact
+  set_fact:
+    iscsi_mysql_root_password: "{{ _mysql_root_pw.stdout | trim }}"
+  when: iscsi_mysql_root_password is not defined
+
+- name: Deploy cinder.conf to container
+  shell: |
+    cat << 'CINDEREOF' | lxc exec {{ iscsi_container_name }} --project {{ iscsi_container_project }} -- tee /etc/cinder/cinder.conf > /dev/null
+    {{ lookup("template", "cinder.conf.j2") }}
+    CINDEREOF
+  changed_when: false
+
+- name: Configure tgt to include cinder volume configs
+  shell: |
+    lxc exec {{ iscsi_container_name }} --project {{ iscsi_container_project }} -- bash -c '
+    grep -q "include /var/lib/cinder/volumes" /etc/tgt/targets.conf || \
+    echo "include /var/lib/cinder/volumes/*" >> /etc/tgt/targets.conf'
+  changed_when: false
+
+- name: Start tgt service in container
+  shell: >
+    lxc exec {{ iscsi_container_name }} --project {{ iscsi_container_project }} --
+    systemctl restart tgt
+  changed_when: false
+
+- name: Start cinder-volume service in container
+  shell: >
+    lxc exec {{ iscsi_container_name }} --project {{ iscsi_container_project }} --
+    systemctl restart cinder-volume
+  changed_when: false
+
+- name: Grant MySQL access for cinder from container IP
+  shell: |
+    {{ iscsi_juju_cmd }} ssh -m {{ iscsi_juju_model }} {{ iscsi_mysql_juju_unit }} \
+    "sudo mysql -u root -p'{{ iscsi_mysql_root_password }}' --socket=/var/run/mysqld/mysqld.sock -e \"
+    CREATE USER IF NOT EXISTS 'cinder'@'{{ iscsi_portal_ip_1 }}' IDENTIFIED BY '{{ iscsi_mysql_password }}';
+    GRANT ALL PRIVILEGES ON cinder.* TO 'cinder'@'{{ iscsi_portal_ip_1 }}';
+    FLUSH PRIVILEGES;
+    \"" 2>/dev/null
+  changed_when: false
+
+- name: Add virbr2 NIC to compute VMs for second iSCSI path
+  shell: >
+    lxc config device add {{ item.key }} eth2 nic
+    nictype=bridged parent={{ iscsi_portal_bridge_2 }}
+    --project {{ iscsi_compute_lxd_project }}
+  loop: "{{ iscsi_compute_virbr2_ips | dict2items }}"
+  failed_when: false
+  changed_when: false
+
+- name: Configure static IP on virbr2 interface (compute nodes)
+  shell: |
+    {{ iscsi_juju_cmd }} ssh -m {{ iscsi_juju_model }} {{ iscsi_compute_juju_machines[item.key] }} '
+    sudo bash -c "cat > /etc/netplan/60-storage.yaml << EOF
+    network:
+      version: 2
+      ethernets:
+        {{ iscsi_compute_virbr2_nic }}:
+          addresses: [{{ item.value }}/24]
+    EOF
+    chmod 600 /etc/netplan/60-storage.yaml
+    netplan apply"' 2>/dev/null
+  loop: "{{ iscsi_compute_virbr2_ips | dict2items }}"
+  changed_when: false
+
+- name: Install open-iscsi and multipath-tools on compute nodes
+  shell: >
+    {{ iscsi_juju_cmd }} ssh -m {{ iscsi_juju_model }} {{ iscsi_compute_juju_machines[item.key] }}
+    'sudo apt-get install -y -qq open-iscsi multipath-tools' 2>/dev/null
+  loop: "{{ iscsi_compute_virbr2_ips | dict2items }}"
+
+- name: Deploy multipath.conf to compute nodes
+  shell: |
+    {{ iscsi_juju_cmd }} ssh -m {{ iscsi_juju_model }} {{ iscsi_compute_juju_machines[item.key] }} '
+    sudo tee /etc/multipath.conf > /dev/null << EOF
+    {{ lookup("template", "multipath.conf.j2") }}
+    EOF' 2>/dev/null
+  loop: "{{ iscsi_compute_virbr2_ips | dict2items }}"
+  changed_when: false
+
+- name: Enable and start multipathd and iscsid on compute nodes
+  shell: >
+    {{ iscsi_juju_cmd }} ssh -m {{ iscsi_juju_model }} {{ iscsi_compute_juju_machines[item.key] }}
+    'sudo systemctl enable --now multipathd iscsid && sudo multipathd reconfigure' 2>/dev/null
+  loop: "{{ iscsi_compute_virbr2_ips | dict2items }}"
+  changed_when: false
+
+- name: Configure nova-compute to use multipath
+  shell: >
+    {{ iscsi_juju_cmd }} config -m {{ iscsi_juju_model }} nova-compute use-multipath=true
+  changed_when: false
+
+- name: Create LVM_iSCSI volume type
+  shell: >
+    bash -c 'source {{ iscsi_openstack_rc }} >/dev/null 2>&1 &&
+    openstack volume type create {{ iscsi_volume_backend_name }}
+    --property volume_backend_name={{ iscsi_volume_backend_name }}'
+  register: voltype_result
+  failed_when: "voltype_result.rc != 0 and 'already exists' not in voltype_result.stderr"
+  changed_when: "'already exists' not in voltype_result.stderr"

@@ -1,0 +1,215 @@
+---
+- name: Switch to OpenStack model
+  shell: "{{ juju_openstack_cmd }} switch {{ juju_openstack_controller }}:admin/{{ juju_openstack_model }}"
+  changed_when: false
+
+- name: Get Keystone IP from Juju status
+  shell: "{{ juju_openstack_cmd }} status keystone --format json | jq -r '[.applications.keystone.units[]][0][\"public-address\"]'"
+  register: keystone_ip_result
+  changed_when: false
+
+- name: Set Keystone IP fact
+  set_fact:
+    keystone_ip: "{{ keystone_ip_result.stdout }}"
+
+- name: Get admin password from Keystone
+  shell: "{{ juju_openstack_cmd }} run -m {{ juju_openstack_controller }}:admin/{{ juju_openstack_model }} --unit keystone/leader 'leader-get admin_passwd'"
+  register: admin_password_result
+  changed_when: false
+
+- name: Set admin password fact
+  set_fact:
+    admin_password: "{{ admin_password_result.stdout }}"
+
+- name: Read Vault CA certificate
+  slurp:
+    src: "{{ k8s_vault_ca_file | default(project_dir + '/credentials/vault-ca.crt') }}"
+  register: vault_ca_cert
+
+- name: Set Vault CA cert content fact
+  set_fact:
+    vault_ca_cert_content: "{{ vault_ca_cert.content | b64decode }}"
+
+- name: Display discovered OpenStack details
+  debug:
+    msg: |
+      Keystone IP: {{ keystone_ip }}
+      Auth URL: https://{{ keystone_ip }}:5000/v3
+      Admin password: {{ admin_password }}
+
+- name: Create OpenStack cloud definition for Juju
+  copy:
+    content: |
+      clouds:
+        {{ openstack_cloud_name }}:
+          type: openstack
+          auth-types: [userpass]
+          endpoint: https://{{ keystone_ip }}:5000/v3
+          regions:
+            {{ openstack_region }}:
+              endpoint: https://{{ keystone_ip }}:5000/v3
+          ca-certificates:
+            - |
+      {{ vault_ca_cert_content | indent(12, first=True) }}
+    dest: "{{ project_dir }}/openstack-cloud.yaml"
+    mode: '0644'
+
+- name: Add OpenStack cloud to existing Juju controller
+  shell: |
+    {{ juju_k8s_cmd }} add-cloud {{ openstack_cloud_name }} --controller {{ juju_controller_name }} -f {{ project_dir }}/openstack-cloud.yaml --force 2>&1 || \
+    {{ juju_k8s_cmd }} update-cloud {{ openstack_cloud_name }} --controller {{ juju_controller_name }} -f {{ project_dir }}/openstack-cloud.yaml 2>&1
+  register: add_cloud
+  changed_when: add_cloud.rc == 0
+  ignore_errors: true
+  when: not (k8s_bootstrap_controller | default(false))
+
+- name: Add OpenStack cloud locally (for bootstrap)
+  shell: |
+    {{ juju_k8s_cmd }} add-cloud {{ openstack_cloud_name }} --client -f {{ project_dir }}/openstack-cloud.yaml --force 2>&1 || \
+    {{ juju_k8s_cmd }} update-cloud {{ openstack_cloud_name }} --client -f {{ project_dir }}/openstack-cloud.yaml 2>&1
+  register: add_cloud_local
+  changed_when: add_cloud_local.rc == 0
+  ignore_errors: true
+  when: k8s_bootstrap_controller | default(false)
+
+- name: Create OpenStack credentials file
+  copy:
+    content: |
+      credentials:
+        {{ openstack_cloud_name }}:
+          admin:
+            auth-type: userpass
+            username: admin
+            password: {{ admin_password }}
+            tenant-name: admin
+            user-domain-name: admin_domain
+            project-domain-name: admin_domain
+    dest: "{{ project_dir }}/openstack-creds.yaml"
+    mode: '0600'
+
+- name: Remove old credential if exists
+  shell: "{{ juju_k8s_cmd }} remove-credential {{ openstack_cloud_name }} admin --controller {{ juju_controller_name }} 2>/dev/null || true"
+  changed_when: false
+  ignore_errors: true
+  when: not (k8s_bootstrap_controller | default(false))
+
+- name: Add OpenStack credentials to Juju controller
+  shell: "{{ juju_k8s_cmd }} add-credential {{ openstack_cloud_name }} --controller {{ juju_controller_name }} -f {{ project_dir }}/openstack-creds.yaml"
+  register: add_creds
+  changed_when: add_creds.rc == 0
+  ignore_errors: true
+  when: not (k8s_bootstrap_controller | default(false))
+
+- name: Add OpenStack credentials locally (for bootstrap)
+  shell: |
+    {{ juju_k8s_cmd }} remove-credential {{ openstack_cloud_name }} admin --client 2>/dev/null || true
+    {{ juju_k8s_cmd }} add-credential {{ openstack_cloud_name }} --client -f {{ project_dir }}/openstack-creds.yaml
+  register: add_creds_local
+  changed_when: true
+  ignore_errors: true
+  when: k8s_bootstrap_controller | default(false)
+
+- name: Verify OpenStack cloud is visible in controller
+  shell: "{{ juju_k8s_cmd }} clouds --controller {{ juju_controller_name }} --format json | jq -r 'keys[]' | grep {{ openstack_cloud_name }}"
+  register: cloud_verify
+  changed_when: false
+  when: not (k8s_bootstrap_controller | default(false))
+
+- name: Verify OpenStack cloud is available locally
+  shell: "{{ juju_k8s_cmd }} clouds --all --format json | jq -r 'keys[]' | grep {{ openstack_cloud_name }}"
+  register: cloud_verify_local
+  changed_when: false
+  when: k8s_bootstrap_controller | default(false)
+
+- name: Clean up temporary credential files
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ project_dir }}/openstack-creds.yaml"
+  changed_when: false
+
+- name: Display summary
+  debug:
+    msg: |
+      ========================================
+      OpenStack Cloud Added to Juju Controller
+      ========================================
+
+      Controller: {{ juju_controller_name }}
+      Cloud: {{ openstack_cloud_name }}
+      Region: {{ openstack_region }}
+      Auth URL: https://{{ keystone_ip }}:5000/v3
+      Domain: admin_domain
+
+      Cloud visible: {{ (cloud_verify.rc | default(cloud_verify_local.rc | default(1))) == 0 }}
+
+      Next: Create a model on OpenStack with:
+        juju add-model <name> {{ openstack_cloud_name }}/{{ openstack_region }}
+
+      ========================================
+
+- name: Check if ubuntu-jammy image exists in Glance
+  shell: bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && openstack image show ubuntu-jammy -f value -c id 2>/dev/null'
+  register: ubuntu_img_check
+  ignore_errors: true
+  changed_when: false
+  when: k8s_bootstrap_controller | default(false)
+
+- name: Download ubuntu jammy cloud image
+  get_url:
+    url: "{{ k8s_ubuntu_image_url | default('https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img') }}"
+    dest: "{{ project_dir }}/ubuntu-jammy.img"
+    mode: '0644'
+  when: (k8s_bootstrap_controller | default(false)) and (ubuntu_img_check.rc | default(0)) != 0
+
+- name: Upload ubuntu-jammy image to Glance
+  shell: |
+    bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && \
+      openstack image create ubuntu-jammy \
+        --file {{ project_dir }}/ubuntu-jammy.img \
+        --disk-format qcow2 --container-format bare \
+        --public'
+  register: upload_result
+  when: (k8s_bootstrap_controller | default(false)) and (ubuntu_img_check.rc | default(0)) != 0
+
+- name: Get ubuntu-jammy image ID
+  shell: bash -c 'source {{ k8s_openstack_rc | default(project_dir + "/credentials/admin-openrc.sh") }} >/dev/null 2>&1 && openstack image show ubuntu-jammy -f value -c id'
+  register: ubuntu_img_id
+  changed_when: false
+  when: k8s_bootstrap_controller | default(false)
+
+- name: Create juju-metadata directory
+  file:
+    path: "{{ project_dir }}/juju-metadata"
+    state: directory
+    mode: '0755'
+  when: (k8s_bootstrap_controller | default(false)) and (ubuntu_img_id.stdout | default('')) != ''
+
+- name: Verify ubuntu-jammy image is available
+  debug:
+    msg: "ubuntu-jammy image ID: {{ ubuntu_img_id.stdout }}"
+  when: (k8s_bootstrap_controller | default(false)) and (ubuntu_img_id.stdout | default('')) != ''
+
+- name: Check if K8s controller already exists
+  shell: "{{ juju_k8s_cmd }} controllers --format json | jq -r '.controllers | keys[]' | grep '^{{ juju_controller_name }}$'"
+  register: ctrl_check
+  failed_when: false
+  changed_when: false
+  when: k8s_bootstrap_controller | default(false)
+
+- name: Bootstrap Juju 3.6 controller on OpenStack
+  shell: |
+    {{ juju_k8s_cmd }} bootstrap {{ openstack_cloud_name }}/{{ openstack_region }} {{ juju_controller_name }} \
+      --credential {{ k8s_cloud_credential }} \
+      --bootstrap-base {{ k8s_bootstrap_base | default('ubuntu@22.04') }} \
+      --bootstrap-image {{ ubuntu_img_id.stdout }} \
+      --bootstrap-constraints "cores=2 mem=4096 root-disk=20G allocate-public-ip=true arch=amd64" \
+      --model-default network={{ k8s_internal_network }} \
+      --model-default external-network={{ k8s_external_network }} \
+      --model-default use-default-secgroup=true \
+      --model-default image-metadata-defaults-disabled=true
+  when: (k8s_bootstrap_controller | default(false)) and (ctrl_check.rc != 0)
+  register: bootstrap_result
+  timeout: 1200
+

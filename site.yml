@@ -1,0 +1,630 @@
+---
+
+- name: Initialize Host Machine (LXD, libvirt bridges)
+  hosts: localhost
+  connection: local
+  become: true
+  tags: [host, init]
+  roles: [host-init]
+
+- name: Create LXD Containers for MAAS HA
+  hosts: localhost
+  connection: local
+  tags: [maas, lxd]
+  roles: [maas-lxd]
+
+- name: Configure MAAS HA Common (hosts, packages)
+  hosts: maas_ha
+  become: true
+  tags: [maas, common]
+  roles: [maas-common]
+
+- name: Configure PostgreSQL HA
+  hosts: maas_ha
+  become: true
+  tags: [maas, postgresql]
+  roles: [maas-postgresql]
+
+- name: Configure Corosync Cluster
+  hosts: maas_ha
+  become: true
+  tags: [maas, corosync]
+  roles: [maas-corosync]
+
+- name: Configure HAProxy
+  hosts: maas_ha
+  become: true
+  tags: [maas, haproxy]
+  roles: [maas-haproxy]
+
+- name: Configure Pacemaker Resources
+  hosts: maas_ha[0]
+  become: true
+  tags: [maas, pacemaker]
+  roles: [maas-pacemaker]
+
+- name: Initialize MAAS on All Nodes
+  hosts: maas_ha
+  become: true
+  tags: [maas, maas-init]
+  roles: [maas-init]
+
+- name: Sync PostgreSQL Standby Nodes
+  hosts: maas_ha[0]
+  become: true
+  tags: [maas, pgsql-sync]
+  roles: [maas-pgsql-sync]
+
+- name: Cleanup Stale Juju Controllers and LXD Containers
+  hosts: localhost
+  connection: local
+  tags: [infra, cleanup]
+  roles: [infra-cleanup]
+
+- name: Create VMs in MAAS
+  hosts: maas-ha-1
+  tags: [infra, create-vms]
+  roles: [infra-maas-vm]
+
+- name: Configure Network Routing
+  hosts: localhost
+  connection: local
+  tags: [network, host-routing]
+  roles: [infra-network-host]
+
+- name: Configure VM Networking (br-internet and virbr0)
+  hosts: localhost
+  connection: local
+  tags: [network, vm-networking]
+  vars:
+    lxd_project: "maas-managed"
+    control_vms:
+      - os-control-1
+      - os-control-2
+      - os-control-3
+    compute_vms:
+      - os-compute-1
+      - os-compute-2
+  roles: [infra-network-vm]
+
+- name: Bootstrap Juju Controller on MAAS
+  hosts: localhost
+  connection: local
+  tags: [juju, bootstrap]
+  vars:
+    juju_controller_name: "os-controller"
+    juju_model_name: "openstack"
+    juju_cloud_name: "maas-cloud"
+    maas_api_url: "http://192.168.122.10:5240/MAAS"
+    maas_api_key: "mDokAqxvV7XXhOBXd7:sCPM681aA6r3q2F8gu:PCogeKWkIkD0mIeDIQI3K7RWlqshYMZ1"
+  roles: [openstack-bootstrap]
+
+- name: Deploy OpenStack Charms via Juju Bundle
+  hosts: localhost
+  connection: local
+  tags: [deploy, openstack-charms]
+  vars:
+    juju_controller_name: "os-controller"
+    juju_model_name: "openstack"
+    bundle_file: "bundles/openstack-bundle.yaml"
+    lxd_project: "maas-managed"
+    control_vm_names:
+      - os-control-1
+      - os-control-2
+      - os-control-3
+    compute_vm_names:
+      - os-compute-1
+      - os-compute-2
+  roles: [openstack-deploy]
+
+- name: Configure LXD Container Networking for Internet Access
+  hosts: localhost
+  connection: local
+  tags: [deploy, container-networking]
+  vars:
+    lxd_project: "maas-managed"
+    control_vms:
+      - os-control-1
+      - os-control-2
+      - os-control-3
+  roles: [openstack-container-net]
+
+- name: Initialize Vault and Wait for OpenStack Services
+  hosts: localhost
+  connection: local
+  tags: [services, vault-init]
+  vars:
+    juju_controller_name: "os-controller"
+    juju_model_name: "openstack"
+    project_dir: "/home/zhouqt/ansible-homelab"
+  roles: [openstack-vault-init]
+
+- name: Configure OVN Bridge Interface Mappings for Floating IPs
+  hosts: localhost
+  connection: local
+  tags: [services, ovn-bridge]
+  vars:
+    juju_controller_name: "os-controller"
+    juju_model_name: "openstack"
+    lxd_project: "maas-managed"
+    compute_vms:
+      - os-compute-1
+      - os-compute-2
+  roles: [openstack-ovn-bridge]
+
+- name: Configure Management Network for K8s VMs
+  hosts: localhost
+  connection: local
+  tags: [services, mgmt-net]
+  vars:
+    lxd_project: "maas-managed"
+  roles: [openstack-mgmt-net]
+
+- name: Configure OpenStack Credentials and Auth Fixes
+  hosts: localhost
+  connection: local
+  tags: [configure, openstack-setup, openstack-credentials]
+  vars: &openstack_config_vars
+    juju_controller_name: "os-controller"
+    juju_model_name: "openstack"
+    openstack_admin_user: "admin"
+    openstack_admin_password: "openstack123"
+    openstack_demo_password: "demo123"
+    openstack_region: "RegionOne"
+    external_network_name: "ext-net"
+    external_subnet_name: "ext-subnet"
+    external_cidr: "192.168.122.0/24"
+    external_gateway: "192.168.122.1"
+    external_allocation_pool_start: "192.168.122.200"
+    external_allocation_pool_end: "192.168.122.250"
+    internal_network_name: "internal-net"
+    internal_subnet_name: "internal-subnet"
+    internal_cidr: "10.0.0.0/24"
+    internal_gateway: "10.0.0.1"
+    internal_dns_servers: ["8.8.8.8", "8.8.4.4"]
+    flavors:
+      - { name: "m1.micro", ram: 1024, vcpus: 1, disk: 5, id: "0" }
+      - { name: "m1.tiny", ram: 512, vcpus: 1, disk: 5, id: "1" }
+      - { name: "m1.small", ram: 2048, vcpus: 1, disk: 20, id: "2" }
+      - { name: "m1.medium", ram: 4096, vcpus: 2, disk: 40, id: "3" }
+      - { name: "m1.large", ram: 8192, vcpus: 4, disk: 80, id: "4" }
+      - { name: "m1.k8s-node", ram: 4096, vcpus: 2, disk: 20, id: "5" }
+    cirros_image_url: "https://download.cirros-cloud.net/0.6.2/cirros-0.6.2-x86_64-disk.img"
+    project_dir: "/home/zhouqt/ansible-homelab"
+  roles: [openstack-config-credentials]
+
+- name: Configure OpenStack Networks
+  hosts: localhost
+  connection: local
+  tags: [configure, openstack-setup, openstack-network]
+  vars: *openstack_config_vars
+  roles: [openstack-config-network]
+
+- name: Configure OpenStack Resources and Test Instance
+  hosts: localhost
+  connection: local
+  tags: [configure, openstack-setup, openstack-resources]
+  vars: *openstack_config_vars
+  roles: [openstack-config-resources]
+
+- name: Recover OpenStack on LXD After Host Reboot
+  hosts: localhost
+  connection: local
+  tags: [recovery, post-reboot]
+  vars:
+    project_dir: "/home/zhouqt/ansible-homelab"
+    recovery_smoke_network: "int-net"
+    recovery_smoke_image: "cirros-0.5.2"
+    recovery_smoke_flavor: "m1.small"
+    recovery_smoke_server_name: "openstack-recovery-smoke"
+    recovery_smoke_gateway: "10.0.0.1"
+  roles: [openstack-recovery]
+
+- name: Fix Nova-Neutron Service Token Authentication
+  hosts: localhost
+  connection: local
+  tags: [fix, nova-neutron-auth]
+  vars:
+    juju_controller_name: "os-controller"
+    juju_model_name: "openstack"
+    project_dir: "/home/zhouqt/ansible-homelab"
+  roles: [openstack-fix-nova-neutron]
+
+- name: Fix Juju Unit Error States and MySQL Cluster
+  hosts: localhost
+  connection: local
+  tags: [fix, unit-errors]
+  vars:
+    juju_controller_name: "os-controller"
+    juju_model_name: "openstack"
+    project_dir: "/home/zhouqt/ansible-homelab"
+    mysql_cluster_password: "29k68GPL5pxy2PcSpRgN4VbHR3Rdd2FzxJ798BrC2s"
+  roles: [openstack-fix-unit-errors]
+
+- name: Distribute Vault CA Certificate to All Nodes
+  hosts: localhost
+  connection: local
+  tags: [fix, vault-ca-distribution]
+  vars:
+    juju_controller_name: "os-controller"
+    juju_model_name: "openstack"
+    project_dir: "/home/zhouqt/ansible-homelab"
+    openstack_units:
+      - keystone/0
+      - keystone/1
+      - keystone/2
+      - nova-cloud-controller/0
+      - neutron-api/0
+      - glance/0
+      - cinder/0
+      - ovn-central/0
+      - ovn-central/1
+      - ovn-central/2
+      - nova-compute/0
+      - nova-compute/1
+      - ovn-chassis/0
+      - ovn-chassis/1
+  roles: [openstack-fix-vault-ca]
+
+- name: Add OpenStack Cloud to Juju Controller
+  hosts: localhost
+  connection: local
+  tags: [juju, openstack-cloud]
+  vars:
+    juju_controller_name: "{{ k8s_juju_controller_name }}"
+    openstack_cloud_name: "{{ k8s_cloud_name }}"
+    juju_openstack_controller: "os-controller"
+  roles: [k8s-cloud]
+
+- name: Deploy Charmed Kubernetes Bundle on OpenStack
+  hosts: localhost
+  connection: local
+  tags: [k8s, charmed-k8s, k8s-deploy-bundle]
+  vars:
+    juju_controller_name: "{{ k8s_juju_controller_name }}"
+    openstack_cloud_name: "{{ k8s_cloud_name }}"
+  roles: [k8s-deploy-bundle]
+
+- name: Verify Charmed Kubernetes Deployment
+  hosts: localhost
+  connection: local
+  tags: [k8s, charmed-k8s, k8s-deploy-verify]
+  vars:
+    juju_controller_name: "{{ k8s_juju_controller_name }}"
+    openstack_cloud_name: "{{ k8s_cloud_name }}"
+  roles: [k8s-deploy-verify]
+
+- name: Prepare OpenStack for K8s deployment (flavors, quotas)
+  hosts: localhost
+  connection: local
+  tags: [k8s-lxd-os, k8s-lxd-os-prepare]
+  vars:
+    k8s_openstack_rc: "{{ project_dir }}/credentials/admin-openrc-lxd-openstack.sh"
+    project_dir: "/home/zhouqt/ansible-homelab"
+  tasks:
+    - name: Create m1.k8s-node flavor (2vCPU/4GB/20GB)
+      shell: |
+        bash -c 'source {{ k8s_openstack_rc }} >/dev/null 2>&1 && \
+          openstack flavor show m1.k8s-node >/dev/null 2>&1 || \
+          openstack flavor create m1.k8s-node --vcpus 2 --ram 4096 --disk 20 --public'
+      changed_when: false
+
+    - name: Create m1.small flavor (1vCPU/2GB/20GB)
+      shell: |
+        bash -c 'source {{ k8s_openstack_rc }} >/dev/null 2>&1 && \
+          openstack flavor show m1.small >/dev/null 2>&1 || \
+          openstack flavor create m1.small --vcpus 1 --ram 2048 --disk 20 --public'
+      changed_when: false
+
+    - name: Create m1.micro flavor (1vCPU/1GB/5GB)
+      shell: |
+        bash -c 'source {{ k8s_openstack_rc }} >/dev/null 2>&1 && \
+          openstack flavor show m1.micro >/dev/null 2>&1 || \
+          openstack flavor create m1.micro --vcpus 1 --ram 1024 --disk 5 --public'
+      changed_when: false
+
+    - name: Get admin project ID
+      shell: |
+        bash -c 'source {{ k8s_openstack_rc }} >/dev/null 2>&1 && \
+          openstack project show admin --domain admin_domain -f value -c id'
+      register: admin_project_id
+      changed_when: false
+
+    - name: Increase compute quotas for K8s deployment
+      shell: |
+        bash -c 'source {{ k8s_openstack_rc }} >/dev/null 2>&1 && \
+          openstack quota set {{ admin_project_id.stdout }} \
+            --secgroups {{ os_quota_secgroups | default(50) }} \
+            --secgroup-rules {{ os_quota_secgroup_rules | default(500) }} \
+            --instances {{ os_quota_instances | default(30) }} \
+            --cores {{ os_quota_cores | default(40) }} \
+            --ram {{ os_quota_ram | default(102400) }}'
+      changed_when: false
+
+    - name: Increase network quotas for K8s deployment
+      shell: |
+        bash -c 'source {{ k8s_openstack_rc }} >/dev/null 2>&1 && \
+          openstack quota set {{ admin_project_id.stdout }} \
+            --floating-ips {{ os_quota_floating_ips | default(50) }} \
+            --ports {{ os_quota_ports | default(200) }}'
+      changed_when: false
+      ignore_errors: true
+
+- name: Add LXD OpenStack Cloud to Juju and Bootstrap K8s Controller
+  hosts: localhost
+  connection: local
+  tags: [k8s-lxd-os, openstack-cloud-lxd]
+  vars:
+    juju_openstack_controller: "lxd-os-ctrl"
+    juju_openstack_model: "openstack"
+    juju_controller_name: "lxd-os-k8s-ctrl"
+    openstack_cloud_name: "openstack-lxd"
+    k8s_cloud_credential: "admin"
+    k8s_vault_ca_file: "{{ project_dir }}/credentials/vault-ca-lxd-openstack.crt"
+    k8s_bootstrap_controller: true
+    k8s_internal_network: "int-net"
+    k8s_external_network: "ext-net"
+    k8s_openstack_rc: "{{ project_dir }}/credentials/admin-openrc-lxd-openstack.sh"
+    project_dir: "/home/zhouqt/ansible-homelab"
+  roles: [k8s-cloud]
+
+- name: Deploy Charmed Kubernetes Bundle on LXD OpenStack
+  hosts: localhost
+  connection: local
+  tags: [k8s-lxd-os, charmed-k8s-lxd-os, k8s-deploy-bundle]
+  vars: &k8s_lxd_os_vars
+    juju_controller_name: "lxd-os-k8s-ctrl"
+    openstack_cloud_name: "openstack-lxd"
+    k8s_model_name: "k8s"
+    k8s_channel: "1.32/stable"
+    k8s_cloud_credential: "admin"
+    k8s_internal_network: "int-net"
+    k8s_external_network: "ext-net"
+    k8s_openstack_rc: "{{ project_dir }}/credentials/admin-openrc-lxd-openstack.sh"
+    k8s_attach_mgmt_net: false
+    k8s_proxy_ssh: false
+    k8s_lb_enabled: true
+    k8s_ubuntu_image_url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+    containerd_http_proxy: "http://192.168.122.1:12345"
+    containerd_https_proxy: "http://192.168.122.1:12345"
+    containerd_no_proxy: "127.0.0.1,localhost,10.0.0.0/8,192.168.0.0/16,.svc,.cluster.local,rocks.canonical.com"
+    project_dir: "/home/zhouqt/ansible-homelab"
+  roles: [k8s-deploy-bundle]
+
+- name: Verify Charmed Kubernetes on LXD OpenStack
+  hosts: localhost
+  connection: local
+  tags: [k8s-lxd-os, charmed-k8s-lxd-os, k8s-deploy-verify]
+  vars: *k8s_lxd_os_vars
+  roles: [k8s-deploy-verify]
+
+- name: Deploy COS Lite Observability on K8s
+  hosts: localhost
+  connection: local
+  tags: [k8s-lxd-os, cos-lite]
+  vars:
+    <<: *k8s_lxd_os_vars
+    k8s_control_plane_ip: "192.168.122.230"
+  roles: [cos-lite-deploy]
+
+- name: Run Kubernetes e2e CNCF conformance test
+  import_playbook: utils/kubernetes-e2e-conformance-test.yml
+  vars:
+    k8s_juju_controller: "lxd-os-k8s-ctrl"
+    k8s_model: "k8s"
+  tags: [k8s-lxd-os, k8s-e2e, conformance, k8s-e2e-conformance]
+
+- name: Prepare LXD Host for Charmed K8s
+  hosts: localhost
+  connection: local
+  become: true
+  tags: [ck8s-lxd, ck8s-lxd-prepare]
+  roles: [ck8s-lxd-prepare]
+
+- name: Bootstrap Juju Controller on LXD
+  hosts: localhost
+  connection: local
+  tags: [juju, lxd-bootstrap]
+  roles: [juju-lxd-bootstrap]
+
+- name: Deploy Charmed K8s on LXD
+  hosts: localhost
+  connection: local
+  tags: [ck8s-lxd, ck8s-lxd-deploy]
+  roles: [ck8s-lxd-deploy]
+
+- name: "OpenStack LXD: Prepare host and LXD project"
+  hosts: localhost
+  connection: local
+  tags: [openstack-lxd, openstack-lxd-prepare]
+  roles: [openstack-lxd-prepare]
+
+- name: "OpenStack LXD: Bootstrap Juju and configure spaces"
+  hosts: localhost
+  connection: local
+  tags: [openstack-lxd, openstack-lxd-juju]
+  roles: [openstack-lxd-juju]
+
+- name: "OpenStack LXD: Create containers and register machines"
+  hosts: localhost
+  connection: local
+  tags: [openstack-lxd, openstack-lxd-containers]
+  roles: [openstack-lxd-containers]
+
+- name: "OpenStack LXD: Deploy OpenStack bundle"
+  hosts: localhost
+  connection: local
+  tags: [openstack-lxd, openstack-lxd-bundle]
+  roles: [openstack-lxd-bundle]
+
+- name: "OpenStack LXD: Initialize services (Vault, OVN, Ceph)"
+  hosts: localhost
+  connection: local
+  tags: [openstack-lxd, openstack-lxd-services]
+  roles: [openstack-lxd-services]
+
+- name: "OpenStack LXD: Verify and configure (image, flavor, secgroup)"
+  hosts: localhost
+  connection: local
+  tags: [openstack-lxd, openstack-lxd-post-config]
+  roles: [openstack-lxd-config]
+
+- name: Configure OpenStack on LXD - Credentials
+  hosts: localhost
+  connection: local
+  tags: [openstack-lxd, configure, openstack-lxd-full-config, openstack-credentials]
+  vars: &openstack_lxd_config_vars
+    openstack_rc_file: "{{ project_dir }}/credentials/admin-openrc-lxd-openstack.sh"
+    vault_ca_file: "{{ project_dir }}/credentials/vault-ca-lxd-openstack.crt"
+    openstack_lxd_deploy: true
+    juju_controller_name: "lxd-os-ctrl"
+    juju_model_name: "openstack"
+    openstack_admin_user: "admin"
+    openstack_admin_password: "openstack123"
+    openstack_demo_password: "demo123"
+    openstack_region: "RegionOne"
+    external_network_name: "ext-net"
+    external_subnet_name: "ext-subnet"
+    external_cidr: "192.168.122.0/24"
+    external_gateway: "192.168.122.1"
+    external_allocation_pool_start: "192.168.122.200"
+    external_allocation_pool_end: "192.168.122.250"
+    internal_network_name: "internal-net"
+    internal_subnet_name: "internal-subnet"
+    internal_cidr: "10.0.0.0/24"
+    internal_gateway: "10.0.0.1"
+    internal_dns_servers: ["8.8.8.8", "8.8.4.4"]
+    flavors:
+      - { name: "m1.micro", ram: 1024, vcpus: 1, disk: 5, id: "0" }
+      - { name: "m1.tiny", ram: 512, vcpus: 1, disk: 5, id: "1" }
+      - { name: "m1.small", ram: 2048, vcpus: 1, disk: 20, id: "2" }
+      - { name: "m1.medium", ram: 4096, vcpus: 2, disk: 40, id: "3" }
+      - { name: "m1.large", ram: 8192, vcpus: 4, disk: 80, id: "4" }
+      - { name: "m1.k8s-node", ram: 4096, vcpus: 2, disk: 20, id: "5" }
+    cirros_image_url: "https://download.cirros-cloud.net/0.6.2/cirros-0.6.2-x86_64-disk.img"
+    project_dir: "/home/zhouqt/ansible-homelab"
+  roles: [openstack-config-credentials]
+
+- name: Configure OpenStack on LXD - Networks
+  hosts: localhost
+  connection: local
+  tags: [openstack-lxd, configure, openstack-lxd-full-config, openstack-network]
+  vars: *openstack_lxd_config_vars
+  roles: [openstack-config-network]
+
+- name: Configure OpenStack on LXD - Resources
+  hosts: localhost
+  connection: local
+  tags: [openstack-lxd, configure, openstack-lxd-full-config, openstack-resources]
+  vars: *openstack_lxd_config_vars
+  roles: [openstack-config-resources]
+
+- name: Deploy LMA stack for OpenStack on LXD
+  hosts: localhost
+  connection: local
+  become: false
+  tags: [openstack-lxd-lma, openstack-lxd]
+  roles: [openstack-lxd-lma]
+
+- name: Deploy Octavia Load Balancer for OpenStack on LXD
+  hosts: localhost
+  connection: local
+  tags: [openstack-lxd-octavia, openstack-lxd]
+  vars:
+    juju_controller_name: "lxd-os-ctrl"
+    juju_model_name: "openstack"
+    project_dir: "/home/zhouqt/ansible-homelab"
+  roles: [openstack-lxd-octavia]
+
+- name: Deploy ceph-fs (CephFS Metadata Server) for OpenStack on LXD
+  hosts: localhost
+  connection: local
+  tags: [openstack-lxd-ceph-fs]
+  vars:
+    juju_controller_name: "lxd-os-ctrl"
+    juju_model_name: "openstack"
+  roles: [openstack-lxd-ceph-fs]
+
+- name: Setup iSCSI Multipath Storage
+  hosts: localhost
+  connection: local
+  become: true
+  tags: [iscsi-storage]
+  roles: [iscsi-multipath-storage]
+
+- name: Setup iSCSI Storage in cinder/0 for LXD OpenStack
+  hosts: localhost
+  connection: local
+  tags: [iscsi-storage-lxd, openstack-lxd]
+  vars:
+    project_dir: "/home/zhouqt/ansible-homelab"
+  roles: [iscsi-cinder-native]
+
+- name: Deploy cinder-oceanstor (Huawei) backend for OpenStack on LXD
+  hosts: localhost
+  connection: local
+  tags: [openstack-lxd-cinder-oceanstor]
+  vars:
+    juju_controller_name: "lxd-os-ctrl"
+    juju_model_name: "openstack"
+  roles: [openstack-lxd-cinder-oceanstor]
+
+- name: Deploy nova-compute-kvm for OpenStack on LXD
+  hosts: localhost
+  connection: local
+  tags: [openstack-lxd-nova-compute-kvm]
+  vars:
+    juju_controller_name: "lxd-os-ctrl"
+    juju_model_name: "openstack"
+  roles: [openstack-lxd-nova-compute-kvm]
+
+- name: Prepare PVE host and focal template (one-time, optional)
+  hosts: pve
+  become: false
+  tags: [never, pve-prepare]
+  roles: [pve-prepare]
+
+- name: Deploy MAAS region+rack controller on PVE
+  hosts: pve
+  become: false
+  tags: [never, pve-maas]
+  roles: [pve-maas]
+
+- name: Bootstrap Juju manual controller on PVE
+  hosts: pve
+  become: false
+  tags: [never, pve-juju-ctrl]
+  roles: [pve-juju-ctrl]
+
+- name: Create and register PVE Juju workload machines
+  hosts: pve
+  become: false
+  tags: [never, pve-machines]
+  roles: [pve-machines]
+
+- name: Configure PVE Juju network spaces after workload registration
+  hosts: pve
+  become: false
+  tags: [never, pve-juju-network]
+  roles: [pve-juju-network]
+
+- name: Deploy OpenStack control plane on PVE Juju
+  hosts: pve
+  become: false
+  tags: [never, pve-control-plane]
+  pre_tasks:
+    - name: Validate PVE Juju network spaces before deploying OpenStack charms
+      ansible.builtin.include_role:
+        name: pve-juju-network
+        apply:
+          tags: [pve-control-plane]
+      vars:
+        pve_juju_network_validate_only: true
+      tags: [pve-control-plane]
+  roles: [pve-control-plane]
+
+- name: Configure the PVE compute pub11 uplink for OVN br-ex
+  hosts: pve
+  become: false
+  tags: [never, pve-ovn-uplink]
+  roles: [pve-ovn-uplink]

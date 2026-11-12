@@ -1,0 +1,24 @@
+[Unit]
+Description=Setup loopback device for Ceph OSD {{ osd_index }}
+DefaultDependencies=no
+After=local-fs.target snap.lxd.daemon.service
+Before=lvm2-activation.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c 'losetup -j {{ osd_storage_file }} --noheadings | grep -q . || losetup --find --show {{ osd_storage_file }}'
+ExecStartPost=/bin/bash -c '\
+  DEV=$(losetup -j {{ osd_storage_file }} -O NAME --noheadings | tr -d " "); \
+  CONTAINER=$(juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} ceph-osd --format json 2>/dev/null | \
+    jq -r ".applications[\"ceph-osd\"].units[\"ceph-osd/{{ osd_index }}\"].machine" | \
+    xargs -I{} juju-29 status -m {{ os_lxd_juju_controller }}:{{ os_lxd_model_name }} --format json 2>/dev/null | \
+    jq -r ".machines[\"{}\"].hostname"); \
+  if [ -n "$CONTAINER" ] && [ "$CONTAINER" != "null" ]; then \
+    lxc config device set "$CONTAINER" osd-loop source=$DEV --project {{ os_lxd_project }} 2>/dev/null || true; \
+    lxc config device set "$CONTAINER" osd-loop mode=0660 uid=64045 gid=64045 --project {{ os_lxd_project }} 2>/dev/null || true; \
+  fi'
+ExecStop=/bin/bash -c 'losetup -d $(losetup -j {{ osd_storage_file }} -O NAME --noheadings) 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target

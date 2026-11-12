@@ -1,0 +1,202 @@
+---
+- name: Create credentials directory in project
+  file:
+    path: "{{ project_dir }}/credentials"
+    state: directory
+    mode: '0700'
+
+- name: Switch to openstack model
+  shell: "{{ juju_openstack_cmd }} switch {{ juju_controller_name }}:admin/{{ juju_model_name }}"
+  changed_when: false
+
+- name: Wait for Vault to be in blocked state (waiting for initialization)
+  shell: |
+    {{ juju_openstack_cmd }} status vault --format json 2>/dev/null | jq -r '.applications.vault.units["vault/leader"]["workload-status"].current // .applications.vault.units["vault/0"]["workload-status"].current'
+  register: vault_status
+  until: vault_status.stdout == "blocked" or vault_status.stdout == "active"
+  retries: 60
+  delay: 30
+  changed_when: false
+
+- name: Get Vault unit IP address
+  shell: |
+    {{ juju_openstack_cmd }} status vault --format json 2>/dev/null | jq -r '.applications.vault.units["vault/0"]["public-address"]'
+  register: vault_ip
+  changed_when: false
+
+- name: Check if Vault is already initialized
+  shell: |
+    curl -sk http://{{ vault_ip.stdout }}:8200/v1/sys/init 2>/dev/null | jq -r '.initialized'
+  register: vault_initialized
+  changed_when: false
+  ignore_errors: true
+
+- name: Initialize Vault via HTTP API
+  shell: |
+    curl -sk http://{{ vault_ip.stdout }}:8200/v1/sys/init \
+      -X PUT \
+      -d '{"secret_shares": 5, "secret_threshold": 3}' \
+      2>/dev/null
+  register: vault_init_response
+  when: vault_initialized.stdout != "true"
+  changed_when: vault_init_response.rc == 0
+
+- name: Parse and save Vault keys
+  shell: |
+    echo '{{ vault_init_response.stdout }}' | jq -r '
+      "Vault Unseal Keys and Root Token",
+      "=================================",
+      "Generated: {{ ansible_date_time.date }}",
+      "",
+      "Unseal Keys (need 3 of 5 to unseal):",
+      "  Key 1: \(.keys[0])",
+      "  Key 2: \(.keys[1])",
+      "  Key 3: \(.keys[2])",
+      "  Key 4: \(.keys[3])",
+      "  Key 5: \(.keys[4])",
+      "",
+      "Root Token: \(.root_token)",
+      "",
+      "Vault Address: http://{{ vault_ip.stdout }}:8200"
+    ' > {{ project_dir }}/vault-keys.txt
+    chmod 600 {{ project_dir }}/vault-keys.txt
+  when: vault_init_response is changed
+  changed_when: true
+
+- name: Extract unseal keys and root token
+  shell: |
+    echo '{{ vault_init_response.stdout }}' | jq -r '.keys[0]'
+  register: vault_key1
+  when: vault_init_response is changed
+  changed_when: false
+
+- name: Extract unseal key 2
+  shell: echo '{{ vault_init_response.stdout }}' | jq -r '.keys[1]'
+  register: vault_key2
+  when: vault_init_response is changed
+  changed_when: false
+
+- name: Extract unseal key 3
+  shell: echo '{{ vault_init_response.stdout }}' | jq -r '.keys[2]'
+  register: vault_key3
+  when: vault_init_response is changed
+  changed_when: false
+
+- name: Extract root token
+  shell: echo '{{ vault_init_response.stdout }}' | jq -r '.root_token'
+  register: vault_root_token
+  when: vault_init_response is changed
+  changed_when: false
+
+- name: Load existing Vault keys if already initialized
+  block:
+    - name: Read existing vault keys file
+      shell: |
+        grep "Key 1:" {{ project_dir }}/vault-keys.txt | awk '{print $3}'
+      register: vault_key1
+    - name: Read key 2
+      shell: grep "Key 2:" {{ project_dir }}/vault-keys.txt | awk '{print $3}'
+      register: vault_key2
+    - name: Read key 3
+      shell: grep "Key 3:" {{ project_dir }}/vault-keys.txt | awk '{print $3}'
+      register: vault_key3
+    - name: Read root token
+      shell: grep "Root Token:" {{ project_dir }}/vault-keys.txt | awk '{print $3}'
+      register: vault_root_token
+  when: vault_initialized.stdout == "true"
+  ignore_errors: true
+
+- name: Unseal Vault with 3 keys
+  shell: |
+    curl -sk http://{{ vault_ip.stdout }}:8200/v1/sys/unseal \
+      -X PUT -d '{"key": "{{ item }}"}'
+  loop:
+    - "{{ vault_key1.stdout }}"
+    - "{{ vault_key2.stdout }}"
+    - "{{ vault_key3.stdout }}"
+  changed_when: true
+  ignore_errors: true
+
+- name: Wait for Vault to unseal
+  shell: |
+    curl -sk http://{{ vault_ip.stdout }}:8200/v1/sys/seal-status 2>/dev/null | jq -r '.sealed'
+  register: vault_sealed
+  until: vault_sealed.stdout == "false"
+  retries: 10
+  delay: 5
+  changed_when: false
+
+- name: Create temporary token for charm authorization
+  shell: |
+    curl -sk http://{{ vault_ip.stdout }}:8200/v1/auth/token/create \
+      -H "X-Vault-Token: {{ vault_root_token.stdout }}" \
+      -d '{"ttl": "10m"}' 2>/dev/null | jq -r '.auth.client_token'
+  register: vault_temp_token
+  changed_when: false
+
+- name: Authorize Vault charm with temporary token
+  shell: |
+    {{ juju_openstack_cmd }} run-action --wait vault/leader authorize-charm token={{ vault_temp_token.stdout }}
+  register: vault_authorize
+  changed_when: true
+  ignore_errors: true
+
+- name: Generate Vault root CA
+  shell: |
+    {{ juju_openstack_cmd }} run-action --wait vault/leader generate-root-ca
+  register: vault_generate_ca
+  changed_when: true
+  ignore_errors: true
+
+- name: Save Vault CA certificate
+  shell: |
+    {{ juju_openstack_cmd }} run-action --wait vault/leader get-root-ca 2>/dev/null | \
+    sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' | \
+    sed 's/^ *//' > {{ project_dir }}/credentials/vault-ca.crt
+  changed_when: true
+  ignore_errors: true
+
+- name: Set Vault CA certificate permissions
+  file:
+    path: "{{ project_dir }}/credentials/vault-ca.crt"
+    mode: '0644'
+  ignore_errors: true
+
+- name: Wait for services to stabilize after Vault init
+  pause:
+    minutes: 5
+
+- name: Rebuild OVN central certificates
+  shell: |
+    {{ juju_openstack_cmd }} run-action ovn-central/0 rebuild-certs --wait 2>&1 || true
+    {{ juju_openstack_cmd }} run-action ovn-central/1 rebuild-certs --wait 2>&1 || true
+    {{ juju_openstack_cmd }} run-action ovn-central/2 rebuild-certs --wait 2>&1 || true
+  register: ovn_certs_rebuild
+  changed_when: true
+  ignore_errors: true
+
+- name: Restart OVN services on chassis
+  shell: |
+    for unit in $({{ juju_openstack_cmd }} status ovn-chassis --format json 2>/dev/null | jq -r '.applications.ovn-chassis.units | keys[]'); do
+      echo "Restarting OVN on $unit"
+      {{ juju_openstack_cmd }} ssh $unit 'sudo systemctl restart ovn-controller ovn-controller-vif' 2>/dev/null || true
+    done
+  changed_when: true
+  ignore_errors: true
+
+- name: Wait for Keystone to be active
+  shell: "{{ juju_openstack_cmd }} status keystone --format json 2>/dev/null | jq -r '.applications.keystone.units[] | select(.workload-status == \"active\") | .workload-status'"
+  register: keystone_status
+  until: keystone_status.stdout == "active"
+  retries: 60
+  delay: 30
+  changed_when: false
+
+- name: Display final deployment status
+  shell: "{{ juju_openstack_cmd }} status"
+  register: final_status
+  changed_when: false
+
+- debug:
+    msg: "{{ final_status.stdout }}"
+
