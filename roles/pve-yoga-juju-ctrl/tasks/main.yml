@@ -179,7 +179,7 @@
 
 - name: Push the yoga cap.drop helper to the PVE host
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/pve/scripts/yoga-set-capdrop.py"
+    src: "{{ repo_root }}/pve/scripts/yoga-set-capdrop.py"
     dest: /root/yoga-set-capdrop.py
     owner: root
     group: root
@@ -292,7 +292,7 @@
 
 - name: Push the yoga APT-mirror helper to the PVE host
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/pve/scripts/yoga-apt-mirror.sh"
+    src: "{{ repo_root }}/pve/scripts/yoga-apt-mirror.sh"
     dest: /root/yoga-apt-mirror.sh
     owner: root
     group: root

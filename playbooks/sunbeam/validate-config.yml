@@ -3,7 +3,7 @@
   hosts: localhost
   gather_facts: false
   vars_files:
-    - ../../group_vars/sunbeam_pve.yml
+    - ../../inventory/group_vars/all/sunbeam.yml
     - ../../roles/sunbeam-pve/defaults/main.yml
   vars:
     sunbeam_show_nodes: false

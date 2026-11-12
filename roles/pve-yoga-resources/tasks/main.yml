@@ -6,7 +6,7 @@
     pve_yoga_model: "{{ pve_yoga_controller_name }}:{{ pve_yoga_model_name }}"
     pve_yoga_openstack_argv:
       - bash
-      - "{{ playbook_dir }}/openstack-wrapper.sh"
+      - "{{ repo_root }}/openstack-wrapper.sh"
       - openstack
     pve_yoga_openstack_env:
       OPENSTACK_RC_FILE: "{{ pve_yoga_openrc_file }}"

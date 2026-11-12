@@ -10,7 +10,7 @@
 
 - name: Render the compute/ceph deployment script on the PVE host
   ansible.builtin.template:
-    src: "{{ playbook_dir }}/roles/pve-control-plane/templates/{{ pve_deploy_control_template }}"
+    src: "{{ repo_root }}/roles/pve-control-plane/templates/{{ pve_deploy_control_template }}"
     dest: /root/deploy-compute-ceph.sh
     mode: "0700"
 

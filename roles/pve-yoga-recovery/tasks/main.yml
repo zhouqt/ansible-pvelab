@@ -38,7 +38,7 @@
 
 - name: Copy the Ceph OSD boot-activation helpers to the PVE host
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/pve/scripts/{{ item }}"
+    src: "{{ repo_root }}/pve/scripts/{{ item }}"
     dest: "/root/{{ item }}"
     owner: root
     group: root

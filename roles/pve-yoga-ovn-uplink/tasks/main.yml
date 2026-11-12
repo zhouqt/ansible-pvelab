@@ -149,7 +149,7 @@
 
 - name: Copy OVN uplink mapping helper to PVE host
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/roles/pve-yoga-ovn-uplink/files/configure-ovn-uplink.sh"
+    src: "{{ role_path }}/files/configure-ovn-uplink.sh"
     dest: /root/yoga-configure-ovn-uplink.sh
     owner: root
     group: root

@@ -25,7 +25,7 @@
 
 - name: Copy the MySQL grant reconcile helper to the PVE host
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/pve/scripts/ussuri-reconcile-mysql-grants.py"
+    src: "{{ repo_root }}/pve/scripts/ussuri-reconcile-mysql-grants.py"
     dest: /root/ussuri-reconcile-mysql-grants.py
     owner: root
     group: root

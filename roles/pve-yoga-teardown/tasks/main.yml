@@ -188,7 +188,7 @@
   changed_when: "'destroyed=' in pve_yoga_teardown_guests.stdout and 'destroyed=0' not in pve_yoga_teardown_guests.stdout"
 
 - name: Enable LVM discards before releasing any volume
-  ansible.builtin.script: "{{ playbook_dir }}/pve/scripts/yoga-set-issue-discards.sh"
+  ansible.builtin.script: "{{ repo_root }}/pve/scripts/yoga-set-issue-discards.sh"
   register: pve_yoga_teardown_issue_discards
   changed_when: "'changed=1' in (pve_yoga_teardown_issue_discards.stdout | default(''))"
   failed_when: >-

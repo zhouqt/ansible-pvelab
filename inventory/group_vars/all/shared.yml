@@ -1,0 +1,27 @@
+---
+
+apt_mirror: "cn.archive.ubuntu.com"
+
+openstack_region: "RegionOne"
+
+k8s_channel: "1.32/stable"
+
+lma_nrpe_targets:
+  - nova-compute
+  - nova-compute-kvm
+  - ceph-osd
+  - ceph-mon
+  - keystone
+  - cinder
+  - glance
+  - neutron-api
+  - nova-cloud-controller
+  - rabbitmq-server
+  - mysql-innodb-cluster
+  - vault
+  - openstack-dashboard
+  - placement
+  - ovn-central
+
+repo_root: "{{ inventory_dir | dirname }}"
+

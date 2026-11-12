@@ -320,7 +320,7 @@
   when: pve_ussuri_savepoint_converge | bool
 
 - name: Verify the OpenStack API answers
-  ansible.builtin.command: "bash {{ playbook_dir }}/openstack-wrapper.sh openstack token issue"
+  ansible.builtin.command: "bash {{ repo_root }}/openstack-wrapper.sh openstack token issue"
   delegate_to: localhost
   become: false
   register: pve_ussuri_token

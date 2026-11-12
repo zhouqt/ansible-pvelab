@@ -55,7 +55,7 @@ pve_ussuri_k8s_aggregate: k8s-az
 pve_ussuri_k8s_wait_unit_active_retries: 120
 pve_ussuri_k8s_wait_unit_active_delay: 15
 
-pve_ussuri_k8s_openstack_wrapper: "{{ playbook_dir }}/openstack-wrapper.sh"
+pve_ussuri_k8s_openstack_wrapper: "{{ repo_root }}/openstack-wrapper.sh"
 pve_ussuri_k8s_image_name: ubuntu-jammy
 pve_ussuri_k8s_image_id: ""
 pve_ussuri_k8s_secgroup_quota: 10
@@ -68,8 +68,8 @@ pve_ussuri_k8s_admin_domain: admin_domain
 pve_ussuri_k8s_admin_project: admin
 pve_ussuri_k8s_admin_username: admin
 pve_ussuri_k8s_credential_name: admin
-pve_ussuri_k8s_admin_password_file: "{{ playbook_dir }}/credentials/pve-openstack-keystone-admin-password.txt"
-pve_ussuri_k8s_vault_ca_file: "{{ playbook_dir }}/credentials/vault-ca-pve-openstack.crt"
+pve_ussuri_k8s_admin_password_file: "{{ repo_root }}/credentials/pve-openstack-keystone-admin-password.txt"
+pve_ussuri_k8s_vault_ca_file: "{{ repo_root }}/credentials/vault-ca-pve-openstack.crt"
 pve_ussuri_k8s_update_credential: false
 
 pve_ussuri_k8s_controller_name: os-k8s-controller
@@ -88,7 +88,7 @@ pve_ussuri_k8s_model_name: k8s-132
 pve_ussuri_k8s_model_constraints: "zones={{ pve_ussuri_k8s_aggregate }}"
 pve_ussuri_k8s_bundle: charmed-kubernetes
 pve_ussuri_k8s_channel: "{{ k8s_channel }}"
-pve_ussuri_k8s_overlay_src: "{{ playbook_dir }}/bundles/charmed-k8s-ussuri-overlay.yaml"
+pve_ussuri_k8s_overlay_src: "{{ repo_root }}/bundles/charmed-k8s-ussuri-overlay.yaml"
 pve_ussuri_k8s_overlay_name: k8s-ussuri-overlay.yaml
 pve_ussuri_k8s_deploy_timeout: 3600
 

@@ -81,7 +81,7 @@
       and retry.
 
 - name: Enable LVM discards on the PVE host
-  ansible.builtin.script: "{{ playbook_dir }}/pve/scripts/yoga-set-issue-discards.sh"
+  ansible.builtin.script: "{{ repo_root }}/pve/scripts/yoga-set-issue-discards.sh"
   register: pve_yoga_prepare_issue_discards
   changed_when: "'changed=1' in (pve_yoga_prepare_issue_discards.stdout | default(''))"
   failed_when: >-

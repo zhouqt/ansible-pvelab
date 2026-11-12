@@ -5,7 +5,7 @@
     pve_ussuri_model: "{{ pve_juju_controller_name }}:{{ pve_ussuri_model_name }}"
     pve_ussuri_openstack_argv:
       - bash
-      - "{{ playbook_dir }}/openstack-wrapper.sh"
+      - "{{ repo_root }}/openstack-wrapper.sh"
       - openstack
     pve_ussuri_openstack_env:
       OPENSTACK_RC_FILE: "{{ pve_ussuri_openrc_file }}"

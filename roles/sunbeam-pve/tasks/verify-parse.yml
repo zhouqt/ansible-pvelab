@@ -42,7 +42,7 @@
       volumes are not the ones the rest of the playbook reasons about.
       To verify a freshly built environment and record it as the new baseline, run with
       -e sunbeam_baseline_enforced=false, check the output, then update the fingerprint in
-      group_vars/sunbeam_pve.yml.
+      inventory/group_vars/all/sunbeam.yml.
   when:
     - sunbeam_baseline_enforced | bool
     - sunbeam_baseline_configured | bool

@@ -81,10 +81,10 @@
 - name: Define the bundle artifacts and their staged names
   ansible.builtin.set_fact:
     pve_yoga_bundle_artifacts:
-      - src: "{{ playbook_dir }}/bundles/openstack-pve-bundle.yaml.j2"
+      - src: "{{ repo_root }}/bundles/openstack-pve-bundle.yaml.j2"
         staged: openstack-pve-bundle.yaml
         render: true
-      - src: "{{ playbook_dir }}/bundles/openstack-pve-overlay.yaml"
+      - src: "{{ repo_root }}/bundles/openstack-pve-overlay.yaml"
         staged: openstack-pve-overlay.yaml
         render: false
       - src: null
@@ -684,7 +684,7 @@
 
 - name: Copy the nova client refresh helper to the PVE host
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/pve/scripts/yoga-restart-nova-clients.sh"
+    src: "{{ repo_root }}/pve/scripts/yoga-restart-nova-clients.sh"
     dest: /root/yoga-restart-nova-clients.sh
     owner: root
     group: root

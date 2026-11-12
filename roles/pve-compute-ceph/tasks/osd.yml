@@ -2,7 +2,7 @@
 
 - name: Copy the OSD helper scripts to the PVE host
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/pve/scripts/{{ item }}"
+    src: "{{ repo_root }}/pve/scripts/{{ item }}"
     dest: "/root/{{ item }}"
     owner: root
     group: root

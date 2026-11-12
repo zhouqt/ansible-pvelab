@@ -110,7 +110,7 @@
 
 - name: Push the yoga cap.drop helper to the PVE host
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/pve/scripts/yoga-set-capdrop.py"
+    src: "{{ repo_root }}/pve/scripts/yoga-set-capdrop.py"
     dest: /root/yoga-set-capdrop.py
     owner: root
     group: root
@@ -189,7 +189,7 @@
 
 - name: Push the thin-LV OSD helper to the PVE host
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/pve/scripts/yoga-setup-osd-lv.sh"
+    src: "{{ repo_root }}/pve/scripts/yoga-setup-osd-lv.sh"
     dest: /root/yoga-setup-osd-lv.sh
     owner: root
     group: root
@@ -319,7 +319,7 @@
 
 - name: Push yoga CT init script to PVE host
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/pve/scripts/juju-ct-init.sh"
+    src: "{{ repo_root }}/pve/scripts/juju-ct-init.sh"
     dest: /root/juju-yoga-ct-init.sh
     owner: root
     group: root
@@ -340,7 +340,7 @@
 
 - name: Push the yoga APT-mirror helper to the PVE host
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/pve/scripts/yoga-apt-mirror.sh"
+    src: "{{ repo_root }}/pve/scripts/yoga-apt-mirror.sh"
     dest: /root/yoga-apt-mirror.sh
     owner: root
     group: root
@@ -398,7 +398,7 @@
 
 - name: Copy yoga machine-registration helper to PVE host
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/pve/scripts/yoga-add-juju-machine.sh"
+    src: "{{ repo_root }}/pve/scripts/yoga-add-juju-machine.sh"
     dest: /root/yoga-add-juju-machine.sh
     owner: root
     group: root
@@ -537,7 +537,7 @@
 
 - name: Push the yoga hosts-sync helper to the PVE host
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/pve/scripts/yoga-hosts-sync.sh"
+    src: "{{ repo_root }}/pve/scripts/yoga-hosts-sync.sh"
     dest: /root/yoga-hosts-sync.sh
     owner: root
     group: root
