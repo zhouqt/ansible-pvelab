@@ -3,6 +3,8 @@
 - name: Sunbeam on PVE — join
   hosts: pve
   gather_facts: false
+  vars:
+    sunbeam_stage: join
   vars_files:
     - ../../group_vars/sunbeam_pve.yml
   tasks:

@@ -3,6 +3,8 @@
 - name: Sunbeam on PVE — bootstrap
   hosts: pve
   gather_facts: false
+  vars:
+    sunbeam_stage: bootstrap
   vars_files:
     - ../../group_vars/sunbeam_pve.yml
   tasks:

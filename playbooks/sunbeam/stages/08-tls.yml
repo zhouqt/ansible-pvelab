@@ -3,6 +3,8 @@
 - name: Sunbeam on PVE — tls
   hosts: pve
   gather_facts: false
+  vars:
+    sunbeam_stage: tls
   vars_files:
     - ../../group_vars/sunbeam_pve.yml
   tasks:

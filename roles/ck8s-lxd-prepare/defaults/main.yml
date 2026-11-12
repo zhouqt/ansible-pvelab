@@ -1,5 +1,0 @@
----
-k8s_lxd_project: "k8s1"
-k8s_lxd_bridge_internet: "virbr0"
-k8s_lxd_bridge_pod: "virbr1"
-k8s_lxd_profile_name: "juju-ck8s"

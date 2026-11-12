@@ -3,6 +3,8 @@
 - name: Sunbeam on PVE — observability
   hosts: pve
   gather_facts: false
+  vars:
+    sunbeam_stage: observability
   vars_files:
     - ../../group_vars/sunbeam_pve.yml
   tasks:

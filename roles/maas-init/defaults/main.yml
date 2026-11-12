@@ -1,4 +1,0 @@
----
-maas_snap_channel: "3.7/stable"
-maas_database_name: "maasdb"
-maas_region_mode: "region+rack"

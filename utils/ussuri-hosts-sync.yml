@@ -1,9 +1,0 @@
----
-- name: Install the env1 static name resolution map into every guest
-  hosts: pve
-  become: false
-  tasks:
-    - name: Run the pve-machines hosts-sync task file
-      ansible.builtin.include_role:
-        name: pve-machines
-        tasks_from: hosts-sync

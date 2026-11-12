@@ -3,6 +3,8 @@
 - name: Sunbeam on PVE — system-uuid
   hosts: pve
   gather_facts: false
+  vars:
+    sunbeam_stage: system-uuid
   vars_files:
     - ../../group_vars/sunbeam_pve.yml
   tasks:

@@ -1,6 +1,0 @@
----
-k8s_lxd_project: "k8s1"
-k8s_lxd_juju_controller: "ck8s-controller"
-k8s_lxd_juju_agent_version: "3.6.8"
-k8s_lxd_juju_db_channel: "4.4/stable"
-k8s_lxd_model_name: "ck8s"

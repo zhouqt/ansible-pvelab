@@ -3,6 +3,8 @@
 - name: Sunbeam on PVE — pve-prepare
   hosts: pve
   gather_facts: false
+  vars:
+    sunbeam_stage: pve-prepare
   vars_files:
     - ../../group_vars/sunbeam_pve.yml
   tasks:

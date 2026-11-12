@@ -3,6 +3,8 @@
 - name: Sunbeam on PVE — logging-tune
   hosts: pve
   gather_facts: false
+  vars:
+    sunbeam_stage: logging-tune
   vars_files:
     - ../../group_vars/sunbeam_pve.yml
   tasks:

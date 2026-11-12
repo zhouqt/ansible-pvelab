@@ -3,6 +3,8 @@
 - name: Sunbeam on PVE — vm-volume-test
   hosts: pve
   gather_facts: false
+  vars:
+    sunbeam_stage: vm-volume-test
   vars_files:
     - ../../group_vars/sunbeam_pve.yml
   tasks:

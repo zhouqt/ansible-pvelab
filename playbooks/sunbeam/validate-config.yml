@@ -1,0 +1,213 @@
+---
+- name: Validate the Sunbeam input section
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../group_vars/sunbeam_pve.yml
+    - ../../roles/sunbeam-pve/defaults/main.yml
+  vars:
+    sunbeam_show_nodes: false
+  tasks:
+    - name: Assert the node list is internally consistent
+      ansible.builtin.assert:
+        that:
+          - sunbeam_nodes | length >= 1
+          - sunbeam_nodes | length == sunbeam_cluster_list_expected_nodes | int
+          - sunbeam_nodes | selectattr('primary') | list | length == 1
+          - sunbeam_nodes | map(attribute='fqdn') | unique | length == sunbeam_nodes | length
+          - sunbeam_nodes | map(attribute='vmid') | unique | length == sunbeam_nodes | length
+          - sunbeam_nodes | map(attribute='hostname') | unique | length == sunbeam_nodes | length
+          - sunbeam_nodes | map(attribute='pub_ip') | unique | length == sunbeam_nodes | length
+          - sunbeam_nodes | map(attribute='internal_ip') | unique | length == sunbeam_nodes | length
+        fail_msg: >-
+          Node list is not internally consistent: check sunbeam_nodes_input (the
+          count must equal sunbeam_cluster_list_expected_nodes={{ sunbeam_cluster_list_expected_nodes }},
+          exactly one primary, and vmid/hostname/fqdn/pub_ip/internal_ip must all
+          be unique).
+
+    - name: Assert every node carries the required fields
+      ansible.builtin.assert:
+        that:
+          - item.hostname | length > 0
+          - item.role | length > 0
+          - item.pub_ip | length > 0
+          - item.internal_ip | length > 0
+          - item.osd_by_id | length > 0
+          - item.osd_pve_lv | length > 0
+          - item.osd_microceph_device | length > 0
+        fail_msg: "Node {{ item.vmid }} is missing required fields (hostname/role/pub_ip/internal_ip/OSD paths)."
+      loop: "{{ sunbeam_nodes }}"
+      loop_control:
+        label: "{{ item.fqdn }}"
+
+    - name: Assert at least one control-plane node exists
+      ansible.builtin.assert:
+        that:
+          - sunbeam_nodes | selectattr('role', 'search', 'control') | list | length >= 1
+        fail_msg: "No node carries the control role."
+
+    - name: Assert the interface and bridge maps cover all three network roles
+      ansible.builtin.assert:
+        that:
+          - sunbeam_interface_names.keys() | sort == ['external', 'generic', 'internal']
+          - sunbeam_pve_bridges.keys() | sort == ['external', 'generic', 'internal']
+        fail_msg: >-
+          sunbeam_interface_names / sunbeam_pve_bridges must both contain the
+          generic / internal / external keys.
+
+    - name: Collect every node that reuses a devN index
+      ansible.builtin.set_fact:
+        sunbeam_dev_index_conflicts: >-
+          {%- set out = [] -%}
+          {%- for n in sunbeam_nodes -%}
+          {%-   set idx = n.pve_devices | map(attribute='index') | list
+                       + (n.char_devices | default([]) | map(attribute='index') | list) -%}
+          {%-   if n.loop_devices | bool -%}
+          {%-     set idx = idx + range(sunbeam_loop_device_first, sunbeam_loop_device_last + 1) | list
+                       + (sunbeam_loop_device_low_slots | map(attribute='slot') | list) -%}
+          {%-   endif -%}
+          {%-   if idx | length != idx | unique | length -%}
+          {%-     set _ = out.append(n.fqdn) -%}
+          {%-   endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Assert no node has a duplicated devN slot
+      ansible.builtin.assert:
+        that:
+          - sunbeam_dev_index_conflicts | length == 0
+        fail_msg: >-
+          These nodes have duplicated devN slots (pve_devices / char_devices /
+          loop devices clash, the later one overwriting the earlier):
+          {{ sunbeam_dev_index_conflicts | join(', ') }}.
+
+    - name: Find every role template
+      ansible.builtin.find:
+        paths: "{{ playbook_dir }}/../../roles/sunbeam-pve/templates"
+        patterns: "*.j2"
+      register: sunbeam_validate_templates
+
+    - name: Render every template with the first node as a stand-in
+      ansible.builtin.assert:
+        that:
+          - lookup('template', item.path) | length > 0
+        fail_msg: "Template {{ item.path | basename }} failed to render (undefined variable?)."
+      loop: "{{ sunbeam_validate_templates.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      vars:
+        sunbeam_node_vmid: "{{ sunbeam_nodes[0].vmid }}"
+        sunbeam_control_plane_api_host: "{{ sunbeam_k8s_loadbalancer_range.split('-')[0] }}"
+        sunbeam_control_plane_api_port: 17070
+
+    - name: Assert compute nodes declare the character devices the hypervisor
+        requires
+      ansible.builtin.assert:
+        that:
+          - item.char_devices | default([]) | map(attribute='path') | select('==', '/dev/kvm') | list | length >= 1
+          - item.char_devices | default([]) | map(attribute='path') | select('==', '/dev/net/tun') | list | length >= 1
+        fail_msg: >-
+          {{ item.fqdn }} has the compute role but does not declare both
+          /dev/kvm and /dev/net/tun in char_devices; nested virt will not work.
+      loop: "{{ sunbeam_nodes }}"
+      loop_control:
+        label: "{{ item.fqdn }}"
+      when: item.role is search('compute')
+
+    - name: Assert the proxy URL is well-formed when a proxy is configured
+      ansible.builtin.assert:
+        that:
+          - >-
+            sunbeam_proxy_url is regex('^https?://[^/\\s]+(?:/.*)?$')
+        fail_msg: >-
+          sunbeam_proxy_enabled=true but sunbeam_proxy_url
+          ('{{ sunbeam_proxy_url }}') is not a usable proxy URL: it must have a
+          scheme (http:// or https://) and a host[:port], because node-prepare,
+          apt and snapd will point at it.
+      when: sunbeam_proxy_enabled | bool
+
+    - name: Assert a proxy-disabled environment still carries a well-formed URL
+      ansible.builtin.assert:
+        that:
+          - >-
+            sunbeam_proxy_url == '' or sunbeam_proxy_url is string
+            or sunbeam_proxy_url is regex('^[A-Za-z0-9._:\\-/]+$')
+        fail_msg: >-
+          sunbeam_proxy_enabled=false, so sunbeam_proxy_url is unused; remove or
+          neutralise it if you intend to leave it empty.
+      when: not (sunbeam_proxy_enabled | bool)
+
+    - name: Index the octets of every node's published addresses
+      ansible.builtin.set_fact:
+        sunbeam_validated_node_octets: >-
+          {{ (sunbeam_validated_node_octets | default([])) + [ entry ] }}
+      loop: "{{ sunbeam_nodes }}"
+      loop_control:
+        label: "{{ item.fqdn }}"
+      vars:
+        fp: "{{ sunbeam_external_network.floating_range.split('-')[0].split('.') }}"
+        fe: "{{ sunbeam_external_network.floating_range.split('-')[1].split('.') }}"
+        entry:
+          fqdn: "{{ item.fqdn }}"
+          pub: "{{ item.pub_ip.split('.') }}"
+          int: "{{ item.internal_ip.split('.') }}"
+          pub_conflict: >-
+            {{ item.pub_ip.split('.')[0:3] == fp[0:3]
+               and item.pub_ip.split('.')[3] | int >= fp[3] | int
+               and item.pub_ip.split('.')[3] | int <= fe[3] | int }}
+          int_conflict: >-
+            {{ item.internal_ip.split('.')[0:3] == fp[0:3]
+               and item.internal_ip.split('.')[3] | int >= fp[3] | int
+               and item.internal_ip.split('.')[3] | int <= fe[3] | int }}
+
+    - name: Collect the floating-range collisions
+      ansible.builtin.set_fact:
+        sunbeam_floating_conflicts: >-
+          {{ sunbeam_validated_node_octets
+             | selectattr('pub_conflict')
+             | map(attribute='fqdn') | list
+             + (sunbeam_validated_node_octets
+                | selectattr('int_conflict')
+                | map(attribute='fqdn') | list) }}
+
+    - name: Assert no node address falls inside the floating IP range
+      ansible.builtin.assert:
+        that:
+          - sunbeam_floating_conflicts | unique | length == 0
+        fail_msg: >-
+          These nodes publish an address inside the floating IP range
+          {{ sunbeam_external_network.floating_range }}:
+          {{ sunbeam_floating_conflicts | unique | join(', ') }}.
+          A floating IP would collide with a live node interface on the same L2.
+
+    - name: Assert the baseline fingerprint is empty or a Ceph fsid
+      ansible.builtin.assert:
+        that:
+          - >-
+            sunbeam_baseline_fingerprint == ''
+            or sunbeam_baseline_fingerprint is regex('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+        fail_msg: >-
+          sunbeam_baseline_fingerprint ('{{ sunbeam_baseline_fingerprint }}')
+          must be empty (baseline checks off) or a Ceph fsid - the value is the
+          immutable `ceph fsid` of the environment the branch was tested against,
+          and a typo here quietly disables baseline enforcement forever.
+
+    - name: Derived node inventory
+      ansible.builtin.debug:
+        msg:
+          - "host={{ sunbeam_host }} storage={{ sunbeam_pve_storage }} domain={{ sunbeam_domain }}"
+          - "bridges={{ sunbeam_pve_bridges }} expected SDN={{ sunbeam_host_expected_bridges }}"
+          - "{{ item.fqdn }} (vmid={{ item.vmid }}, {{ item.role }}, primary={{ item.primary }})"
+          - "  eth={{ item.pub_ip }} int={{ item.internal_ip }}"
+          - "  osd_by_id={{ item.osd_by_id }}"
+          - "  devN={{ item.pve_devices | map(attribute='index') | join(',') }}"
+      loop: "{{ sunbeam_nodes }}"
+      loop_control:
+        label: "{{ item.fqdn }}"
+      when: sunbeam_show_nodes | bool
+
+    - name: Configuration self-check passed
+      ansible.builtin.debug:
+        msg: >-
+          Input section is internally consistent ({{ sunbeam_nodes | length }} nodes / 1 primary / no devN conflicts / all templates render).
+          Add -e sunbeam_show_nodes=true to print the derived result.

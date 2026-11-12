@@ -54,8 +54,9 @@
   ansible.builtin.debug:
     msg: >-
       pve-ct-system-uuid is not installed on this host, so the check is skipped.
-      Run -e sunbeam_stage=system-uuid -e sunbeam_confirm_system_uuid=true (or the
-      pve-prepare stage) to give every CT its own system UUID; until then live
+      Run playbooks/sunbeam/stages/03-system-uuid.yml with
+      -e sunbeam_confirm_system_uuid=true (or the pve-prepare stage) to give every
+      CT its own system UUID; until then live
       migration between Sunbeam nodes fails with
       "Attempt to migrate guest to the same host".
   when: not sunbeam_verify_system_uuid_helper.stat.exists

@@ -217,4 +217,4 @@
       - "containers destroyed: {{ sunbeam_nodes | map(attribute='vmid') | list }}"
       - "savepoint base volumes kept: {{ sunbeam_teardown_sp_list | length }}"
       - "host-side SMBIOS registry: {{ pve_ct_system_uuid_registry_file | default('/etc/pve/priv/ansible-pve/ct-system-uuid.conf') }}"
-      - "next: -e sunbeam_stage=pve-prepare to rebuild the containers, then -e sunbeam_stage=savepoint-restore"
+      - "next: playbooks/sunbeam/stages/02-pve-prepare.yml to rebuild the containers, then playbooks/sunbeam/ops/02-savepoint-restore.yml"

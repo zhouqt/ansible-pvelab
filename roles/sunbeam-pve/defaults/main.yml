@@ -19,7 +19,6 @@ sunbeam_valid_stages:
   - savepoint
   - savepoint-restore
   - teardown
-sunbeam_stage: status
 
 sunbeam_readonly_stages: [status, verify]
 

@@ -1,7 +1,0 @@
----
-corosync_config_path: /etc/corosync/corosync.conf
-corosync_secauth: "off"
-corosync_threads: 0
-corosync_ip_version: "ipv4"
-corosync_rrp_mode: "none"
-corosync_transport: "udpu"

@@ -180,4 +180,4 @@
       - "savepoint: {{ sunbeam_savepoint_prefix }}-*"
       - "guest volumes: {{ sunbeam_savepoint_guests | length }}{% if sunbeam_savepoint_include_osd | bool %} + OSD volumes: {{ sunbeam_savepoint_osds | length }}{% else %} (OSD snapshots disabled!){% endif %}"
       - "metadata: {{ sunbeam_savepoint_metadata_dir }}/{{ sunbeam_savepoint_prefix }}.txt"
-      - "restore with: -e sunbeam_stage=savepoint-restore -e sunbeam_savepoint_restore=true{% if sunbeam_savepoint_name | length > 0 %} -e sunbeam_savepoint_name={{ sunbeam_savepoint_name }}{% endif %}"
+      - "restore with: ansible-playbook playbooks/sunbeam/ops/02-savepoint-restore.yml -e sunbeam_savepoint_restore=true{% if sunbeam_savepoint_name | length > 0 %} -e sunbeam_savepoint_name={{ sunbeam_savepoint_name }}{% endif %}"

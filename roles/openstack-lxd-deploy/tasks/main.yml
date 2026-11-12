@@ -1,3 +1,0 @@
----
-- fail:
-    msg: "This role is deprecated. Use --tags openstack-lxd to run all sub-roles, or --tags openstack-lxd-<phase> for a specific phase."
