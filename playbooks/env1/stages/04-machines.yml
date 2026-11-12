@@ -1,0 +1,7 @@
+---
+
+- name: Create and register PVE Juju workload machines
+  hosts: pve
+  become: false
+  tags: [never, pve-machines]
+  roles: [pve-machines]

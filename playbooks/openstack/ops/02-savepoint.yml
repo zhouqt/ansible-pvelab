@@ -1,0 +1,7 @@
+---
+
+- name: Take a savepoint of the PVE yoga environment
+  hosts: pve
+  become: false
+  tags: [never, openstack-pve-savepoint]
+  roles: [pve-yoga-savepoint]

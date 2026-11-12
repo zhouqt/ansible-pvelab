@@ -1,0 +1,7 @@
+---
+
+- name: Deploy MAAS region+rack controller on PVE
+  hosts: pve
+  become: false
+  tags: [never, pve-maas]
+  roles: [pve-maas]

@@ -1,0 +1,7 @@
+---
+
+- name: Set up Ceph OSDs for the yoga environment
+  hosts: pve
+  become: false
+  tags: [never, openstack-pve-ceph]
+  roles: [pve-yoga-ceph]

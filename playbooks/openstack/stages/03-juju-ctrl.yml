@@ -1,0 +1,7 @@
+---
+
+- name: Bootstrap Juju 3.x manual controller for the yoga environment
+  hosts: pve
+  become: false
+  tags: [never, openstack-pve-juju-ctrl]
+  roles: [pve-yoga-juju-ctrl]

@@ -1,8 +1,0 @@
----
-- name: Sunbeam on PVE
-  hosts: pve
-  gather_facts: false
-  vars_files:
-    - ../group_vars/sunbeam_pve.yml
-  roles:
-    - role: sunbeam-pve

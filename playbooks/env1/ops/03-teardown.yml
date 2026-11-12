@@ -1,0 +1,7 @@
+---
+
+- name: Tear down the focal/ussuri environment (env1)
+  hosts: pve
+  become: false
+  tags: [never, pve-ussuri-teardown]
+  roles: [pve-ussuri-teardown]

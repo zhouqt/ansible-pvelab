@@ -1,0 +1,7 @@
+---
+
+- name: Create the OpenStack resources for the PVE yoga environment
+  hosts: localhost
+  become: false
+  tags: [never, openstack-pve-resources]
+  roles: [pve-yoga-resources]

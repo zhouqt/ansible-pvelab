@@ -1,0 +1,2 @@
+---
+- import_playbook: stages/01-status.yml

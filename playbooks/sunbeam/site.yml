@@ -1,0 +1,16 @@
+---
+
+- import_playbook: stages/01-status.yml
+- import_playbook: stages/02-pve-prepare.yml
+- import_playbook: stages/03-system-uuid.yml
+- import_playbook: stages/04-node-prepare.yml
+- import_playbook: stages/05-bootstrap.yml
+- import_playbook: stages/06-join.yml
+- import_playbook: stages/07-configure.yml
+- import_playbook: stages/08-tls.yml
+- import_playbook: stages/09-storage.yml
+- import_playbook: stages/10-observability.yml
+- import_playbook: stages/11-logging-tune.yml
+- import_playbook: stages/12-flavors.yml
+- import_playbook: stages/13-verify.yml
+- import_playbook: stages/14-vm-volume-test.yml

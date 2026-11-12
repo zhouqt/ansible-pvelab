@@ -1,0 +1,7 @@
+---
+
+- name: Prepare PVE host and focal template (one-time, optional)
+  hosts: pve
+  become: false
+  tags: [never, pve-prepare]
+  roles: [pve-prepare]

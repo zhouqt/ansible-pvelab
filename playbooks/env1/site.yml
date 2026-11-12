@@ -1,0 +1,11 @@
+---
+
+- import_playbook: stages/01-prepare.yml
+- import_playbook: stages/02-maas.yml
+- import_playbook: stages/03-juju-ctrl.yml
+- import_playbook: stages/04-machines.yml
+- import_playbook: stages/05-juju-network.yml
+- import_playbook: stages/06-control-plane.yml
+- import_playbook: stages/07-compute-ceph.yml
+- import_playbook: stages/08-ovn-uplink.yml
+- import_playbook: stages/09-resources.yml

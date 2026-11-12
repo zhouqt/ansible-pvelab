@@ -1,0 +1,7 @@
+---
+
+- name: Deploy the PVE OpenStack compute and Ceph layers
+  hosts: pve
+  become: false
+  tags: [never, pve-compute-ceph]
+  roles: [pve-compute-ceph]

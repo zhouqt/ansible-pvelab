@@ -1,0 +1,7 @@
+---
+
+- name: Deploy Charmed Kubernetes 1.32 on the env1 (focal/ussuri) PVE cloud
+  hosts: pve
+  become: false
+  tags: [never, pve-ussuri-k8s]
+  roles: [pve-ussuri-k8s]

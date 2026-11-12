@@ -1,0 +1,12 @@
+---
+
+- name: Sunbeam on PVE — bootstrap
+  hosts: pve
+  gather_facts: false
+  vars_files:
+    - ../../group_vars/sunbeam_pve.yml
+  tasks:
+    - name: Load the stage implementation
+      ansible.builtin.include_role:
+        name: sunbeam-pve
+        tasks_from: bootstrap.yml

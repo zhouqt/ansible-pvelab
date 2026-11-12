@@ -1,0 +1,7 @@
+---
+
+- name: Restore the focal/ussuri environment (env1) from a savepoint
+  hosts: pve
+  become: false
+  tags: [never, openstack-ussuri-savepoint-restore]
+  roles: [pve-ussuri-savepoint-restore]

@@ -1,0 +1,7 @@
+---
+
+- name: Take a savepoint of the focal/ussuri environment (env1)
+  hosts: pve
+  become: false
+  tags: [never, openstack-ussuri-savepoint]
+  roles: [pve-ussuri-savepoint]
